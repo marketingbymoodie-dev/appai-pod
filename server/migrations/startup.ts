@@ -48,12 +48,30 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: 'product_types',         column: 'panel_flat_lay_images',       type: "TEXT DEFAULT '{}'" },
   { table: "product_types",         column: "aop_template_id",             type: "TEXT" },
   { table: "product_types",         column: "panel_mapping_template",      type: "TEXT" },
+  { table: "product_types",         column: "on_the_fly_tier",             type: "TEXT" },
+  { table: "product_types",         column: "flat_calibration_status",     type: "TEXT" },
+  { table: "product_types",         column: "flat_calibration",            type: "TEXT DEFAULT '{}'" },
+  { table: "product_types",         column: "storefront_mockup_mode",      type: "TEXT" },
+  { table: "product_types",         column: "fulfillment_layout",        type: "TEXT" },
+  { table: "platform_catalog_blueprints", column: "storefront_mockup_mode", type: "TEXT" },
+  { table: "platform_catalog_blueprints", column: "fulfillment_layout",       type: "TEXT" },
+  { table: "platform_catalog_blueprints", column: "force_flat_harvest",       type: "BOOLEAN NOT NULL DEFAULT FALSE" },
   { table: "aop_calibration_runs",  column: "export_url",                  type: "TEXT" },
 ];
 
 /** One-time data fixes (idempotent WHERE clauses). */
 const DATA_MIGRATIONS: string[] = [
-  // Pin reference leggings blueprints to the locked template when still unset.
+  // Adjustable tote: folded fulfillment + flat storefront mockups (override AOP name defaults).
+  `UPDATE platform_catalog_blueprints
+   SET fulfillment_layout = 'tote_folded_v1',
+       storefront_mockup_mode = 'flat',
+       force_flat_harvest = true
+   WHERE printify_blueprint_id = 1300
+     AND (fulfillment_layout IS NULL OR fulfillment_layout = '' OR fulfillment_layout = 'auto')`,
+  `UPDATE platform_catalog_blueprints
+   SET force_flat_harvest = true
+   WHERE printify_blueprint_id = 1300
+      OR fulfillment_layout = 'tote_folded_v1'`,
   `UPDATE product_types SET aop_template_id = 'leggings_v1'
    WHERE is_all_over_print = true
      AND printify_blueprint_id IN (256, 1050)
@@ -385,6 +403,47 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
       )
     `,
   },
+  {
+    name: "flat_order_submissions",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "flat_order_submissions" (
+        "id"                  SERIAL PRIMARY KEY,
+        "idempotency_key"     TEXT NOT NULL UNIQUE,
+        "shop"                TEXT,
+        "shopify_order_id"    TEXT,
+        "shopify_line_id"     TEXT,
+        "design_id"           TEXT,
+        "product_type_id"     INTEGER,
+        "printify_shop_id"    TEXT,
+        "printify_order_id"   TEXT,
+        "status"              TEXT NOT NULL DEFAULT 'pending',
+        "sent_to_production"  BOOLEAN NOT NULL DEFAULT FALSE,
+        "is_test"             BOOLEAN NOT NULL DEFAULT FALSE,
+        "print_file_urls"     JSONB,
+        "error"               TEXT,
+        "metadata"            JSONB,
+        "created_at"          TIMESTAMP DEFAULT NOW() NOT NULL,
+        "updated_at"          TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "platform_catalog_blueprints",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "platform_catalog_blueprints" (
+        "printify_blueprint_id"   INTEGER PRIMARY KEY,
+        "label"                   TEXT NOT NULL,
+        "brand"                   TEXT,
+        "category"                TEXT,
+        "kind"                    TEXT NOT NULL,
+        "status"                  TEXT NOT NULL DEFAULT 'draft',
+        "panel_mapping_template"  TEXT,
+        "notes"                   TEXT,
+        "tagged_at"               TIMESTAMP DEFAULT NOW() NOT NULL,
+        "updated_at"              TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
 ];
 
 const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
@@ -452,6 +511,16 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     name: "merchant_usage_charges_status_idx",
     sql: `CREATE INDEX IF NOT EXISTS "merchant_usage_charges_status_idx"
       ON "merchant_usage_charges" ("installation_id", "status")`,
+  },
+  {
+    name: "flat_order_submissions_order_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "flat_order_submissions_order_idx"
+      ON "flat_order_submissions" ("shopify_order_id")`,
+  },
+  {
+    name: "flat_order_submissions_product_type_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "flat_order_submissions_product_type_idx"
+      ON "flat_order_submissions" ("product_type_id")`,
   },
 ];
 

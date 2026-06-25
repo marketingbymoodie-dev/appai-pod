@@ -179,7 +179,7 @@ function compressPrompt(raw: string, isApparel: boolean, isAllOverPrint?: boolea
       "Isolated centered graphic on a SOLID HOT PINK (#FF00FF) background. " +
       "Every pixel not part of the design must be exactly #FF00FF. " +
       "Do NOT use hot pink or magenta anywhere in the design itself. " +
-      "Clean hard edges, no gradients into background, no rectangular frames. " +
+      "Clean hard edges, no gradients into background, no outer glow or halos, no rectangular frames. " +
       "Do NOT add any text, words, slogans, or labels unless the user explicitly requested them. ";
     compressed = shortApparelConstraints + compressed;
   } else {

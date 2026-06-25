@@ -1,39 +1,29 @@
-import { useState } from "react";
 import type React from "react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
-import { ZoomIn, Crosshair, Move, ChevronDown, ChevronUp } from "lucide-react";
+import { ZoomIn, Crosshair } from "lucide-react";
 import type { ImageTransform } from "./types";
 
 interface ZoomControlsProps {
   transform: ImageTransform;
   onTransformChange: (transform: ImageTransform) => void;
   disabled?: boolean;
-  showPositionControls?: boolean;
   maxZoom?: number;
   extraActions?: React.ReactNode;
+  /** When false, hides the drag/resize hint (e.g. Printify composite mockup view). */
+  showDragHint?: boolean;
 }
 
 export function ZoomControls({
   transform,
   onTransformChange,
   disabled = false,
-  showPositionControls = true,
   maxZoom = 200,
   extraActions,
+  showDragHint = true,
 }: ZoomControlsProps) {
-  const [showPosition, setShowPosition] = useState(false);
-
   const handleScaleChange = (value: number[]) => {
     onTransformChange({ ...transform, scale: value[0] });
-  };
-
-  const handleXChange = (value: number[]) => {
-    onTransformChange({ ...transform, x: value[0] });
-  };
-
-  const handleYChange = (value: number[]) => {
-    onTransformChange({ ...transform, y: value[0] });
   };
 
   const handleCenter = () => {
@@ -81,55 +71,14 @@ export function ZoomControls({
         </Button>
       </div>
 
-      {showPositionControls && (
-        <>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setShowPosition(!showPosition)}
-              className="flex items-center gap-1 text-xs text-muted-foreground self-start"
-              data-testid="button-toggle-position"
-            >
-              <Move className="h-3 w-3" />
-              Reposition
-              {showPosition ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-            </Button>
-            {extraActions}
-          </div>
-
-          {showPosition && (
-            <div className="flex flex-col gap-2 p-2 bg-muted/30 rounded-md">
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-muted-foreground w-6">X:</span>
-                <Slider
-                  value={[transform.x]}
-                  onValueChange={handleXChange}
-                  min={-50}
-                  max={150}
-                  step={1}
-                  className="flex-1"
-                  data-testid="slider-x"
-                />
-                <span className="text-xs text-muted-foreground w-10 text-right">{Math.round(transform.x)}%</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-muted-foreground w-6">Y:</span>
-                <Slider
-                  value={[transform.y]}
-                  onValueChange={handleYChange}
-                  min={-50}
-                  max={150}
-                  step={1}
-                  className="flex-1"
-                  data-testid="slider-y"
-                />
-                <span className="text-xs text-muted-foreground w-10 text-right">{Math.round(transform.y)}%</span>
-              </div>
-            </div>
-          )}
-        </>
-      )}
+      {extraActions ? (
+        <div className="flex items-center gap-2 flex-wrap">{extraActions}</div>
+      ) : null}
+      {showDragHint ? (
+        <p className="text-[10px] text-muted-foreground">
+          Drag the artwork box on the preview to reposition; use corners to resize.
+        </p>
+      ) : null}
     </div>
   );
 }

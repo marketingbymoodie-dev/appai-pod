@@ -1,5 +1,5 @@
 import { generateImageBase64 } from "./replit_integrations/image/client";
-import { generatePattern, removeBackground, type PatternType } from "./picsart-client";
+import { generatePattern, removeBackground, despillMagenta, type PatternType } from "./picsart-client";
 import { tileImage, type TileMode } from "./sharp-tiler";
 import pg from "pg";
 import express, { type Express, Request, Response, NextFunction } from "express";
@@ -15,9 +15,44 @@ import { pool, db } from "./db";
 import { customizerDesigns, customizerPages, generationJobs, productTypes, publishedProducts, cachedPanelImages } from "@shared/schema";
 import { eq, and, desc, inArray, sql, or } from "drizzle-orm";
 import { resolvePrintifyColorHex } from "@shared/printifyColorResolver";
+import { slugPrintifyColorId } from "@shared/printifyColorSlug";
+import {
+  extractPrintifyColorName,
+  looksLikePrintifySize,
+} from "@shared/printifyVariantParse";
+import {
+  hasExactVariantMapping,
+  normalizeApparelSizeId,
+  resolveVariantFromMap,
+  variantMapKey,
+  countActiveVariantMapKeys,
+  SHOPIFY_MAX_VARIANTS_PER_PRODUCT,
+  type VariantMap,
+} from "@shared/variantMapResolve";
+import {
+  computeAspectRatioFromPixelDims,
+  normalizeStandardApparelAspectRatio,
+  pickPrimaryPrintPlaceholderDims,
+  resolveStandardApparelAspectRatioFromPlaceholders,
+} from "@shared/apparelAspectRatio";
+import { buildCostsByNormalizedLabel } from "@shared/printifyCostLabels";
+import {
+  cacheCoversVariantIds,
+  extractCostsFromCatalogVariants,
+  extractCostsFromPrintifyProduct,
+  filterCostsToPrintifyVariantIds,
+  parsePrintifyCostsCache,
+  serializePrintifyCostsCache,
+} from "@shared/printifyProductionCosts";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
 import { detectPrintifyAllOverPrint } from "./printify-aop-detection";
+import {
+  resolveFulfillmentLayout,
+  resolveStorefrontMockupMode,
+  usesAopStorefrontCustomizer,
+  usesToteFoldedFulfillment,
+} from "@shared/productLayoutPolicy";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShopifyToken } from "./shopify";
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { syncCreditEntitlementMetafield } from "./credit-entitlements";
@@ -40,6 +75,160 @@ import {
   listPublicTemplateNames,
 } from "./hoodieTemplateStore";
 import { enqueueMockupJob, getMockupJob } from "./mockup-jobs";
+import { harvestFlatCalibration, type HarvestOptions } from "./flat-calibration";
+import { slimPhoneCaseBlueprintId, type CanonicalPublishedMeta } from "@shared/canonicalProducts";
+import {
+  canMerchantImportEntry,
+  canOperatorImportEntry,
+  getPlatformCatalogEntry,
+  listMerchantImportableCatalog,
+  listPlatformCatalogByKind,
+} from "./platformCatalogStore";
+import { isPlatformAdminRequest } from "./platformAdmin";
+import {
+  adminProductTypeAccessError,
+} from "./adminProductTypeAccess";
+import {
+  merchantManifestFromCanonical,
+  resolveCanonicalFlatCalibration,
+} from "./canonicalFlatCalibration";
+import {
+  parseFlatCalibrationManifest,
+  prepareProductTypeForDesigner,
+  syncProductTypeFromCanonicalCalibration,
+} from "./syncCanonicalCalibration";
+import {
+  submitFlatTestOrder,
+  submitFlatOrderToPrintify,
+  normalizeShopifyOrderLine,
+} from "./flat-order-fulfillment";
+
+/**
+ * Fire-and-forget flat/mesh on-the-fly mockup calibration for a freshly imported
+ * (or re-calibrated) product. Marks status running -> ready/unsupported/failed
+ * and persists the manifest to product_types. Safe no-op when the merchant lacks
+ * Printify creds or the product is all-over-print (those keep their own flow).
+ */
+function kickoffFlatCalibration(args: {
+  productTypeId: number;
+  name: string;
+  blueprintId: number | null | undefined;
+  providerId: number | null | undefined;
+  token: string | null | undefined;
+  shopId: string | null | undefined;
+  isAllOverPrint: boolean;
+  designerType?: string | null;
+  /** Persisted import data — used to harvest per-colour blank photos reliably. */
+  frameColors?: unknown;
+  sizes?: unknown;
+  variantMap?: unknown;
+  forceFlatHarvest?: boolean;
+  fulfillmentLayout?: string | null;
+}): void {
+  const {
+    productTypeId,
+    name,
+    blueprintId,
+    providerId,
+    token,
+    shopId,
+    isAllOverPrint,
+    designerType,
+    frameColors,
+    sizes,
+    variantMap,
+    forceFlatHarvest: forceFlatHarvestArg,
+    fulfillmentLayout: fulfillmentLayoutArg,
+  } = args;
+  if (!token || !shopId || !blueprintId || !providerId) {
+    void storage.updateProductType(productTypeId, { flatCalibrationStatus: "failed" }).catch(() => {});
+    return;
+  }
+  void (async () => {
+    try {
+      let forceFlatHarvest = forceFlatHarvestArg;
+      let fulfillmentLayout = fulfillmentLayoutArg ?? null;
+      if (forceFlatHarvest == null && blueprintId) {
+        const catalogEntry = await getPlatformCatalogEntry(blueprintId);
+        forceFlatHarvest = catalogEntry?.forceFlatHarvest ?? false;
+        fulfillmentLayout = fulfillmentLayout ?? catalogEntry?.fulfillmentLayout ?? null;
+      }
+
+      if (
+        isAllOverPrint &&
+        !shouldAllowFlatHarvest({
+          name,
+          blueprintId,
+          isAllOverPrint: true,
+          forceFlatHarvest,
+          fulfillmentLayout,
+        })
+      ) {
+        await storage.updateProductType(productTypeId, { flatCalibrationStatus: "unsupported" });
+        return;
+      }
+
+      await storage.updateProductType(productTypeId, { flatCalibrationStatus: "running" });
+      const opts: HarvestOptions = {
+        productTypeId,
+        name,
+        blueprintId,
+        providerId,
+        token,
+        shopId,
+        designerType,
+        sizes,
+        frameColors,
+        variantMap,
+        forceFlatHarvest: !!forceFlatHarvest,
+        fulfillmentLayout,
+      };
+      const result = await harvestFlatCalibration(opts);
+      await storage.updateProductType(productTypeId, {
+        onTheFlyTier: result.tier,
+        flatCalibrationStatus: result.status,
+        flatCalibration: JSON.stringify(result.manifest),
+      });
+      console.log(`[flat-calibration] ${name} (pt ${productTypeId}) -> tier=${result.tier} status=${result.status}${result.error ? ` (${result.error})` : ""}`);
+      if (result.warnings && result.warnings.length > 0) {
+        console.warn(`[flat-calibration] ${name} (pt ${productTypeId}) harvest warnings (${result.warnings.length}):`);
+        for (const w of result.warnings) console.warn(`  • ${w}`);
+      }
+    } catch (err) {
+      console.error(`[flat-calibration] harvest failed for pt ${productTypeId}:`, err);
+      await storage.updateProductType(productTypeId, { flatCalibrationStatus: "failed" }).catch(() => {});
+    }
+  })();
+}
+
+/**
+ * Verify a Shopify webhook HMAC against the raw request body. Mirrors the
+ * pattern in `server/shopify-gdpr.ts` (raw-body buffer + timingSafeEqual). The
+ * raw body is captured by the express.json `verify` hook (`server/index.ts`).
+ * Returns false when the secret/header is missing or the digest mismatches.
+ */
+function verifyShopifyWebhookHmac(req: Request): boolean {
+  const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET || "";
+  const hmacHeader = req.headers["x-shopify-hmac-sha256"];
+  const hmac = Array.isArray(hmacHeader) ? hmacHeader[0] : hmacHeader;
+  if (!SHOPIFY_API_SECRET || !hmac) return false;
+  const rawBody = (req as any).rawBody;
+  const buf: Buffer = Buffer.isBuffer(rawBody)
+    ? rawBody
+    : typeof rawBody === "string"
+      ? Buffer.from(rawBody, "utf8")
+      : Buffer.from(JSON.stringify(req.body ?? {}), "utf8");
+  const digest = crypto.createHmac("sha256", SHOPIFY_API_SECRET).update(buf).digest("base64");
+  try {
+    return (
+      digest.length === hmac.length &&
+      crypto.timingSafeEqual(Buffer.from(digest, "utf8"), Buffer.from(hmac, "utf8"))
+    );
+  } catch {
+    return false;
+  }
+}
+
 function toUint8Array(buf: Buffer) {
   // Creates a NEW Uint8Array backed by a normal ArrayBuffer (fixes TS BlobPart typing)
   return Uint8Array.from(buf);
@@ -270,7 +459,6 @@ async function generateThumbnail(buffer: Buffer): Promise<Buffer> {
     .toBuffer();
 }
 
-// Helper function to calculate generation dimensions from aspect ratio
 const calculateGenDimensions = (aspectRatioStr: string): { genWidth: number; genHeight: number } => {
   const [w, h] = aspectRatioStr.split(":").map(Number);
   if (!w || !h || isNaN(w) || isNaN(h)) {
@@ -303,6 +491,28 @@ const mapToGeminiAspectRatio = (aspectRatioStr: string): string => {
   if (ratio >= 0.55) return "2:3";
   return "9:16";
 };
+
+function resolveGenerationAspectRatio(
+  aspectRatioStr: string,
+  opts: { isApparel?: boolean; isAllOverPrint?: boolean },
+): string {
+  if (opts.isApparel && !opts.isAllOverPrint) {
+    return normalizeStandardApparelAspectRatio(aspectRatioStr);
+  }
+  return aspectRatioStr;
+}
+
+function designerDisplayAspectRatio(productType: {
+  aspectRatio?: string | null;
+  designerType?: string | null;
+  isAllOverPrint?: boolean | null;
+}): string {
+  const stored = productType.aspectRatio || "1:1";
+  if (productType.designerType === "apparel" && !productType.isAllOverPrint) {
+    return normalizeStandardApparelAspectRatio(stored);
+  }
+  return stored;
+}
 
 interface SaveImageResult {
   imageUrl: string;
@@ -343,6 +553,68 @@ async function resizeToAspectRatio(buffer: Buffer, targetDims: TargetDimensions,
     return sharpInstance.jpeg({ quality: 90 }).toBuffer();
   }
   return sharpInstance.png().toBuffer();
+}
+
+/** Extra matting guidance appended to apparel chroma-key generation prompts. */
+const APPAREL_CHROMA_MATTING_LINE =
+  "10. MATTING EDGES: Use hard vector-like edges with no outer glow, drop shadow, or gradient halos. Leave a clean band of solid #FF00FF background between the artwork and the canvas edge so chroma-key removal can eliminate fringe color.";
+
+function buildApparelChromaSizingRequirements(designColors: string): string {
+  return `
+MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
+1. ISOLATED DESIGN: Create a SINGLE, centered graphic design that is ISOLATED from any background scenery.
+2. SOLID HOT PINK (#FF00FF) BACKGROUND: The ENTIRE background MUST be a flat, uniform hot pink (#FF00FF) color. Every pixel that is not part of the design must be exactly #FF00FF. DO NOT create scenic backgrounds, landscapes, or detailed environments.
+3. DESIGN COLORS: Use ${designColors} The design MUST NOT contain any hot pink or magenta (#FF00FF) pixels — this color is reserved exclusively for the background.
+4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean #FF00FF space around it.
+5. CLEAN EDGES: The design must have crisp, clean edges against the hot pink background. No fuzzy, gradient, or semi-transparent edges.
+6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid hot pink background.
+7. PRINT-READY: This is for t-shirt/apparel printing — create an isolated graphic that can be printed on fabric.
+8. COMPOSITION FORMAT: Fill the canvas matching the requested aspect ratio with the design centered.
+9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
+${APPAREL_CHROMA_MATTING_LINE}
+`;
+}
+
+/**
+ * Shrink the opaque alpha mask inward to discard chroma fringe on anti-aliased edges.
+ */
+async function erodeAlphaChannel(buffer: Buffer, radiusPx: number = 2): Promise<Buffer> {
+  if (radiusPx <= 0) return buffer;
+  const { data, info } = await sharp(buffer)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const { width, height, channels } = info;
+  const src = new Uint8Array(data);
+  const dst = new Uint8Array(src);
+  const alphaThreshold = 8;
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * channels;
+      if (src[idx + 3] <= alphaThreshold) continue;
+
+      let keep = true;
+      for (let dy = -radiusPx; dy <= radiusPx && keep; dy++) {
+        for (let dx = -radiusPx; dx <= radiusPx; dx++) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) {
+            keep = false;
+            break;
+          }
+          const nidx = (ny * width + nx) * channels;
+          if (src[nidx + 3] <= alphaThreshold) {
+            keep = false;
+            break;
+          }
+        }
+      }
+      if (!keep) dst[idx + 3] = 0;
+    }
+  }
+
+  return sharp(Buffer.from(dst), { raw: { width, height, channels } }).png().toBuffer();
 }
 
 /**
@@ -674,15 +946,30 @@ interface SaveImageOptions {
   isAllOverPrint?: boolean;
   targetDims?: TargetDimensions;
   colorTier?: ColorTier;
+  /** 0–100; higher = more aggressive alpha erosion after background removal. */
+  bgRemovalSensitivity?: number;
+}
+
+/** Alpha erosion radius after matting — lighter when remove.bg succeeded cleanly. */
+function resolveAlphaErosionRadius(opts: {
+  removeBgUsedApi: boolean;
+  bgRemovalSensitivity?: number;
+}): number {
+  if (typeof opts.bgRemovalSensitivity === "number" && Number.isFinite(opts.bgRemovalSensitivity)) {
+    const s = Math.max(0, Math.min(100, opts.bgRemovalSensitivity));
+    return Math.round((s / 100) * 2);
+  }
+  return opts.removeBgUsedApi ? 0 : 1;
 }
 
 async function saveImageToStorage(base64Data: string, mimeType: string, options?: SaveImageOptions): Promise<SaveImageResult> {
-  const { isApparel = false, isAllOverPrint = false, targetDims } = options || {};
+  const { isApparel = false, isAllOverPrint = false, targetDims, bgRemovalSensitivity } = options || {};
   const imageId = crypto.randomUUID();
   let actualMimeType = mimeType.toLowerCase();
   let extension = actualMimeType.includes("png") ? "png" : "jpg";
 
   let buffer: Buffer = Buffer.from(base64Data, "base64");
+  let removeBgUsedApi = false;
 
   // For apparel, remove background using Picsart — including AOP
   // This ensures the motif is clean before tiling or placement
@@ -708,6 +995,7 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
           buffer = Buffer.from(base64Data, "base64");
           extension = "png";
           actualMimeType = "image/png";
+          removeBgUsedApi = true;
           console.log("[saveImageToStorage] remove.bg background removal successful");
         } else {
           // Legacy URL format fallback
@@ -716,6 +1004,7 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
             buffer = Buffer.from(await response.arrayBuffer());
             extension = "png";
             actualMimeType = "image/png";
+            removeBgUsedApi = true;
             console.log("[saveImageToStorage] remove.bg background removal successful (URL)");
           } else {
             throw new Error(`Failed to download remove.bg result: ${response.statusText}`);
@@ -731,7 +1020,24 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
       actualMimeType = "image/png";
     }
 
-    buffer = await trimTransparentBounds(buffer);
+    // Decontaminate the #FF00FF chroma-key spill left on anti-aliased edges
+    // (the "hot pink fringe"). Runs for whichever removal path succeeded above.
+    try {
+      buffer = await despillMagenta(buffer);
+    } catch (despillErr) {
+      console.warn("[saveImageToStorage] magenta despill skipped:", (despillErr as Error).message);
+    }
+
+    const erosionRadius = resolveAlphaErosionRadius({ removeBgUsedApi, bgRemovalSensitivity });
+    if (erosionRadius > 0) {
+      try {
+        buffer = await erodeAlphaChannel(buffer, erosionRadius);
+      } catch (erodeErr) {
+        console.warn("[saveImageToStorage] alpha erosion skipped:", (erodeErr as Error).message);
+      }
+    }
+
+    buffer = await trimTransparentBounds(buffer, 8, removeBgUsedApi ? 4 : 8);
   } else if (targetDims && targetDims.width !== targetDims.height) {
     const outputFormat =
       actualMimeType.includes("jpeg") || actualMimeType.includes("jpg")
@@ -2238,7 +2544,7 @@ export async function registerRoutes(
 
       // Now sizeConfig is guaranteed to be defined
       const finalSizeConfig = sizeConfig!;
-      const aspectRatioStr = (finalSizeConfig as any).aspectRatio || "1:1";
+      let aspectRatioStr = (finalSizeConfig as any).aspectRatio || "1:1";
       
       // Check if this is an apparel product - either from productType or from style preset category
       // This covers both hardcoded and merchant-created styles via styleCategory
@@ -2251,6 +2557,17 @@ export async function registerRoutes(
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);      // Determine color tier for apparel products
       let colorTier: ColorTier = "light"; // Default to light (dark designs on white background)
+
+      aspectRatioStr = resolveGenerationAspectRatio(aspectRatioStr, { isApparel, isAllOverPrint });
+      if (sizeConfig && (sizeConfig as any).aspectRatio !== aspectRatioStr) {
+        const genDims = calculateGenDimensions(aspectRatioStr);
+        sizeConfig = {
+          ...(sizeConfig as any),
+          aspectRatio: aspectRatioStr,
+          genWidth: genDims.genWidth,
+          genHeight: genDims.genHeight,
+        };
+      }
       
       if (isApparel && frameColor) {
         // Look up the color's hex value from product type's frameColors
@@ -2300,19 +2617,9 @@ export async function registerRoutes(
       let sizingRequirements: string;
       
       if (isApparel) {
-        // All apparel (AOP and standard) now uses white background for Picsart removebg
-        sizingRequirements = `
-MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
-1. ISOLATED DESIGN: Create a SINGLE, centered graphic design that is ISOLATED from any background scenery.
-2. SOLID FLAT WHITE BACKGROUND: The ENTIRE background MUST be a flat, solid, uniform pure white (#FFFFFF) color. Every pixel that is not part of the design must be exactly #FFFFFF. DO NOT create scenic backgrounds, gradients, or detailed environments.
-3. DESIGN COLORS: Use VIBRANT, BOLD colors. The design MUST NOT contain any pure white pixels in the main subject — white is reserved exclusively for the background.
-4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean white space around it.
-5. CLEAN EDGES: The design must have crisp, clean edges against the white background. No fuzzy, gradient, or semi-transparent edges.
-6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid white background.
-7. PRINT-READY: This is for apparel printing — create an isolated graphic that can be printed on fabric.
-8. COMPOSITION FORMAT: Fill the canvas matching the requested aspect ratio with the design centered.
-9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
-`;
+        sizingRequirements = buildApparelChromaSizingRequirements(
+          "VIBRANT colors. AVOID white, light colors, and hot pink/magenta in the design.",
+        );
       } else {
         // Wall art needs full-bleed edge-to-edge designs
         // Build shape-specific safe zone instructions
@@ -2493,6 +2800,7 @@ console.log("[api/generate] replicate returned", {
   isApparel,
   isAllOverPrint,
   targetDims,
+  bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
 });
 
 console.log("[api/shopify/generate] saved image", result);
@@ -2642,19 +2950,7 @@ console.log("[api/shopify/generate] saved image", result);
         ? "BRIGHT, VIBRANT colors including white and light tones. AVOID dark, black, and hot pink/magenta colors in the design."
         : "VIBRANT colors. AVOID white, light colors, and hot pink/magenta in the design.";
       
-      fullPrompt += `
-
-MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
-1. ISOLATED DESIGN: Create a SINGLE, centered graphic design that is ISOLATED from any background scenery.
-2. SOLID HOT PINK (#FF00FF) BACKGROUND: The ENTIRE background MUST be a flat, uniform hot pink (#FF00FF) color. Every pixel that is not part of the design must be exactly #FF00FF. DO NOT create scenic backgrounds, landscapes, or detailed environments.
-3. DESIGN COLORS: Use ${designColors} The design MUST NOT contain any hot pink or magenta (#FF00FF) pixels — this color is reserved exclusively for the background.
-4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean #FF00FF space around it.
-5. CLEAN EDGES: The design must have crisp, clean edges against the hot pink background. No fuzzy, gradient, or semi-transparent edges.
-6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid hot pink background.
-7. PRINT-READY: This is for t-shirt/apparel printing — create an isolated graphic that can be printed on fabric.
-8. COMPOSITION FORMAT: Fill the canvas matching the requested aspect ratio with the design centered.
-9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
-`;
+      fullPrompt += buildApparelChromaSizingRequirements(designColors);
 
       console.log(`[Regenerate-Tier] Regenerating design ${designId} for ${newColorTier} tier`);
 
@@ -3113,6 +3409,22 @@ RECTANGULAR PRINT AREA:
       }
 
       // Determine aspect ratio and orientation
+      if (productType?.designerType === "apparel" && !productType?.isAllOverPrint) {
+        const normalized = resolveGenerationAspectRatio(sizeConfig.aspectRatio, {
+          isApparel: true,
+          isAllOverPrint: false,
+        });
+        if (normalized !== sizeConfig.aspectRatio) {
+          const genDims = calculateGenDimensions(normalized);
+          sizeConfig = {
+            ...sizeConfig,
+            aspectRatio: normalized,
+            genWidth: genDims.genWidth,
+            genHeight: genDims.genHeight,
+          };
+        }
+      }
+
       const [arW, arH] = sizeConfig.aspectRatio.split(":").map(Number);
       const aspectRatioValue = arW / arH;
       let orientationDescription: string;
@@ -3249,6 +3561,7 @@ ${textEdgeRestrictions}
           isApparel,
           isAllOverPrint,
           targetDims,
+          bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
         });
         imageUrl = result.imageUrl;
         thumbnailUrl = result.thumbnailUrl;
@@ -3259,6 +3572,7 @@ ${textEdgeRestrictions}
             isApparel,
             isAllOverPrint,
             targetDims,
+            bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
           });
           imageUrl = result.imageUrl;
           thumbnailUrl = result.thumbnailUrl;
@@ -3341,6 +3655,63 @@ ${textEdgeRestrictions}
   }
 
   // Create a draft product in merchant's Shopify store with design studio widget
+  async function deleteShopifyProductBestEffort(
+    shop: string,
+    accessToken: string,
+    productId: string | number | null | undefined,
+  ): Promise<void> {
+    if (!productId) return;
+    try {
+      const resp = await fetch(`https://${shop}/admin/api/2025-10/products/${productId}.json`, {
+        method: "DELETE",
+        headers: { "X-Shopify-Access-Token": accessToken },
+      });
+      if (resp.ok || resp.status === 404) {
+        console.log(`[shopify-cleanup] Deleted product ${productId} from ${shop}`);
+      } else {
+        console.warn(`[shopify-cleanup] Delete product ${productId} returned ${resp.status}`);
+      }
+    } catch (e) {
+      console.warn(`[shopify-cleanup] Delete product ${productId} failed:`, (e as Error).message);
+    }
+  }
+
+  async function deleteProductTypeWithCleanup(productType: any): Promise<void> {
+    const shopDomain = productType.shopifyShopDomain;
+    const shopifyProductId = productType.shopifyProductId;
+
+    if (shopDomain && shopifyProductId) {
+      const installation = await storage.getShopifyInstallationByShop(shopDomain);
+      if (installation?.status === "active" && installation.accessToken) {
+        await deleteShopifyProductBestEffort(shopDomain, installation.accessToken, shopifyProductId);
+      }
+    }
+
+    const linkedPages = await db
+      .select()
+      .from(customizerPages)
+      .where(eq(customizerPages.productTypeId, productType.id));
+
+    for (const page of linkedPages) {
+      const installation = await storage.getShopifyInstallationByShop(page.shop);
+      if (page.shopifyPageId && installation?.status === "active" && installation.accessToken) {
+        await shopifyApiCall(page.shop, installation.accessToken, `pages/${page.shopifyPageId}.json`, {
+          method: "DELETE",
+        }).catch((e: Error) =>
+          console.warn(`[shopify-cleanup] Could not delete Shopify page ${page.shopifyPageId}:`, e.message),
+        );
+      }
+      if (installation?.accessToken) {
+        await removeNavigationLink(page.shop, installation.accessToken, page.handle).catch((e: Error) =>
+          console.warn(`[shopify-cleanup] Could not remove nav link for ${page.handle}:`, e.message),
+        );
+      }
+      await storage.deleteCustomizerPage(page.id);
+    }
+
+    await storage.deleteProductType(productType.id);
+  }
+
   /**
    * Shared helper: create (or re-create) a Shopify product for a given product type.
    * Called directly (no HTTP) so it works inside other route handlers.
@@ -3452,9 +3823,7 @@ ${textEdgeRestrictions}
 
     // Delete existing Shopify product if present (re-publish scenario)
     if (productType.shopifyProductId) {
-      try {
-        await fetch(`https://${shop}/admin/api/2025-10/products/${productType.shopifyProductId}.json`, { method: 'DELETE', headers: { 'X-Shopify-Access-Token': accessToken } });
-      } catch (_) { /* ignore delete errors */ }
+      await deleteShopifyProductBestEffort(shop, accessToken, productType.shopifyProductId);
     }
 
     const shopifyResponse = await fetch(`https://${shop}/admin/api/2025-10/products.json`, {
@@ -4615,6 +4984,172 @@ ${textEdgeRestrictions}
   const VARIANT_RATE_WINDOW = 60 * 60 * 1000; // 1 hour in ms
 
   // Proxy endpoint to fetch Shopify product variants (validated against known installations)
+  function buildFallbackVariantsFromProductType(productType: any): Array<{
+    id: number | string;
+    title: string;
+    option1: string;
+    option2: string | null;
+    option3: null;
+    price: string;
+    available: boolean;
+  }> {
+    const sizes = (typeof productType.sizes === 'string' ? JSON.parse(productType.sizes) : productType.sizes) as Array<{ id: string; name: string }> || [];
+    const frameColors = (typeof productType.frameColors === 'string' ? JSON.parse(productType.frameColors) : productType.frameColors) as Array<{ id: string; name: string }> || [];
+    const shopifyVariantIds = (typeof productType.shopifyVariantIds === 'string'
+      ? JSON.parse(productType.shopifyVariantIds)
+      : productType.shopifyVariantIds) as Record<string, number> || {};
+
+    if (sizes.length === 0) return [];
+
+    const lookupVariantId = (size: { id: string; name: string }, color?: { id: string; name: string }): number | undefined => {
+      const colorName = color?.name || 'default';
+      const colorId = color?.id || 'default';
+      const keys = color
+        ? [
+            `${size.name}:${colorName}`,
+            `${size.id}:${colorId}`,
+            `${size.name}:${colorId}`,
+            `${size.id}:${colorName}`,
+          ]
+        : [`${size.name}:default`, `${size.id}:default`];
+      for (const key of keys) {
+        if (shopifyVariantIds[key]) return shopifyVariantIds[key];
+      }
+      return undefined;
+    };
+
+    const fallbackVariants: Array<{
+      id: number | string;
+      title: string;
+      option1: string;
+      option2: string | null;
+      option3: null;
+      price: string;
+      available: boolean;
+    }> = [];
+
+    if (frameColors.length > 0) {
+      for (const size of sizes) {
+        for (const color of frameColors) {
+          const shopifyVariantId = lookupVariantId(size, color);
+          fallbackVariants.push({
+            id: shopifyVariantId || `fallback-${productType.id}-${size.id}-${color.id}`,
+            title: `${size.name} / ${color.name}`,
+            option1: size.name,
+            option2: color.name,
+            option3: null,
+            price: '0.00',
+            available: true,
+          });
+        }
+      }
+    } else {
+      for (const size of sizes) {
+        const shopifyVariantId = lookupVariantId(size);
+        fallbackVariants.push({
+          id: shopifyVariantId || `fallback-${productType.id}-${size.id}`,
+          title: size.name,
+          option1: size.name,
+          option2: null,
+          option3: null,
+          price: '0.00',
+          available: true,
+        });
+      }
+    }
+
+    return fallbackVariants;
+  }
+
+  /** Merge real Shopify prices onto DB fallback rows (fallback hardcodes price: 0.00). */
+  function enrichVariantsWithShopifyPrices<T extends {
+    id: number | string;
+    title: string;
+    option1?: string | null;
+    option2?: string | null;
+    price: string;
+  }>(variants: T[], rawVariants: any[]): T[] {
+    if (!variants.length || !rawVariants.length) return variants;
+
+    const priceById = new Map<string, string>();
+    const priceByOptions = new Map<string, string>();
+    for (const rv of rawVariants) {
+      if (rv?.id != null && rv.price != null && parseFloat(String(rv.price)) > 0) {
+        priceById.set(String(rv.id), String(rv.price));
+      }
+      const optKey = `${String(rv.option1 ?? "").trim()}|${String(rv.option2 ?? "").trim()}`.toLowerCase();
+      if (rv.price != null && parseFloat(String(rv.price)) > 0) {
+        priceByOptions.set(optKey, String(rv.price));
+      }
+    }
+
+    return variants.map((v) => {
+      if (parseFloat(v.price) > 0) return v;
+      const byId = priceById.get(String(v.id));
+      if (byId) return { ...v, price: byId };
+      const optKey = `${String(v.option1 ?? "").trim()}|${String(v.option2 ?? "").trim()}`.toLowerCase();
+      const byOpt = priceByOptions.get(optKey);
+      if (byOpt) return { ...v, price: byOpt };
+      return v;
+    });
+  }
+
+  /** Keep size×color catalog rows; drop per-design shadow rows on option3. */
+  function selectBaseCatalogVariants(rawVariants: any[]): any[] {
+    if (!rawVariants.length) return [];
+
+    const withoutDesignThird = rawVariants.filter(
+      (v) => v.option3 == null || v.option3 === "" || v.option3 === "base",
+    );
+    if (withoutDesignThird.length > 0) return withoutDesignThird;
+
+    // Some apparel catalogs use option3 for a real dimension (e.g. material).
+    const seen = new Set<string>();
+    const deduped: any[] = [];
+    for (const v of rawVariants) {
+      const key = `${v.option1 ?? ""}:${v.option2 ?? ""}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        deduped.push(v);
+      }
+    }
+    return deduped;
+  }
+
+  function mapVariantsForCatalogResponse(
+    variants: any[],
+    defaultAvailable = true,
+    productImages?: any[],
+  ): Array<{
+    id: number | string;
+    title: string;
+    option1: string | null;
+    option2: string | null;
+    option3: string | null;
+    price: string;
+    available: boolean;
+    imageSrc?: string | null;
+  }> {
+    const resolveImageSrc = (v: any): string | null => {
+      if (v.featured_image?.src) return String(v.featured_image.src);
+      if (v.image_id && productImages?.length) {
+        const img = productImages.find((i: any) => i.id === v.image_id);
+        if (img?.src) return String(img.src);
+      }
+      return null;
+    };
+    return variants.map((v: any) => ({
+      id: v.id,
+      title: v.title,
+      option1: v.option1 ?? null,
+      option2: v.option2 ?? null,
+      option3: v.option3 ?? null,
+      price: v.price ?? "0.00",
+      available: v.available !== undefined ? !!v.available : defaultAvailable,
+      imageSrc: resolveImageSrc(v),
+    }));
+  }
+
   app.get("/api/shopify/product-variants", async (req: Request, res: Response) => {
     try {
       const { shop, handle, productTypeId } = req.query;
@@ -4748,31 +5283,12 @@ ${textEdgeRestrictions}
           
           // Fallback 2: Use product type's own variant data from our database
           // This allows add-to-cart to work even when Shopify API has auth issues
-          const sizes = (typeof productType.sizes === 'string' ? JSON.parse(productType.sizes) : productType.sizes) as Array<{id: string, name: string}> || [];
-          const shopifyVariantIds = (typeof productType.shopifyVariantIds === 'string' 
-            ? JSON.parse(productType.shopifyVariantIds) 
-            : productType.shopifyVariantIds) as Record<string, number> || {};
-          
-          if (sizes.length > 0) {
-            console.log(`[Product Variants] Using fallback variant data from product type (${sizes.length} sizes)`);
-            
-            // Build variants from our product type data
-            const fallbackVariants = sizes.map((size, index) => {
-              // Look up Shopify variant ID from shopifyVariantIds (key is sizeName:colorName)
-              const variantKey = `${size.name}:default`;
-              const shopifyVariantId = shopifyVariantIds[variantKey];
-              
-              return {
-                id: shopifyVariantId || `fallback-${productType.id}-${size.id}`,
-                title: size.name,
-                option1: size.name,
-                option2: null,
-                option3: null,
-                price: "0.00", // Price will be set by Shopify when adding to cart
-                available: true
-              };
-            });
-            
+          const fallbackVariants = enrichVariantsWithShopifyPrices(
+            buildFallbackVariantsFromProductType(productType),
+            [],
+          );
+          if (fallbackVariants.length > 0) {
+            console.log(`[Product Variants] Using fallback variant data from product type (${fallbackVariants.length} variants)`);
             return res.json({ variants: fallbackVariants, source: "fallback" });
           }
           
@@ -4780,22 +5296,31 @@ ${textEdgeRestrictions}
         } else {
           const data = await adminResponse.json();
           const variants = data.product?.variants || [];
+          const productImages = data.product?.images || [];
           
           console.log(`[Product Variants] Fetched ${variants.length} variants via Admin API for productTypeId ${productTypeId}`);
-          
-          // Filter out design variants (those with option3 set — the 'Design' option)
-          // to prevent base variant infiltration in the storefront customizer.
-          const baseVariants = variants.filter((v: any) => !v.option3 || v.option3 === 'base');
+
+          const baseVariants = selectBaseCatalogVariants(variants);
+          if (baseVariants.length === 0) {
+            const fallbackVariants = enrichVariantsWithShopifyPrices(
+              buildFallbackVariantsFromProductType(productType),
+              variants,
+            );
+            if (fallbackVariants.length > 0) {
+              console.log(
+                `[Product Variants] Admin returned ${variants.length} variants but catalog empty after filter; using DB fallback (${fallbackVariants.length})`,
+              );
+              return res.json({ variants: fallbackVariants, source: "fallback" });
+            }
+            if (variants.length > 0) {
+              console.warn(
+                `[Product Variants] All ${variants.length} Admin variants filtered out; sample option3:`,
+                variants[0]?.option3,
+              );
+            }
+          }
           return res.json({
-            variants: baseVariants.map((v: any) => ({
-              id: v.id,
-              title: v.title,
-              option1: v.option1,
-              option2: v.option2,
-              option3: v.option3,
-              price: v.price,
-              available: true // Admin API doesn't include available field
-            }))
+            variants: mapVariantsForCatalogResponse(baseVariants, true, productImages),
           });
         }
       } else {
@@ -4817,22 +5342,13 @@ ${textEdgeRestrictions}
       
       const data = await response.json();
       const variants = data.product?.variants || [];
+      const productImages = data.product?.images || [];
       
       console.log(`[Product Variants] Fetched ${variants.length} variants from ${fetchUrl}`);
       
-      // Return just the essential variant data
-      // Filter out design variants (those with option3 set — the 'Design' option)
-      const baseVariants = variants.filter((v: any) => !v.option3 || v.option3 === 'base');
+      const baseVariants = selectBaseCatalogVariants(variants);
       res.json({
-        variants: baseVariants.map((v: any) => ({
-          id: v.id,
-          title: v.title,
-          option1: v.option1,
-          option2: v.option2,
-          option3: v.option3,
-          price: v.price,
-          available: v.available
-        }))
+        variants: mapVariantsForCatalogResponse(baseVariants, false, productImages),
       });
     } catch (error) {
       console.error("Error fetching Shopify product variants:", error);
@@ -5060,7 +5576,7 @@ ${textEdgeRestrictions}
         ? JSON.parse(productType.frameColors) 
         : productType.frameColors || [];
 
-      const [aspectW, aspectH] = (productType.aspectRatio || "1:1").split(":").map(Number);
+      const [aspectW, aspectH] = designerDisplayAspectRatio(productType).split(":").map(Number);
       const aspectRatio = aspectW / aspectH;
 
       const maxDimension = 1024;
@@ -5099,7 +5615,7 @@ ${textEdgeRestrictions}
         name: productType.name,
         description: productType.description,
         printifyBlueprintId: productType.printifyBlueprintId,
-        aspectRatio: productType.aspectRatio,
+        aspectRatio: designerDisplayAspectRatio(productType),
         printShape: productType.printShape || "rectangle",
         printAreaWidth: productType.printAreaWidth,
         printAreaHeight: productType.printAreaHeight,
@@ -5145,6 +5661,28 @@ ${textEdgeRestrictions}
         isAllOverPrint: productType.isAllOverPrint || false,
         aopTemplateId: productType.aopTemplateId || null,
         panelMappingTemplate: (productType as any).panelMappingTemplate || null,
+        storefrontMockupMode: (productType as any).storefrontMockupMode || null,
+        fulfillmentLayout: (productType as any).fulfillmentLayout || null,
+        effectiveStorefrontMockupMode: resolveStorefrontMockupMode({
+          isAllOverPrint: productType.isAllOverPrint,
+          storefrontMockupMode: (productType as any).storefrontMockupMode,
+          fulfillmentLayout: (productType as any).fulfillmentLayout,
+          printifyBlueprintId: productType.printifyBlueprintId,
+        }),
+        effectiveFulfillmentLayout: resolveFulfillmentLayout({
+          isAllOverPrint: productType.isAllOverPrint,
+          storefrontMockupMode: (productType as any).storefrontMockupMode,
+          fulfillmentLayout: (productType as any).fulfillmentLayout,
+          printifyBlueprintId: productType.printifyBlueprintId,
+        }),
+        useAopCustomizer: usesAopStorefrontCustomizer({
+          isAllOverPrint: productType.isAllOverPrint,
+          storefrontMockupMode: (productType as any).storefrontMockupMode,
+          fulfillmentLayout: (productType as any).fulfillmentLayout,
+          printifyBlueprintId: productType.printifyBlueprintId,
+        }),
+        onTheFlyTier: (productType as any).onTheFlyTier || null,
+        flatCalibration: parseFlatCalibrationManifest((productType as any).flatCalibration),
         placeholderPositions: typeof productType.placeholderPositions === "string"
           ? JSON.parse(productType.placeholderPositions || "[]")
           : productType.placeholderPositions || [],
@@ -5385,7 +5923,8 @@ ${textEdgeRestrictions}
       ? allFrameColors.filter((c: any) => savedColorIds.includes(c.id))
       : allFrameColors;
 
-    const [aspectW, aspectH] = (productTypeToUse.aspectRatio || "1:1").split(":").map(Number);
+    const displayAspectRatio = designerDisplayAspectRatio(productTypeToUse);
+    const [aspectW, aspectH] = displayAspectRatio.split(":").map(Number);
     const aspectRatio = aspectW / aspectH;
 
     const maxDimension = 1024;
@@ -5415,7 +5954,7 @@ ${textEdgeRestrictions}
       name: productTypeToUse.name,
       description: productTypeToUse.description,
       printifyBlueprintId: productTypeToUse.printifyBlueprintId,
-      aspectRatio: productTypeToUse.aspectRatio,
+      aspectRatio: displayAspectRatio,
       printShape: productTypeToUse.printShape || "rectangle",
       printAreaWidth: productTypeToUse.printAreaWidth,
       printAreaHeight: productTypeToUse.printAreaHeight,
@@ -5429,6 +5968,28 @@ ${textEdgeRestrictions}
       isAllOverPrint: productTypeToUse.isAllOverPrint || false,
       aopTemplateId: productTypeToUse.aopTemplateId || null,
       panelMappingTemplate: (productTypeToUse as any).panelMappingTemplate || null,
+      storefrontMockupMode: (productTypeToUse as any).storefrontMockupMode || null,
+      fulfillmentLayout: (productTypeToUse as any).fulfillmentLayout || null,
+      effectiveStorefrontMockupMode: resolveStorefrontMockupMode({
+        isAllOverPrint: productTypeToUse.isAllOverPrint,
+        storefrontMockupMode: (productTypeToUse as any).storefrontMockupMode,
+        fulfillmentLayout: (productTypeToUse as any).fulfillmentLayout,
+        printifyBlueprintId: productTypeToUse.printifyBlueprintId,
+      }),
+      effectiveFulfillmentLayout: resolveFulfillmentLayout({
+        isAllOverPrint: productTypeToUse.isAllOverPrint,
+        storefrontMockupMode: (productTypeToUse as any).storefrontMockupMode,
+        fulfillmentLayout: (productTypeToUse as any).fulfillmentLayout,
+        printifyBlueprintId: productTypeToUse.printifyBlueprintId,
+      }),
+      useAopCustomizer: usesAopStorefrontCustomizer({
+        isAllOverPrint: productTypeToUse.isAllOverPrint,
+        storefrontMockupMode: (productTypeToUse as any).storefrontMockupMode,
+        fulfillmentLayout: (productTypeToUse as any).fulfillmentLayout,
+        printifyBlueprintId: productTypeToUse.printifyBlueprintId,
+      }),
+      onTheFlyTier: (productTypeToUse as any).onTheFlyTier || null,
+      flatCalibration: parseFlatCalibrationManifest((productTypeToUse as any).flatCalibration),
       placeholderPositions: typeof productTypeToUse.placeholderPositions === "string"
         ? JSON.parse(productTypeToUse.placeholderPositions || "[]")
         : productTypeToUse.placeholderPositions || [],
@@ -5569,6 +6130,9 @@ ${textEdgeRestrictions}
         id: c.id,
         name: c.name,
         hex: c.hex,
+        variantAvailable: sizes.some((s: any) =>
+          hasExactVariantMapping(variantMap as VariantMap, s.id, c.id),
+        ),
       })),
       // Determine the label for the color/option selector
       colorLabel: getColorOptionName(frameColors, productTypeToUse.colorOptionName),
@@ -5708,17 +6272,20 @@ ${textEdgeRestrictions}
           "getProductType_fast_path"
         );
         if (fastPt) {
+          const productTypeForConfig = await prepareProductTypeForDesigner(fastPt, {
+            allowUnpublishedHarvest: true,
+          });
           const totalMs = Date.now() - startTime;
-          console.log(`[SF-DESIGNER ${requestId}] ✅ FAST PATH SUCCESS: id=${id} name="${fastPt.name}" ms=${totalMs}`);
+          console.log(`[SF-DESIGNER ${requestId}] ✅ FAST PATH SUCCESS: id=${id} name="${productTypeForConfig!.name}" ms=${totalMs}`);
           if (killSwitchTimeout) clearTimeout(killSwitchTimeout);
           responded = true;
           res.set("Cache-Control", "no-cache, no-store, must-revalidate");
           res.set("Pragma", "no-cache");
           res.set("Expires", "0");
-          const sizeChart = fastPt.printifyBlueprintId
-            ? await getNormalizedSizeChartWithTimeout(fastPt.printifyBlueprintId)
+          const sizeChart = productTypeForConfig!.printifyBlueprintId
+            ? await getNormalizedSizeChartWithTimeout(productTypeForConfig!.printifyBlueprintId)
             : null;
-          return res.json(buildDesignerConfig(fastPt, id, undefined, sizeChart));
+          return res.json(buildDesignerConfig(productTypeForConfig!, id, undefined, sizeChart));
         }
         console.log(`[SF-DESIGNER ${requestId}] FAST PATH miss for id=${id} — falling back to merchant lookup`);
       }
@@ -5854,14 +6421,20 @@ ${textEdgeRestrictions}
       const productTypeToUse = resolvedProductType;
       console.log(`[SF-DESIGNER ${requestId}] Using product type: ${productTypeToUse.name} (id=${productTypeToUse.id}, merchantId: ${productTypeToUse.merchantId})`);
 
+      let productTypeForConfig = await prepareProductTypeForDesigner(productTypeToUse, {
+        allowUnpublishedHarvest: true,
+      });
+      if (productTypeForConfig && productTypeForConfig !== productTypeToUse) {
+        console.log(`[SF-DESIGNER ${requestId}] Synced canonical flat calibration onto pt ${productTypeForConfig.id}`);
+      }
 
       // 5️⃣ BUILD CONFIG using shared helper
       console.log(`[SF-DESIGNER ${requestId}] [STEP 6] Building designer config...`);
       const buildStart = Date.now();
-      const sizeChart = productTypeToUse.printifyBlueprintId
-        ? await getNormalizedSizeChartWithTimeout(productTypeToUse.printifyBlueprintId)
+      const sizeChart = productTypeForConfig.printifyBlueprintId
+        ? await getNormalizedSizeChartWithTimeout(productTypeForConfig.printifyBlueprintId)
         : null;
-      const designerConfig = buildDesignerConfig(productTypeToUse, id, resolvedFrom, sizeChart);
+      const designerConfig = buildDesignerConfig(productTypeForConfig, id, resolvedFrom, sizeChart);
       console.log(`[SF-DESIGNER ${requestId}] [STEP 6] Config built - ${Date.now() - buildStart}ms`);
 
       // 6️⃣ SEND RESPONSE
@@ -6775,6 +7348,18 @@ ${textEdgeRestrictions}
       }
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);
+      if (sizeConfig && isApparel && !isAllOverPrint) {
+        const normalized = resolveGenerationAspectRatio(sizeConfig.aspectRatio, { isApparel, isAllOverPrint });
+        if (normalized !== sizeConfig.aspectRatio) {
+          const genDims = calculateGenDimensions(normalized);
+          sizeConfig = {
+            ...sizeConfig,
+            aspectRatio: normalized,
+            genWidth: genDims.genWidth,
+            genHeight: genDims.genHeight,
+          };
+        }
+      }
       // When user provides a description, it becomes the subject; style prefix provides artistic direction.
       // Pattern: "[userDescription], [stylePrefix]" so the AI prioritises the user's intent.
       const userDescSf = (rawUserPrompt || "").trim();
@@ -6829,19 +7414,7 @@ MANDATORY IMAGE REQUIREMENTS FOR ALL-OVER PRINT (AOP) - FOLLOW EXACTLY:
           }
         }
 
-        sizingRequirements = `
-
-MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
-1. ISOLATED DESIGN: Create a SINGLE, centered graphic design that is ISOLATED from any background scenery.
-2. SOLID HOT PINK (#FF00FF) BACKGROUND: The ENTIRE background MUST be a flat, uniform hot pink (#FF00FF) color. Every pixel that is not part of the design must be exactly #FF00FF. DO NOT create scenic backgrounds, landscapes, or detailed environments.
-3. DESIGN COLORS: Use ${designColors} The design MUST NOT contain any hot pink or magenta (#FF00FF) pixels — this color is reserved exclusively for the background.
-4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean #FF00FF space around it.
-5. CLEAN EDGES: The design must have crisp, clean edges against the hot pink background. No fuzzy, gradient, or semi-transparent edges.
-6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid hot pink background.
-7. PRINT-READY: This is for t-shirt/apparel printing — create an isolated graphic that can be printed on fabric.
-8. COMPOSITION FORMAT: Fill the canvas matching the requested aspect ratio with the design centered.
-9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
-`;
+        sizingRequirements = buildApparelChromaSizingRequirements(designColors);
       } else {
         // Decor: full-bleed edge-to-edge designs
         const printShape = productType?.printShape || "rectangle";
@@ -7027,14 +7600,24 @@ ${textEdgeRestrictions}
           let imageUrl: string;
           let thumbnailUrl: string | undefined;
           try {
-            const result = await saveImageToStorage(base64Data, mimeType, { isApparel, isAllOverPrint, targetDims });
+            const result = await saveImageToStorage(base64Data, mimeType, {
+              isApparel,
+              isAllOverPrint,
+              targetDims,
+              bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
+            });
             imageUrl = result.imageUrl;
             thumbnailUrl = result.thumbnailUrl;
             console.log(`${W} storage save OK ${Date.now() - saveStart}ms`);
           } catch (storageError) {
             console.warn(`${W} Storage save failed, retrying once:`, storageError);
             try {
-              const result = await saveImageToStorage(base64Data, mimeType, { isApparel, isAllOverPrint, targetDims });
+              const result = await saveImageToStorage(base64Data, mimeType, {
+                isApparel,
+                isAllOverPrint,
+                targetDims,
+                bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
+              });
               imageUrl = result.imageUrl;
               thumbnailUrl = result.thumbnailUrl;
               console.log(`${W} storage save OK on retry ${Date.now() - saveStart}ms`);
@@ -7598,16 +8181,13 @@ ${textEdgeRestrictions}
       }
 
       // ========== RESOLVE VARIANT ==========
-      const variantMapData = JSON.parse(productType.variantMap as string || "{}");
-      const variantKey = `${sizeId || 'default'}:${colorId || 'default'}`;
+      const variantMapData = JSON.parse(productType.variantMap as string || "{}") as VariantMap;
+      const variantKey = `${sizeId || "default"}:${colorId || "default"}`;
+      // allowSizeFallbackForColor: garment mockup photos are identical across sizes,
+      // so if xl:red is missing but s:red exists we can safely use it for display.
+      const resolvedVariant = resolveVariantFromMap(variantMapData, sizeId, colorId, { allowSizeFallbackForColor: true });
 
-      const variantData = variantMapData[variantKey] ||
-                          variantMapData[`${sizeId || 'default'}:default`] ||
-                          variantMapData[`default:${colorId || 'default'}`] ||
-                          variantMapData['default:default'] ||
-                          Object.values(variantMapData)[0];
-
-      if (!variantData || !variantData.printifyVariantId) {
+      if (!resolvedVariant?.entry.printifyVariantId) {
         return res.status(400).json({
           error: "Could not resolve Printify variant for mockup",
           debug: {
@@ -7618,6 +8198,7 @@ ${textEdgeRestrictions}
         });
       }
 
+      const variantData = resolvedVariant.entry;
       const blueprintId = productType.printifyBlueprintId;
       const providerId = variantData.providerId || productType.printifyProviderId || 1;
       const targetVariantId = variantData.printifyVariantId;
@@ -7640,15 +8221,34 @@ ${textEdgeRestrictions}
 
       // ========== GENERATE MOCKUP ==========
       const resolvedDoubleSided = resolveDoubleSided(productType);
-      const effectivePrintPlacement = !productType.isAllOverPrint
+      const toteFolded = usesToteFoldedFulfillment({
+        isAllOverPrint: productType.isAllOverPrint,
+        storefrontMockupMode: (productType as any).storefrontMockupMode,
+        fulfillmentLayout: (productType as any).fulfillmentLayout,
+        printifyBlueprintId: productType.printifyBlueprintId,
+      });
+      const useAopMockups = usesAopStorefrontCustomizer({
+        isAllOverPrint: productType.isAllOverPrint,
+        storefrontMockupMode: (productType as any).storefrontMockupMode,
+        fulfillmentLayout: (productType as any).fulfillmentLayout,
+        printifyBlueprintId: productType.printifyBlueprintId,
+      });
+      const effectivePrintPlacement = !useAopMockups
         ? (printPlacement === "front" || printPlacement === "back" || printPlacement === "both"
           ? printPlacement
-          : (typeof printOnBack === "boolean" ? (printOnBack ? "both" : "front") : (resolvedDoubleSided ? "both" : "front")))
+          : (typeof printOnBack === "boolean" ? (printOnBack ? "both" : "front") : (resolvedDoubleSided || toteFolded ? "both" : "front")))
         : undefined;
-      const effectiveDoubleSided = productType.isAllOverPrint
-        ? resolvedDoubleSided
-        : effectivePrintPlacement === "both";
-      const resolvedWrapAround = resolveWrapAround(productType);
+      const effectiveDoubleSided = toteFolded
+        ? true
+        : useAopMockups
+          ? resolvedDoubleSided
+          : effectivePrintPlacement === "both";
+      const resolvedWrapAround =
+        toteFolded
+          ? false
+          : effectivePrintPlacement === "both"
+            ? resolveWrapAround(productType)
+            : false;
       console.log(`[Storefront Mockup] [${correlationId}] resolveDoubleSided=${resolvedDoubleSided}, effectiveDoubleSided=${effectiveDoubleSided}, resolveWrapAround=${resolvedWrapAround}, productType.doubleSidedPrint=${productType.doubleSidedPrint}, productType.designerType=${productType.designerType}, productType.placeholderPositions=${productType.placeholderPositions}`);
       const { jobId, cached } = await enqueueMockupJob({
         blueprintId,
@@ -7664,7 +8264,7 @@ ${textEdgeRestrictions}
         printPlacement: effectivePrintPlacement,
         wrapAround: resolvedWrapAround,
         wrapDirection: resolvedWrapAround ? resolveWrapDirection(productType) : undefined,
-        aopPositions: productType.isAllOverPrint && productType.placeholderPositions
+        aopPositions: useAopMockups && productType.placeholderPositions
           ? JSON.parse(productType.placeholderPositions as string)
           : undefined,
         mirrorLegs: !!mirrorLegs,
@@ -8588,23 +9188,31 @@ ${textEdgeRestrictions}
       if (coupon.expiresAt && new Date() > coupon.expiresAt) {
         return res.status(400).json({ error: "Coupon has expired" });
       }
-      if (coupon.maxUses && coupon.usedCount >= coupon.maxUses) {
+      if (coupon.maxUses != null && coupon.usedCount >= coupon.maxUses) {
         return res.status(400).json({ error: "Coupon has reached maximum uses" });
       }
-      const redemption = await storage.getCouponRedemption(coupon.id, customer.id);
-      if (redemption) {
-        const balance = await storage.ensureCustomerBalance(customer.id);
-        return res.json({ ok: true, creditsAdded: 0, newBalance: balance.credits, alreadyRedeemed: true });
+      // maxUses null = unlimited total redemptions; same customer may redeem again.
+      const unlimitedUses = coupon.maxUses == null;
+      if (!unlimitedUses) {
+        const redemption = await storage.getCouponRedemption(coupon.id, customer.id);
+        if (redemption) {
+          return res.status(400).json({ error: "You have already redeemed this coupon" });
+        }
       }
       const ledgerResult = await storage.applyCreditLedgerEntry({
         customerId: customer.id,
         deltaCredits: coupon.creditAmount,
         deltaEntitlementCents: 0,
         reason: "coupon",
-        idempotencyKey: `coupon:${coupon.id}:${customer.id}`,
+        idempotencyKey: unlimitedUses
+          ? `coupon:${coupon.id}:${customer.id}:${crypto.randomUUID()}`
+          : `coupon:${coupon.id}:${customer.id}`,
         externalRef: String(coupon.id),
         metadata: { code: coupon.code },
       });
+      if (!ledgerResult.inserted) {
+        return res.status(409).json({ error: "Coupon could not be applied. Please try again." });
+      }
       await storage.createCouponRedemption({
         couponId: coupon.id,
         customerId: customer.id,
@@ -8620,7 +9228,7 @@ ${textEdgeRestrictions}
       });
       res.json({
         ok: true,
-        creditsAdded: ledgerResult.inserted ? coupon.creditAmount : 0,
+        creditsAdded: coupon.creditAmount,
         newBalance: ledgerResult.balance?.credits ?? customer.credits + coupon.creditAmount,
       });
     } catch (error: any) {
@@ -8920,7 +9528,12 @@ ${textEdgeRestrictions}
       const shop = req.headers["x-shopify-shop-domain"] as string;
       const order = req.body || {};
       const orderId = order.admin_graphql_api_id || order.id;
-      console.log("[Shopify Orders Paid] received", { shop, orderId });
+      // Compute webhook HMAC validity. The legacy credit-ledger path below is
+      // preserved as-is (additive change); the NEW Printify fulfillment path is
+      // strictly gated behind a valid HMAC + the FLAT_ORDER_FULFILLMENT_ENABLED
+      // flag, so forged/unverified requests can never trigger a Printify order.
+      const hmacValid = verifyShopifyWebhookHmac(req);
+      console.log("[Shopify Orders Paid] received", { shop, orderId, hmacValid });
       const shopifyCustomerId = order.customer?.admin_graphql_api_id || order.customer?.id;
       const discountApplications = Array.isArray(order.discount_applications) ? order.discount_applications : [];
       const appaiDiscountApplied = discountApplications.some((discount: any) =>
@@ -8966,6 +9579,55 @@ ${textEdgeRestrictions}
           });
         }
       }
+
+      // ── Flat/mesh on-the-fly Printify fulfillment (DISABLED BY DEFAULT) ──────
+      // Gated behind FLAT_ORDER_FULFILLMENT_ENABLED so it never runs in
+      // production until prerequisites (e.g. Protected Customer Data approval
+      // for shipping address access) are met. Requires a valid webhook HMAC.
+      // Runs async AFTER we return 200 so the webhook stays fast.
+      if (process.env.FLAT_ORDER_FULFILLMENT_ENABLED === "true" && hmacValid && Array.isArray(order.line_items)) {
+        const rawLines = order.line_items as any[];
+        const shippingAddress = order.shipping_address || order.customer?.default_address || {};
+        // Map the Shopify shipping address → Printify address_to. NOTE: this
+        // path depends on Protected Customer Data access; until approved, the
+        // flag stays OFF. We never source the address from an unverified body.
+        const addressTo = {
+          first_name: String(shippingAddress.first_name || order.customer?.first_name || "Customer"),
+          last_name: String(shippingAddress.last_name || order.customer?.last_name || ""),
+          email: String(order.email || order.contact_email || ""),
+          phone: String(shippingAddress.phone || order.phone || ""),
+          country: String(shippingAddress.country_code || shippingAddress.country || "US"),
+          region: String(shippingAddress.province_code || shippingAddress.province || ""),
+          address1: String(shippingAddress.address1 || ""),
+          address2: String(shippingAddress.address2 || ""),
+          city: String(shippingAddress.city || ""),
+          zip: String(shippingAddress.zip || ""),
+        };
+        const normalizedLines = rawLines.map((l) => normalizeShopifyOrderLine(l));
+        // Fire-and-forget: respond 200 first, run Printify work in the background.
+        void (async () => {
+          try {
+            const result = await submitFlatOrderToPrintify({
+              shopifyOrder: { ...order, __shop: shop, shop_domain: shop },
+              lines: normalizedLines,
+              sendToProduction: true,
+              addressTo,
+              idempotencyKey: `shopify-order-fulfill:${orderId}`,
+              isTest: false,
+            });
+            console.log("[Shopify Orders Paid] flat fulfillment", {
+              orderId,
+              status: result.status,
+              printifyOrderId: result.printifyOrderId,
+              eligibleLines: result.eligibleLines,
+              skippedReasons: result.skippedReasons,
+            });
+          } catch (e: any) {
+            console.error("[Shopify Orders Paid] flat fulfillment error:", e?.message || e);
+          }
+        })();
+      }
+
       return res.status(200).send("OK");
     } catch (error: any) {
       console.error("[Shopify Orders Paid] error:", error);
@@ -9468,6 +10130,25 @@ ${textEdgeRestrictions}
   });
 
   // Admin endpoints for product types (requires authentication)
+  app.get("/api/admin/product-types", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const merchant = await storage.getMerchantByUserId(userId);
+      if (!merchant) {
+        return res.status(404).json({ error: "Merchant not found" });
+      }
+
+      const types = isPlatformAdminRequest(req)
+        ? await storage.getActiveProductTypes()
+        : (await storage.getProductTypesByMerchant(merchant.id)).filter((pt) => pt.isActive);
+
+      res.json(types);
+    } catch (error) {
+      console.error("Error fetching admin product types:", error);
+      res.status(500).json({ error: "Failed to fetch product types" });
+    }
+  });
+
   app.post("/api/admin/product-types", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
@@ -9523,9 +10204,25 @@ ${textEdgeRestrictions}
 
   app.delete("/api/admin/product-types/:id", isAuthenticated, async (req: any, res: Response) => {
     try {
-      const id = parseInt(req.params.id);
-      await storage.deleteProductType(id);
-      res.json({ success: true });
+      const userId = req.user.claims.sub;
+      const productTypeId = parseInt(req.params.id, 10);
+      if (!Number.isFinite(productTypeId)) {
+        return res.status(400).json({ error: "Invalid product type ID" });
+      }
+
+      const merchant = await storage.getMerchantByUserId(userId);
+      if (!merchant) {
+        return res.status(404).json({ error: "Merchant not found" });
+      }
+
+      const productType = await storage.getProductType(productTypeId);
+      const accessErr = adminProductTypeAccessError(req, productType, merchant);
+      if (accessErr) {
+        return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
+      }
+
+      await deleteProductTypeWithCleanup(productType!);
+      res.json({ success: true, message: "Product type deleted" });
     } catch (error) {
       console.error("Error deleting product type:", error);
       res.status(500).json({ error: "Failed to delete product type" });
@@ -10555,27 +11252,42 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "Coupon has expired" });
       }
 
-      if (coupon.maxUses && coupon.usedCount >= coupon.maxUses) {
+      if (coupon.maxUses != null && coupon.usedCount >= coupon.maxUses) {
         return res.status(400).json({ error: "Coupon has reached maximum uses" });
       }
 
-      // Add credits to customer
-      await storage.updateCustomer(customer.id, {
-        credits: customer.credits + coupon.creditAmount,
-      });
+      const unlimitedUses = coupon.maxUses == null;
+      if (!unlimitedUses) {
+        const redemption = await storage.getCouponRedemption(coupon.id, customer.id);
+        if (redemption) {
+          return res.status(400).json({ error: "You have already redeemed this coupon" });
+        }
+      }
 
-      // Record redemption
+      const ledgerResult = await storage.applyCreditLedgerEntry({
+        customerId: customer.id,
+        deltaCredits: coupon.creditAmount,
+        deltaEntitlementCents: 0,
+        reason: "coupon",
+        idempotencyKey: unlimitedUses
+          ? `coupon:${coupon.id}:${customer.id}:${crypto.randomUUID()}`
+          : `coupon:${coupon.id}:${customer.id}`,
+        externalRef: String(coupon.id),
+        metadata: { code: coupon.code },
+      });
+      if (!ledgerResult.inserted) {
+        return res.status(409).json({ error: "Coupon could not be applied. Please try again." });
+      }
+
       await storage.createCouponRedemption({
         couponId: coupon.id,
         customerId: customer.id,
       });
 
-      // Update coupon usage count
       await storage.updateCoupon(coupon.id, {
         usedCount: coupon.usedCount + 1,
       });
 
-      // Log credit transaction
       await storage.createCreditTransaction({
         customerId: customer.id,
         type: "coupon",
@@ -10586,7 +11298,7 @@ ${textEdgeRestrictions}
       res.json({
         success: true,
         creditsAdded: coupon.creditAmount,
-        newBalance: customer.credits + coupon.creditAmount,
+        newBalance: ledgerResult.balance?.credits ?? customer.credits + coupon.creditAmount,
       });
     } catch (error) {
       console.error("Error redeeming coupon:", error);
@@ -10822,7 +11534,11 @@ ${textEdgeRestrictions}
   // ==================== PRINTIFY CATALOG INTEGRATION ====================
 
   // Cache for provider location mappings (provider_id -> location data)
-  const providerLocationCache = new Map<string, { location?: { country: string }, fulfillment_countries: string[] }>();
+  const providerLocationCache = new Map<string, {
+    title?: string;
+    location?: { country: string };
+    fulfillment_countries: string[];
+  }>();
   
   // Cache for blueprint provider IDs (blueprint_id -> provider_ids[])
   const blueprintProviderCache = new Map<number, number[]>();
@@ -10897,6 +11613,7 @@ ${textEdgeRestrictions}
                     if (detailResponse.ok) {
                       const details = await detailResponse.json();
                       providerLocationCache.set(String(provider.id), {
+                        title: details.title,
                         location: details.location,
                         fulfillment_countries: details.fulfillment_countries || [],
                       });
@@ -11136,6 +11853,7 @@ ${textEdgeRestrictions}
                 if (response.ok) {
                   const details = await response.json();
                   providerLocationCache.set(String(providerId), {
+                    title: details.title,
                     location: details.location,
                     fulfillment_countries: details.fulfillment_countries || [],
                   });
@@ -11149,24 +11867,46 @@ ${textEdgeRestrictions}
       }
       
       // Build response with blueprint -> location data mapping
-      const result: Record<number, { providerIds: number[]; locations: string[] }> = {};
-      
+      const result: Record<
+        number,
+        {
+          providerIds: number[];
+          locations: string[];
+          shipsFrom: string[];
+          shipsTo: string[];
+          primaryProviderTitle: string | null;
+        }
+      > = {};
+
       for (const [bpId, providerIds] of Object.entries(blueprintProviderMap)) {
         const locations = new Set<string>();
-        
+        const shipsFrom = new Set<string>();
+        const shipsTo = new Set<string>();
+        let primaryProviderTitle: string | null = null;
+
         for (const providerId of providerIds as number[]) {
           const providerData = providerLocationCache.get(String(providerId));
           if (providerData) {
+            if (!primaryProviderTitle && providerData.title) {
+              primaryProviderTitle = providerData.title;
+            }
             if (providerData.location?.country) {
               locations.add(providerData.location.country);
+              shipsFrom.add(providerData.location.country);
             }
-            providerData.fulfillment_countries?.forEach((c: string) => locations.add(c));
+            providerData.fulfillment_countries?.forEach((c: string) => {
+              locations.add(c);
+              shipsTo.add(c);
+            });
           }
         }
-        
+
         result[Number(bpId)] = {
           providerIds: providerIds as number[],
-          locations: Array.from(locations)
+          locations: Array.from(locations),
+          shipsFrom: Array.from(shipsFrom),
+          shipsTo: Array.from(shipsTo),
+          primaryProviderTitle,
         };
       }
       
@@ -11379,27 +12119,16 @@ ${textEdgeRestrictions}
       }
 
       // Get providers if no providerId specified
-      let actualProviderId = providerId;
-      if (!actualProviderId) {
-        const providersResponse = await fetch(
-          `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers.json`,
-          {
-            headers: {
-              "Authorization": `Bearer ${merchant.printifyApiToken}`,
-              "Content-Type": "application/json"
-            }
-          }
-        );
-        if (providersResponse.ok) {
-          const providers = await providersResponse.json();
-          if (providers && providers.length > 0) {
-            actualProviderId = providers[0].id;
-          }
-        }
+      if (!providerId) {
+        return res.status(400).json({
+          error: "providerId is required — each print provider has different variants, costs, and shipping.",
+          code: "PROVIDER_REQUIRED",
+        });
       }
 
-      if (!actualProviderId) {
-        return res.status(400).json({ error: "No provider available for this blueprint" });
+      const actualProviderId = Number(providerId);
+      if (!Number.isFinite(actualProviderId) || actualProviderId <= 0) {
+        return res.status(400).json({ error: "Invalid providerId" });
       }
 
       const response = await fetch(
@@ -11467,7 +12196,7 @@ ${textEdgeRestrictions}
         // Check options for size
         if (!extractedSizeId && (options.size || options.Size)) {
           const sizeVal = options.size || options.Size;
-          extractedSizeId = sizeVal.toLowerCase().replace(/\s+/g, '_');
+          extractedSizeId = normalizeApparelSizeId(sizeVal);
           if (!sizesMap.has(extractedSizeId)) {
             sizesMap.set(extractedSizeId, { id: extractedSizeId, name: sizeVal, width: 0, height: 0 });
           }
@@ -11491,7 +12220,7 @@ ${textEdgeRestrictions}
               break;
             }
             if (apparelSizesLower.includes(part.toLowerCase())) {
-              extractedSizeId = part.toLowerCase();
+              extractedSizeId = normalizeApparelSizeId(part);
               if (!sizesMap.has(extractedSizeId)) {
                 sizesMap.set(extractedSizeId, { id: extractedSizeId, name: part, width: 0, height: 0 });
               }
@@ -11499,7 +12228,7 @@ ${textEdgeRestrictions}
             }
             // Named sizes (Small, Medium, Large, King, Queen, One Size, etc.)
             if (namedSizes.includes(part.toLowerCase())) {
-              extractedSizeId = part.toLowerCase().replace(/\s+/g, '_');
+              extractedSizeId = normalizeApparelSizeId(part);
               if (!sizesMap.has(extractedSizeId)) {
                 sizesMap.set(extractedSizeId, { id: extractedSizeId, name: part, width: 0, height: 0 });
               }
@@ -11523,25 +12252,10 @@ ${textEdgeRestrictions}
           }
         }
         
-        // Extract color
-        let colorName = "";
-        if (options.color || options.colour || options.Color || options.Colour || options.frame_color) {
-          colorName = options.color || options.colour || options.Color || options.Colour || options.frame_color;
-        } else if (title.includes(" / ") || title.includes("/")) {
-          // Use " / " split to preserve combined model names like "iPhone 12/12 Pro"
-          const _cParts = title.includes(" / ")
-            ? title.split(" / ").map((p: string) => p.trim())
-            : title.split("/").map((p: string) => p.trim());
-          for (let i = _cParts.length - 1; i >= 0; i--) {
-            if (!looksLikeSize(_cParts[i])) {
-              colorName = _cParts[i];
-              break;
-            }
-          }
-        }
-        
+        const colorName = extractPrintifyColorName(options, title);
+
         if (colorName && !colorsMap.has(colorName.toLowerCase())) {
-          const colorId = colorName.toLowerCase().replace(/\s+/g, '_');
+          const colorId = slugPrintifyColorId(colorName);
           // Comprehensive color hex lookup - Printify API doesn't provide hex codes
           const colorHexMap: Record<string, string> = {
             // Basic colors
@@ -11768,8 +12482,8 @@ ${textEdgeRestrictions}
     const detectedFront = byPosition("front") || firstUrl;
     const front = primaryUrl || detectedFront;
     const lifestyle = available.find((img) => img.source === "blueprint" && img.url !== front)?.url || available.find((img) => img.url !== front)?.url;
-    const uniqueGallery = Array.from(new Set((galleryUrls || []).filter(Boolean))).slice(0, 3);
-    const uniqueCustom = Array.from(new Set((customUrls || []).filter(Boolean))).slice(0, 3);
+    const uniqueGallery = Array.from(new Set((galleryUrls || []).filter(Boolean))).slice(0, 4);
+    const uniqueCustom = Array.from(new Set((customUrls || []).filter(Boolean))).slice(0, 4);
     return {
       ...(front ? { front } : {}),
       ...(lifestyle ? { lifestyle } : {}),
@@ -11804,7 +12518,7 @@ ${textEdgeRestrictions}
   app.post("/api/admin/printify/import", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
-      const { blueprintId, name, description, selectedSizeIds, selectedColorIds, placeholderPrimaryUrl, placeholderGalleryUrls, customPlaceholderUrls } = req.body;
+      const { blueprintId, name, description, providerId: bodyProviderId, selectedSizeIds, selectedColorIds, placeholderPrimaryUrl, placeholderGalleryUrls, customPlaceholderUrls } = req.body;
       const merchant = await storage.getMerchantByUserId(userId);
       
       if (!merchant) {
@@ -11819,13 +12533,59 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "Blueprint ID and name are required" });
       }
 
-      // Check if this blueprint is already imported
-      const existingTypes = await storage.getProductTypes();
-      const alreadyImported = existingTypes.find(pt => pt.printifyBlueprintId === parseInt(blueprintId));
+      const blueprintIdNum = parseInt(blueprintId, 10);
+      const catalogEntry = await getPlatformCatalogEntry(blueprintIdNum);
+      const isOperator = isPlatformAdminRequest(req);
+
+      if (!catalogEntry || catalogEntry.kind === "blocked") {
+        return res.status(403).json({
+          error: "This product is not available in the AppAI catalog yet.",
+          code: "BLUEPRINT_NOT_ALLOWED",
+        });
+      }
+
+      if (isOperator) {
+        if (!(await canOperatorImportEntry(catalogEntry))) {
+          return res.status(403).json({ error: "Blueprint not allowed", code: "BLUEPRINT_NOT_ALLOWED" });
+        }
+      } else if (!(await canMerchantImportEntry(catalogEntry))) {
+        if (catalogEntry.kind === "flat" || catalogEntry.kind === "aop") {
+          return res.status(403).json({
+            error: "Platform calibration for this product is not published yet.",
+            code: "CANONICAL_NOT_PUBLISHED",
+          });
+        }
+        return res.status(403).json({
+          error: "This product is not available in the AppAI catalog yet.",
+          code: "BLUEPRINT_NOT_ALLOWED",
+        });
+      }
+
+      let canonicalFlatMeta: CanonicalPublishedMeta | null = null;
+      let canonicalManifest: Awaited<ReturnType<typeof resolveCanonicalFlatCalibration>>["manifest"] = null;
+      if (catalogEntry.kind === "flat") {
+        const resolved = await resolveCanonicalFlatCalibration(blueprintIdNum, {
+          allowUnpublishedHarvest: isOperator,
+        });
+        canonicalFlatMeta = resolved.meta;
+        canonicalManifest = resolved.manifest;
+        if (!isOperator && catalogEntry.status === "published" && !canonicalManifest) {
+          return res.status(403).json({
+            error: "Platform calibration for this product is not published yet.",
+            code: "CANONICAL_NOT_PUBLISHED",
+          });
+        }
+      }
+
+      // Check if this blueprint is already imported for this merchant
+      const existingTypes = await storage.getProductTypesByMerchant(merchant.id);
+      const alreadyImported = existingTypes.find((pt) => pt.printifyBlueprintId === blueprintIdNum);
       if (alreadyImported) {
-        return res.status(400).json({ 
-          error: "Blueprint already imported",
-          existingProductType: alreadyImported
+        return res.status(400).json({
+          error: `This product is already in your catalog as "${alreadyImported.name}". Open Products to edit it, or delete it there before importing again.`,
+          code: "BLUEPRINT_ALREADY_IMPORTED",
+          existingProductTypeId: alreadyImported.id,
+          existingProductName: alreadyImported.name,
         });
       }
 
@@ -11851,8 +12611,25 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "No print providers available for this blueprint" });
       }
 
-      // Use provided provider ID or default to first provider
-      const providerId = req.body.providerId || providers[0].id;
+      if (!bodyProviderId) {
+        return res.status(400).json({
+          error: "Print provider is required. Each supplier has different colours, production costs, and shipping.",
+          code: "PROVIDER_REQUIRED",
+        });
+      }
+
+      const providerId = Number(bodyProviderId);
+      if (!Number.isFinite(providerId) || providerId <= 0) {
+        return res.status(400).json({ error: "Invalid print provider ID" });
+      }
+
+      const providerValid = providers.some((p: { id: number }) => Number(p.id) === providerId);
+      if (!providerValid) {
+        return res.status(400).json({
+          error: "Selected print provider is not available for this blueprint.",
+          code: "PROVIDER_INVALID",
+        });
+      }
 
       // Fetch blueprint details to get color hex codes from options
       const blueprintResponse = await fetchWithRetry(
@@ -12162,7 +12939,7 @@ ${textEdgeRestrictions}
         // 2. Check options for size (normalize various key names)
         if (!extractedSizeId && (options.size || options.Size)) {
           const sizeVal = options.size || options.Size;
-          extractedSizeId = sizeVal.toLowerCase().replace(/\s+/g, '_');
+          extractedSizeId = normalizeApparelSizeId(sizeVal);
           if (!sizesMap.has(extractedSizeId)) {
             sizesMap.set(extractedSizeId, { id: extractedSizeId, name: sizeVal, width: 0, height: 0 });
           }
@@ -12193,7 +12970,7 @@ ${textEdgeRestrictions}
             
             // Check apparel sizes (S, M, L, XL, 2XL, etc.)
             if (apparelSizesLower.includes(part.toLowerCase())) {
-              extractedSizeId = part.toLowerCase();
+              extractedSizeId = normalizeApparelSizeId(part);
               if (!sizesMap.has(extractedSizeId)) {
                 sizesMap.set(extractedSizeId, { id: extractedSizeId, name: part, width: 0, height: 0 });
               }
@@ -12202,7 +12979,7 @@ ${textEdgeRestrictions}
             
             // Check named sizes (Small, Medium, Large, King, Queen)
             if (namedSizes.includes(part.toLowerCase())) {
-              extractedSizeId = part.toLowerCase().replace(/\s+/g, '_');
+              extractedSizeId = normalizeApparelSizeId(part);
               if (!sizesMap.has(extractedSizeId)) {
                 sizesMap.set(extractedSizeId, { id: extractedSizeId, name: part, width: 0, height: 0 });
               }
@@ -12261,10 +13038,7 @@ ${textEdgeRestrictions}
               }
             }
           }
-          const primaryDims =
-            variantPlaceholders["front"] ||
-            variantPlaceholders["default"] ||
-            Object.values(variantPlaceholders)[0];
+          const primaryDims = pickPrimaryPrintPlaceholderDims(variantPlaceholders);
           if (primaryDims) {
             const existing = placeholderDimensionsBySize[extractedSizeId];
             // Keep the largest area seen for this size across variants
@@ -12274,36 +13048,12 @@ ${textEdgeRestrictions}
           }
         }
 
-        // Try to extract color from title (after the "/" or from options)
-        let colorName = "";
-        // First check options object (normalize various color option names)
-        if (options.color) {
-          colorName = options.color;
-        } else if (options.colour) {
-          colorName = options.colour;
-        } else if (options.frame_color) {
-          colorName = options.frame_color;
-        } else if (options.Color) {
-          colorName = options.Color;
-        } else if (options.Colour) {
-          colorName = options.Colour;
-        } else if (title.includes(" / ") || title.includes("/")) {
-          // Use " / " (space-slash-space) split to preserve combined model names like "iPhone 12/12 Pro".
-          // Fall back to "/" split only if no " / " separator exists.
-          const _cParts = title.includes(" / ")
-            ? title.split(" / ").map((p: string) => p.trim())
-            : title.split("/").map((p: string) => p.trim());
-          for (let i = _cParts.length - 1; i >= 0; i--) {
-            if (looksLikeSize(_cParts[i])) continue;
-            colorName = _cParts[i];
-            break;
-          }
-        }
+        const colorName = extractPrintifyColorName(options, title, blueprintColorOptionName);
 
         // Extract color and track the extractedColorId for this variant
         let extractedColorId = "";
         if (colorName) {
-          extractedColorId = colorName.toLowerCase().replace(/\s+/g, '_');
+          extractedColorId = slugPrintifyColorId(colorName);
           
           if (!colorsMap.has(colorName.toLowerCase())) {
             // Map common color names to hex values (frames + apparel)
@@ -12380,7 +13130,7 @@ ${textEdgeRestrictions}
         // Use the extractedSizeId and extractedColorId captured during this iteration
         // Only add to variantMap if we have at least a size or color - no fallback keys
         if (extractedSizeId || extractedColorId) {
-          const mapKey = `${extractedSizeId || 'default'}:${extractedColorId || 'default'}`;
+          const mapKey = variantMapKey(extractedSizeId || "default", extractedColorId || "default");
           variantMap[mapKey] = { printifyVariantId: variant.id, providerId };
         } else {
           // Neither size nor color could be extracted - skip this variant for mockup generation
@@ -12393,27 +13143,31 @@ ${textEdgeRestrictions}
       let sizes = Array.from(sizesMap.values());
       const frameColors = Array.from(colorsMap.values());
 
-      // Compute per-size aspect ratios from per-size placeholder dimensions collected above.
-      // Helper uses the same thresholds as the product-level ratio calculation.
-      const computeAspectRatioFromDims = (w: number, h: number): string => {
-        const gcdFn = (a: number, b: number): number => b === 0 ? a : gcdFn(b, a % b);
-        const divisor = gcdFn(w, h);
-        const sw = w / divisor;
-        const sh = h / divisor;
-        if (sw <= 20 && sh <= 20) return `${sw}:${sh}`;
-        const r = w / h;
-        if (r >= 1.7) return "16:9";
-        if (r >= 1.4) return "3:2";
-        if (r >= 1.2) return "4:3";
-        if (r >= 0.9) return "1:1";
-        if (r >= 0.7) return "3:4";
-        if (r >= 0.6) return "2:3";
-        return "9:16";
+      // Detect apparel before per-size aspect ratio (sizes.map uses isApparelProduct).
+      const lowerName = name.toLowerCase();
+      const lowerDesc = (description || "").toLowerCase();
+      const combined = `${lowerName} ${lowerDesc}`;
+      const matchesWord = (text: string, word: string): boolean => {
+        const regex = new RegExp(`\\b${word}\\b`, 'i');
+        return regex.test(text);
       };
+      const apparelKeywords = [
+        "shirt", "t-shirt", "tshirt", "hoodie", "sweatshirt", "tank top",
+        "tee", "apparel", "jersey", "jacket", "leggings", "shorts",
+        "dress", "skirt", "polo", "onesie", "bodysuit", "sweater",
+        "pants", "joggers", "romper", "blouse", "cardigan", "vest",
+        "coat", "bikini", "swimsuit", "underwear", "boxers", "briefs",
+        "socks", "apron", "scrubs"
+      ];
+      const isApparelProduct = apparelKeywords.some(kw => matchesWord(combined, kw));
+
       sizes = sizes.map(s => {
         const dims = placeholderDimensionsBySize[s.id];
         if (dims) {
-          const ar = computeAspectRatioFromDims(dims.width, dims.height);
+          let w = dims.width;
+          let h = dims.height;
+          if (isApparelProduct && w > h) [w, h] = [h, w];
+          const ar = computeAspectRatioFromPixelDims(w, h);
           console.log(`[Import] Per-size aspect ratio: sizeId=${s.id} pxDims=${dims.width}x${dims.height} → ${ar}`);
           return { ...s, aspectRatio: ar };
         }
@@ -12474,28 +13228,6 @@ ${textEdgeRestrictions}
       // Detect product type FIRST to determine sizeType
       // This is more reliable than checking dimensions since some dimensional products
       // may not have dimensions in the variant data
-      const lowerName = name.toLowerCase();
-      const lowerDesc = (description || "").toLowerCase();
-      const combined = `${lowerName} ${lowerDesc}`;
-      
-      // Helper function for word boundary matching (prevents "bra" matching "bracelet")
-      const matchesWord = (text: string, word: string): boolean => {
-        const regex = new RegExp(`\\b${word}\\b`, 'i');
-        return regex.test(text);
-      };
-      
-      // Apparel-like products use label sizes (S/M/L/XL)
-      const apparelKeywords = [
-        "shirt", "t-shirt", "tshirt", "hoodie", "sweatshirt", "tank top",
-        "tee", "apparel", "jersey", "jacket", "leggings", "shorts", 
-        "dress", "skirt", "polo", "onesie", "bodysuit", "sweater", 
-        "pants", "joggers", "romper", "blouse", "cardigan", "vest", 
-        "coat", "bikini", "swimsuit", "underwear", "boxers", "briefs", 
-        "socks", "apron", "scrubs"
-      ];
-      const isApparelProduct = apparelKeywords.some(kw => matchesWord(combined, kw));
-      
-      // Known dimensional products that may not have dimension data in variants
       const dimensionalKeywords = [
         "pillow", "cushion", "blanket", "throw", "mug", "cup", "tumbler",
         "poster", "print", "canvas", "frame", "artwork", "wall art",
@@ -12522,13 +13254,7 @@ ${textEdgeRestrictions}
         sizeType = "label";
       }
 
-      // Determine aspect ratio using GCD for accurate ratio
-      const gcd = (a: number, b: number): number => b === 0 ? a : gcd(b, a % b);
-      
-      // Get primary placeholder dimensions - prefer "front", then "default", then first available
-      const primaryPosition = placeholderDimensions["front"] || 
-                              placeholderDimensions["default"] || 
-                              Object.values(placeholderDimensions)[0];
+      const primaryPosition = pickPrimaryPrintPlaceholderDims(placeholderDimensions);
       const printAreaWidthPx = primaryPosition?.width || 0;
       const printAreaHeightPx = primaryPosition?.height || 0;
       
@@ -12539,37 +13265,19 @@ ${textEdgeRestrictions}
       // Start with product-type-appropriate defaults
       let aspectRatio: string;
       if (isApparelProduct) {
-        // Apparel print areas are typically portrait ~2:3
         aspectRatio = "2:3";
       } else if (isPhoneCase) {
-        // Phone cases are tall portrait ~9:16
         aspectRatio = "9:16";
       } else {
-        // Default for other products
         aspectRatio = "3:4";
       }
       
-      // PRIORITY 1: Use print area pixel dimensions from Printify placeholders (most accurate)
-      // This handles wrap-around products like tumblers correctly
+      // PRIORITY 1: Use front/chest print placeholder pixels (never sleeve/neck slots).
       if (printAreaWidthPx > 0 && printAreaHeightPx > 0) {
-        const w = printAreaWidthPx;
-        const h = printAreaHeightPx;
-        const divisor = gcd(w, h);
-        const simplifiedW = w / divisor;
-        const simplifiedH = h / divisor;
-        // Limit simplification to reasonable ratios (avoid things like 2795:2100)
-        if (simplifiedW <= 20 && simplifiedH <= 20) {
-          aspectRatio = `${simplifiedW}:${simplifiedH}`;
+        if (isApparelProduct) {
+          aspectRatio = resolveStandardApparelAspectRatioFromPlaceholders(placeholderDimensions, aspectRatio);
         } else {
-          // For complex ratios, approximate to common aspect ratios
-          const ratio = w / h;
-          if (ratio >= 1.7) aspectRatio = "16:9";
-          else if (ratio >= 1.4) aspectRatio = "3:2";
-          else if (ratio >= 1.2) aspectRatio = "4:3";
-          else if (ratio >= 0.9) aspectRatio = "1:1";
-          else if (ratio >= 0.7) aspectRatio = "3:4";
-          else if (ratio >= 0.6) aspectRatio = "2:3";
-          else aspectRatio = "9:16";
+          aspectRatio = computeAspectRatioFromPixelDims(printAreaWidthPx, printAreaHeightPx);
         }
       }
       // PRIORITY 2: Override with calculated dimensions from size names if no placeholder data
@@ -12660,7 +13368,7 @@ ${textEdgeRestrictions}
       // Apparel (t-shirts, hoodies, etc.) always defaults to front-only print.
       // Having a "back" placeholder does NOT mean we should print on the back by default.
       // Only non-apparel products (pillows, tote bags, etc.) should be auto-flagged as double-sided.
-      const doubleSidedPrint = designerType !== "apparel" && (
+      const doubleSidedPrintBase = designerType !== "apparel" && (
         hasBackPlaceholder ||
         decodedCombined.includes("double sided") ||
         decodedCombined.includes("double-sided") ||
@@ -12669,8 +13377,12 @@ ${textEdgeRestrictions}
         decodedCombined.includes("both sides")
       );
 
-
-
+      const catalogStorefrontMode = (catalogEntry as any).storefrontMockupMode ?? null;
+      const catalogFulfillmentLayout =
+        (catalogEntry as any).fulfillmentLayout ??
+        (blueprintIdNum === 1300 ? "tote_folded_v1" : null);
+      const toteFoldedImport = catalogFulfillmentLayout === "tote_folded_v1";
+      const doubleSidedPrint = toteFoldedImport ? true : doubleSidedPrintBase;
       // Build the persisted placeholder positions list (all positions with their dimensions)
       const placeholderPositions = positionKeys.map(pos => ({
         position: pos,
@@ -12678,12 +13390,68 @@ ${textEdgeRestrictions}
         height: placeholderDimensions[pos].height,
       }));
 
+      const importSizeIds: string[] = Array.isArray(selectedSizeIds) && selectedSizeIds.length > 0
+        ? selectedSizeIds
+        : sizes.map((s: { id: string }) => s.id);
+      const importColorIds: string[] = Array.isArray(selectedColorIds) && selectedColorIds.length > 0
+        ? selectedColorIds
+        : frameColors.map((c: { id: string }) => c.id);
+      const importVariantCount = countActiveVariantMapKeys(variantMap, importSizeIds, importColorIds);
+      if (importVariantCount > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+        return res.status(400).json({
+          error: `Too many variants (${importVariantCount}). Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} per product. Select fewer sizes or colors.`,
+          code: "SHOPIFY_VARIANT_LIMIT",
+          variantCount: importVariantCount,
+        });
+      }
+
+      const importPrintifyVariantIds = [
+        ...new Set(
+          Object.values(variantMap)
+            .map((e: any) => Number(e?.printifyVariantId))
+            .filter((id) => Number.isFinite(id) && id > 0),
+        ),
+      ];
+      const { costs: resolvedImportCosts, source: importCostsSource } =
+        await resolvePrintifyProductionCosts({
+          merchant,
+          blueprintId: blueprintIdNum,
+          providerId,
+          catalogVariants: variants,
+          printifyVariantIds: importPrintifyVariantIds,
+          baseMockupImages,
+        });
+      const printifyCostsAtImport =
+        Object.keys(resolvedImportCosts).length > 0
+          ? serializePrintifyCostsCache(resolvedImportCosts)
+          : null;
+      if (printifyCostsAtImport) {
+        console.log(
+          `[Import] Stored ${Object.keys(resolvedImportCosts).length} production costs via ${importCostsSource}`,
+        );
+      } else {
+        console.warn(
+          `[Import] No production costs resolved for blueprint ${blueprintIdNum} — customizer markup pricing will require manual entry until costs are refreshed`,
+        );
+      }
+
       // Create the product type with parsed data
+      const initialFlatStatus =
+        catalogEntry.kind === "printify"
+          ? "unsupported"
+          : catalogEntry.kind === "flat" && canonicalManifest
+            ? "ready"
+            : catalogEntry.kind === "flat"
+              ? "pending"
+              : catalogEntry.kind === "aop"
+                ? "unsupported"
+                : "pending";
+
       const productType = await storage.createProductType({
         merchantId: merchant.id,
         name,
         description: description || null,
-        printifyBlueprintId: parseInt(blueprintId),
+        printifyBlueprintId: blueprintIdNum,
         printifyProviderId: providerId,
         sizes: JSON.stringify(sizes),
         frameColors: JSON.stringify(frameColors),
@@ -12707,41 +13475,197 @@ ${textEdgeRestrictions}
         placeholderPositions: JSON.stringify(placeholderPositions),
         panelFlatLayImages: JSON.stringify(panelFlatLayImages),
         colorOptionName: blueprintColorOptionName,
+        flatCalibrationStatus: initialFlatStatus,
+        panelMappingTemplate:
+          catalogEntry.kind === "aop" ? catalogEntry.panelMappingTemplate ?? null : null,
+        storefrontMockupMode: catalogStorefrontMode,
+        fulfillmentLayout: catalogFulfillmentLayout,
         isActive: true,
         sortOrder: existingTypes.length,
+        ...(printifyCostsAtImport ? { printifyCosts: printifyCostsAtImport } : {}),
       });
 
+      if (toteFoldedImport) {
+        await storage.updateProductType(productType.id, {
+          doubleSidedPrint: true,
+          flatCalibrationStatus: "unsupported",
+          storefrontMockupMode: catalogStorefrontMode || "flat",
+          fulfillmentLayout: "tote_folded_v1",
+        });
+      }
+
+      // Seed shared canonical calibration (instant — no per-merchant harvest).
+      if (catalogEntry.kind === "flat" && canonicalManifest) {
+        await storage.updateProductType(productType.id, {
+          onTheFlyTier: canonicalFlatMeta?.tier ?? canonicalManifest.tier,
+          flatCalibrationStatus: "ready",
+          flatCalibration: JSON.stringify(
+            merchantManifestFromCanonical(canonicalManifest, productType.id, productType.name),
+          ),
+        });
+      } else if (catalogEntry.kind === "aop" && catalogEntry.panelMappingTemplate && catalogEntry.status === "published") {
+        await storage.updateProductType(productType.id, {
+          panelMappingTemplate: catalogEntry.panelMappingTemplate,
+          flatCalibrationStatus: "unsupported",
+        });
+      } else if (catalogEntry.kind === "printify") {
+        await storage.updateProductType(productType.id, {
+          flatCalibrationStatus: "unsupported",
+        });
+      }
+
       res.json(productType);
+
+      // No per-merchant harvest for catalog-managed products with shared calibration.
+      const skipHarvest =
+        catalogEntry.kind === "printify" ||
+        catalogEntry.kind === "aop" ||
+        (catalogEntry.kind === "flat" && !!canonicalManifest) ||
+        (isOperator && catalogEntry.kind === "aop");
+      if (!skipHarvest) {
+        kickoffFlatCalibration({
+          productTypeId: productType.id,
+          name: productType.name,
+          blueprintId: blueprintIdNum,
+          providerId,
+          token: merchant.printifyApiToken,
+          shopId: merchant.printifyShopId,
+          isAllOverPrint,
+          designerType: productType.designerType,
+          frameColors,
+          sizes,
+          variantMap,
+        });
+      }
     } catch (error) {
       console.error("Error importing Printify blueprint:", error);
       res.status(500).json({ error: "Failed to import blueprint" });
     }
   });
 
-  // DELETE /api/admin/product-types/:id - Delete a product type
-  app.delete("/api/admin/product-types/:id", isAuthenticated, async (req: any, res: Response) => {
+  // POST /api/admin/product-types/:id/calibrate-flat - (Re)run on-the-fly flat
+  // mockup calibration for an existing product. Returns 202 and runs in the
+  // background; poll the product's flatCalibrationStatus for progress.
+  app.post("/api/admin/product-types/:id/calibrate-flat", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
       const productTypeId = parseInt(req.params.id);
-
       const merchant = await storage.getMerchantByUserId(userId);
-      if (!merchant) {
-        return res.status(404).json({ error: "Merchant not found" });
-      }
-
+      if (!merchant) return res.status(404).json({ error: "Merchant not found" });
       const productType = await storage.getProductType(productTypeId);
-      if (!productType || productType.merchantId !== merchant.id) {
-        return res.status(404).json({ error: "Product type not found" });
+      const accessErr = adminProductTypeAccessError(req, productType, merchant);
+      if (accessErr) {
+        return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
       }
 
-      await storage.deleteProductType(productTypeId);
-      res.json({ success: true, message: "Product type deleted" });
+      const synced = await syncProductTypeFromCanonicalCalibration(productType!, {
+        allowUnpublishedHarvest: true,
+      });
+      if (synced.synced) {
+        return res.status(200).json({
+          status: "ready",
+          productTypeId: productType.id,
+          syncedFromCanonical: true,
+        });
+      }
+
+      kickoffFlatCalibration({
+        productTypeId: productType.id,
+        name: productType.name,
+        blueprintId: productType.printifyBlueprintId,
+        providerId: productType.printifyProviderId,
+        token: merchant.printifyApiToken,
+        shopId: merchant.printifyShopId,
+        isAllOverPrint: productType.isAllOverPrint,
+        designerType: productType.designerType,
+        frameColors: productType.frameColors,
+        sizes: productType.sizes,
+        variantMap: productType.variantMap,
+        forceFlatHarvest: (productType as any).forceFlatHarvest,
+        fulfillmentLayout: (productType as any).fulfillmentLayout,
+      });
+      res.status(202).json({ status: "running", productTypeId: productType.id });
     } catch (error) {
-      console.error("Error deleting product type:", error);
-      res.status(500).json({ error: "Failed to delete product type" });
+      console.error("Error starting flat calibration:", error);
+      res.status(500).json({ error: "Failed to start calibration" });
     }
   });
 
+  // POST /api/admin/product-types/:id/test-printify-order - Bake the print file
+  // for a chosen (or latest) design and create a DRAFT Printify order so the
+  // merchant can verify, in Printify, that the print file matches the on-screen
+  // design BEFORE going live. Never sends to production / never charges.
+  // Mandatory per-product pre-launch check for flat/mesh on-the-fly products.
+  app.post("/api/admin/product-types/:id/test-printify-order", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const productTypeId = parseInt(req.params.id);
+      const merchant = await storage.getMerchantByUserId(userId);
+      if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+      const productType = await storage.getProductType(productTypeId);
+      const accessErr = adminProductTypeAccessError(req, productType, merchant);
+      if (accessErr) {
+        return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
+      }
+      if (!merchant.printifyApiToken || !merchant.printifyShopId) {
+        return res.status(400).json({ error: "Printify credentials not configured for this merchant" });
+      }
+      if (productType.onTheFlyTier !== "flat" && productType.onTheFlyTier !== "mesh") {
+        const toteFolded = usesToteFoldedFulfillment({
+          isAllOverPrint: productType.isAllOverPrint,
+          storefrontMockupMode: (productType as any).storefrontMockupMode,
+          fulfillmentLayout: (productType as any).fulfillmentLayout,
+          printifyBlueprintId: productType.printifyBlueprintId,
+        });
+        if (!toteFolded) {
+          return res.status(400).json({
+            error: `This product is not a flat/mesh on-the-fly product (tier=${productType.onTheFlyTier ?? "none"}). Calibrate it first.`,
+          });
+        }
+      }
+
+      const designId = typeof req.body?.designId === "string" ? req.body.designId : null;
+      let result;
+      try {
+        result = await submitFlatTestOrder({ productType, designId });
+      } catch (e: any) {
+        return res.status(400).json({ error: e?.message || "Failed to create test order" });
+      }
+
+      if (result.status === "failed") {
+        return res.status(502).json({ error: result.error || "Printify rejected order", ...result });
+      }
+      if (result.status === "skipped") {
+        return res.status(400).json({ error: result.skippedReasons.join("; ") || "No eligible lines", ...result });
+      }
+
+      const toteFolded = usesToteFoldedFulfillment({
+        isAllOverPrint: productType.isAllOverPrint,
+        storefrontMockupMode: (productType as any).storefrontMockupMode,
+        fulfillmentLayout: (productType as any).fulfillmentLayout,
+        printifyBlueprintId: productType.printifyBlueprintId,
+      });
+
+      return res.json({
+        success: true,
+        draft: true,
+        message: toteFolded
+          ? "Created DRAFT Printify order with tote_folded_v1 print file (2650×5250). Open Printify to confirm the folded layout."
+          : "Created DRAFT Printify order. Open Printify to verify the print file matches the on-screen design.",
+        designId: result.designId,
+        printifyOrderId: result.printifyOrderId,
+        printFileUrls: result.printFileUrls,
+        printifyOrderUrl: result.printifyOrderId
+          ? `https://printify.com/app/orders/${merchant.printifyShopId}/${result.printifyOrderId}`
+          : undefined,
+      });
+    } catch (error) {
+      console.error("Error creating test Printify order:", error);
+      res.status(500).json({ error: "Failed to create test order" });
+    }
+  });
+
+  // DELETE /api/admin/product-types/:id - Delete a product type
   // GET /api/admin/product-types/:id/svg-debug
   // Diagnostic: shows stored panelFlatLayImages, tests CDN accessibility, and fetches
   // the correct flat-lay SVG URLs from the Printify API so the merchant can see what's wrong.
@@ -12929,8 +13853,9 @@ ${textEdgeRestrictions}
       }
 
       const productType = await storage.getProductType(productTypeId);
-      if (!productType || productType.merchantId !== merchant.id) {
-        return res.status(404).json({ error: "Product type not found" });
+      const accessErr = adminProductTypeAccessError(req, productType, merchant);
+      if (accessErr) {
+        return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
       }
 
       if (!productType.printifyBlueprintId || !productType.printifyProviderId) {
@@ -12993,8 +13918,9 @@ ${textEdgeRestrictions}
       }
 
       const productType = await storage.getProductType(productTypeId);
-      if (!productType || productType.merchantId !== merchant.id) {
-        return res.status(404).json({ error: "Product type not found" });
+      const accessErr = adminProductTypeAccessError(req, productType, merchant);
+      if (accessErr) {
+        return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
       }
 
       if (!productType.printifyBlueprintId || !productType.printifyProviderId) {
@@ -13095,7 +14021,7 @@ ${textEdgeRestrictions}
         // Check options for size
         if (!extractedSizeId && (options.size || options.Size)) {
           const sizeVal = options.size || options.Size;
-          extractedSizeId = sizeVal.toLowerCase().replace(/\s+/g, '_');
+          extractedSizeId = normalizeApparelSizeId(sizeVal);
           if (!sizesMap.has(extractedSizeId)) {
             sizesMap.set(extractedSizeId, { id: extractedSizeId, name: sizeVal, width: 0, height: 0 });
           }
@@ -13120,7 +14046,7 @@ ${textEdgeRestrictions}
               break;
             }
             if (apparelSizesLower.includes(part.toLowerCase())) {
-              extractedSizeId = part.toLowerCase();
+              extractedSizeId = normalizeApparelSizeId(part);
               if (!sizesMap.has(extractedSizeId)) {
                 sizesMap.set(extractedSizeId, { id: extractedSizeId, name: part, width: 0, height: 0 });
               }
@@ -13128,7 +14054,7 @@ ${textEdgeRestrictions}
             }
             // Named sizes (Small, Medium, Large, King, Queen, One Size, etc.)
             if (namedSizes.includes(part.toLowerCase())) {
-              extractedSizeId = part.toLowerCase().replace(/\s+/g, '_');
+              extractedSizeId = normalizeApparelSizeId(part);
               if (!sizesMap.has(extractedSizeId)) {
                 sizesMap.set(extractedSizeId, { id: extractedSizeId, name: part, width: 0, height: 0 });
               }
@@ -13150,41 +14076,35 @@ ${textEdgeRestrictions}
           }
         }
 
-        // Extract color - check all possible option keys
-        let colorName = "";
-        const optionKeys = Object.keys(options);
-        // Check various color-related option names
-        for (const key of optionKeys) {
-          const lowerKey = key.toLowerCase();
-          if (lowerKey === 'color' || lowerKey === 'colour' || lowerKey === 'colors' ||
-              lowerKey === 'frame_color' || lowerKey === 'frame color' || lowerKey.includes('color')) {
-            colorName = options[key];
-            break;
-          }
-        }
-
-        // If no color in options, try to extract from title
-        if (!colorName) {
-          // Use " / " split to preserve combined model names like "iPhone 12/12 Pro"
-          const _cParts = title.includes(" / ")
-            ? title.split(" / ").map((p: string) => p.trim())
-            : title.split("/").map((p: string) => p.trim());
-          for (let i = _cParts.length - 1; i >= 0; i--) {
-            if (!looksLikeSize(_cParts[i])) {
-              colorName = _cParts[i];
-              break;
+        // Fallback: first non-color title part when size still unknown (parity with import)
+        if (!extractedSizeId && title && title.includes("/")) {
+          const parts = title.split("/").map((p: string) => p.trim());
+          const firstPart = parts[0];
+          if (firstPart && !firstPart.match(/^(black|white|red|blue|green|yellow|pink|purple|orange|gray|grey|navy|brown|beige|cream|tan)/i)) {
+            extractedSizeId = normalizeApparelSizeId(firstPart);
+            if (!sizesMap.has(extractedSizeId)) {
+              sizesMap.set(extractedSizeId, { id: extractedSizeId, name: firstPart, width: 0, height: 0 });
             }
           }
         }
 
+        const colorName = extractPrintifyColorName(
+          options,
+          title,
+          (productType as any).colorOptionName,
+        );
+
         // Log what we found for debugging
         if (variants.indexOf(variant) < 3) {
-          console.log(`[Refresh Variants] Variant "${title}" -> size: "${extractedSizeId}", color: "${colorName}", options:`, optionKeys);
+          console.log(
+            `[Refresh Variants] Variant "${title}" -> size: "${extractedSizeId}", color: "${colorName}", options:`,
+            Object.keys(options),
+          );
         }
 
         let extractedColorId = "";
         if (colorName) {
-          extractedColorId = colorName.toLowerCase().replace(/\s+/g, '_');
+          extractedColorId = slugPrintifyColorId(colorName);
           if (!colorsMap.has(colorName.toLowerCase())) {
             const { hex } = resolvePrintifyColorHex(colorName);
             colorsMap.set(colorName.toLowerCase(), { id: extractedColorId, name: colorName, hex });
@@ -13193,7 +14113,7 @@ ${textEdgeRestrictions}
 
         // Add to variantMap
         if (extractedSizeId || extractedColorId) {
-          const mapKey = `${extractedSizeId || 'default'}:${extractedColorId || 'default'}`;
+          const mapKey = variantMapKey(extractedSizeId || "default", extractedColorId || "default");
           variantMap[mapKey] = { printifyVariantId: variant.id, providerId };
         }
       }
@@ -13239,6 +14159,9 @@ ${textEdgeRestrictions}
       const existingColorIds: string[] = typeof productType.selectedColorIds === 'string'
         ? JSON.parse(productType.selectedColorIds || '[]')
         : productType.selectedColorIds || [];
+      const previousFrameColors: Array<{ id: string }> = typeof productType.frameColors === 'string'
+        ? JSON.parse(productType.frameColors || '[]')
+        : productType.frameColors || [];
 
       // Keep only IDs that still exist in the refreshed data (remove stale ones).
       const newSizeIdSet = new Set(sizes.map((s: { id: string }) => s.id));
@@ -13246,14 +14169,50 @@ ${textEdgeRestrictions}
       const filteredSizeIds = existingSizeIds.filter((id: string) => newSizeIdSet.has(id));
       const filteredColorIds = existingColorIds.filter((id: string) => newColorIdSet.has(id));
 
-      // Preserve the existing selection as-is after filtering out stale IDs.
-      // Since the import flow always writes explicit IDs, an empty existingColorIds/existingSizeIds
-      // means the merchant intentionally cleared all options — respect that and keep it empty.
-      // Only fall back to "all available" when the product has never been imported at all
-      // (existingSizeIds is empty AND the product has no variantMap entries), which shouldn't
-      // happen in practice but is a safe guard.
-      const finalSizeIds = filteredSizeIds;
-      const finalColorIds = filteredColorIds;
+      // Preserve merchant selections after filtering stale ids. When import failed to parse
+      // colours (frameColors was empty + selectedColorIds []), backfill to all discovered colours.
+      const finalSizeIds =
+        filteredSizeIds.length > 0
+          ? filteredSizeIds
+          : existingSizeIds.length === 0 && sizes.length > 0
+            ? sizes.map((s: { id: string }) => s.id)
+            : filteredSizeIds;
+      const finalColorIds =
+        filteredColorIds.length > 0
+          ? filteredColorIds
+          : existingColorIds.length === 0 &&
+              previousFrameColors.length === 0 &&
+              frameColors.length > 0
+            ? frameColors.map((c: { id: string }) => c.id)
+            : filteredColorIds;
+
+      const refreshedCatalogCosts = extractCostsFromCatalogVariants(variants);
+      let finalRefreshCosts = refreshedCatalogCosts;
+      if (Object.keys(finalRefreshCosts).length === 0) {
+        const refreshPrintifyVariantIds = [
+          ...new Set(
+            Object.values(variantMap)
+              .map((e: any) => Number(e?.printifyVariantId))
+              .filter((id) => Number.isFinite(id) && id > 0),
+          ),
+        ];
+        const baseMockupImages = typeof productType.baseMockupImages === "string"
+          ? JSON.parse(productType.baseMockupImages || "{}")
+          : (productType.baseMockupImages || {});
+        const { costs: resolvedRefreshCosts } = await resolvePrintifyProductionCosts({
+          merchant,
+          blueprintId: productType.printifyBlueprintId!,
+          providerId: productType.printifyProviderId!,
+          catalogVariants: variants,
+          printifyVariantIds: refreshPrintifyVariantIds,
+          baseMockupImages,
+        });
+        finalRefreshCosts = resolvedRefreshCosts;
+      }
+      const refreshedPrintifyCosts =
+        Object.keys(finalRefreshCosts).length > 0
+          ? serializePrintifyCostsCache(finalRefreshCosts)
+          : productType.printifyCosts ?? "{}";
 
       const updated = await storage.updateProductType(productTypeId, {
         sizes: JSON.stringify(sizes),
@@ -13261,9 +14220,20 @@ ${textEdgeRestrictions}
         variantMap: JSON.stringify(variantMap),
         selectedSizeIds: JSON.stringify(finalSizeIds),
         selectedColorIds: JSON.stringify(finalColorIds),
+        printifyCosts: refreshedPrintifyCosts,
       });
 
+      const allMapKeys = Object.keys(variantMap);
+      // Group keys by color to show which sizes are available per color
+      const keysByColor: Record<string, string[]> = {};
+      for (const k of allMapKeys) {
+        const [sz, co] = k.split(":");
+        if (!keysByColor[co]) keysByColor[co] = [];
+        keysByColor[co].push(sz);
+      }
       console.log(`[Refresh Variants] Final result: ${sizes.length} sizes, ${frameColors.length} colors from ${variants.length} variants`);
+      console.log(`[Refresh Variants] variantMap keys (${allMapKeys.length} total):`, allMapKeys);
+      console.log(`[Refresh Variants] Sizes per color:`, keysByColor);
 
       res.json({
         success: true,
@@ -13271,7 +14241,8 @@ ${textEdgeRestrictions}
         variantCount: variants.length,
         sizes,
         frameColors,
-        variantMapKeys: Object.keys(variantMap).slice(0, 10),
+        variantMapKeys: allMapKeys,
+        sizesPerColor: keysByColor,
         productType: updated
       });
     } catch (error) {
@@ -13294,8 +14265,9 @@ ${textEdgeRestrictions}
       }
 
       const productType = await storage.getProductType(productTypeId);
-      if (!productType || productType.merchantId !== merchant.id) {
-        return res.status(404).json({ error: "Product type not found" });
+      const accessErr = adminProductTypeAccessError(req, productType, merchant);
+      if (accessErr) {
+        return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
       }
 
       // Comprehensive color hex lookup - Printify API doesn't provide hex codes
@@ -13430,11 +14402,21 @@ ${textEdgeRestrictions}
         });
       }
 
+      const mappedShops = shops.map((shop: any) => ({
+        id: String(shop.id),
+        title: shop.title || `Shop ${shop.id}`,
+        sales_channel: shop.sales_channel,
+        recommended: String(shop.sales_channel || "").toLowerCase().includes("shopify"),
+      }));
+
       res.json({
-        shops: shops.map((shop: any) => ({
-          id: String(shop.id),
-          title: shop.title || `Shop ${shop.id}`,
-        })),
+        shops: mappedShops,
+        message:
+          mappedShops.length === 1
+            ? "Found your shop! Click to use this Shop ID."
+            : mappedShops.filter((s) => s.recommended).length === 1
+              ? "Found multiple shops — the Shopify-linked store is marked recommended."
+              : `Found ${mappedShops.length} shops. Select the one linked to your Shopify store.`,
       });
     } catch (error) {
       console.error("Error detecting Printify shop:", error);
@@ -13517,6 +14499,70 @@ ${textEdgeRestrictions}
 
   // ── Printify Cost & Shipping Endpoints ──────────────────────────────────────
 
+  /** 1×1 PNG — guaranteed upload for cost probes when URL uploads fail. */
+  const COST_PROBE_PNG_BASE64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+  type PrintifyShopSummary = { id: string; title: string; sales_channel?: string };
+
+  async function listPrintifyShops(apiToken: string): Promise<PrintifyShopSummary[]> {
+    const resp = await fetch("https://api.printify.com/v1/shops.json", {
+      headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" },
+    });
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    const shops = Array.isArray(data) ? data : (data.data || []);
+    return shops.map((s: any) => ({
+      id: String(s.id),
+      title: s.title || `Shop ${s.id}`,
+      sales_channel: s.sales_channel,
+    }));
+  }
+
+  async function testPrintifyShopProductsAccess(apiToken: string, shopId: string): Promise<boolean> {
+    const resp = await fetch(
+      `https://api.printify.com/v1/shops/${encodeURIComponent(shopId)}/products.json?limit=1`,
+      { headers: { Authorization: `Bearer ${apiToken}` } },
+    );
+    return resp.ok;
+  }
+
+  /** Shipping uses catalog-only APIs; production costs need a shop the token can write products to. */
+  async function resolvePrintifyShopIdForProducts(
+    apiToken: string,
+    preferredShopId: string | null | undefined,
+  ): Promise<{ shopId: string; corrected: boolean }> {
+    const trimmed = preferredShopId?.trim();
+    if (trimmed && (await testPrintifyShopProductsAccess(apiToken, trimmed))) {
+      return { shopId: trimmed, corrected: false };
+    }
+
+    const shops = await listPrintifyShops(apiToken);
+    if (shops.length === 0) {
+      throw new Error("No Printify shops found for this API token");
+    }
+
+    const shopifyLinked = shops.filter((s) =>
+      String(s.sales_channel || "").toLowerCase().includes("shopify"),
+    );
+    const candidates = [...shopifyLinked, ...shops.filter((s) => !shopifyLinked.includes(s))];
+
+    for (const shop of candidates) {
+      if (await testPrintifyShopProductsAccess(apiToken, shop.id)) {
+        const corrected = shop.id !== trimmed;
+        if (corrected) {
+          console.log(
+            `[Printify Costs] Auto-corrected shop ID ${trimmed ?? "(empty)"} → ${shop.id} (${shop.title}, ${shop.sales_channel ?? "unknown channel"})`,
+          );
+        }
+        return { shopId: shop.id, corrected };
+      }
+    }
+
+    // Fall back to first shop — product create may still work even if list probe failed
+    return { shopId: candidates[0].id, corrected: candidates[0].id !== trimmed };
+  }
+
   // Helper: fetch the first placeholder position for a blueprint/provider/variant
   async function fetchPlaceholderPosition(
     blueprintId: number,
@@ -13556,22 +14602,27 @@ ${textEdgeRestrictions}
     placeholderPosition: string,
     imageSpec: { id: string; x: number; y: number; scale: number; angle: number } | null
   ): Promise<{ success: boolean; costs: Record<string, number>; tempProductId?: string; status?: number; error?: string }> {
+    // Apparel/DTG almost always prints on "front"; catalog placeholder names vary.
+    const printPosition = imageSpec ? "front" : placeholderPosition;
     const body: any = {
       title: `_cost_probe_${Date.now()}`,
       description: "Temporary product for cost lookup - will be deleted immediately",
       blueprint_id: blueprintId,
       print_provider_id: providerId,
-      variants: variantIds.map(id => ({ id, price: 100, is_enabled: true })),
+      variants: variantIds.map((id) => ({ id, price: 2499, is_enabled: true })),
       print_areas: [{
         variant_ids: variantIds,
-        placeholders: [{ position: placeholderPosition, images: imageSpec ? [imageSpec] : [] }],
+        placeholders: [{ position: printPosition, images: imageSpec ? [imageSpec] : [] }],
       }],
     };
-    const createResp = await fetch(`https://api.printify.com/v1/shops/${shopId}/products.json`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    const createResp = await fetch(
+      `https://api.printify.com/v1/shops/${encodeURIComponent(shopId)}/products.json`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
     const status = createResp.status;
     if (!createResp.ok) {
       const errorText = await createResp.text();
@@ -13579,28 +14630,19 @@ ${textEdgeRestrictions}
     }
     const product = await createResp.json();
     const tempProductId: string = product.id;
-    let costs: Record<string, number> = {};
-    for (const v of (product.variants || [])) {
-      if (v.id && typeof v.cost === "number") {
-        costs[String(v.id)] = v.cost;
-      }
-    }
+    let costs = extractCostsFromPrintifyProduct(product);
 
     // Some blueprints don't include v.cost in the creation response.
-    // If costs are empty, fetch the product again to get fully populated variant data.
     if (Object.keys(costs).length === 0) {
       console.log(`[Printify Costs] Creation response had no costs — fetching product ${tempProductId} to get variant costs`);
       try {
-        const fetchResp = await fetch(`https://api.printify.com/v1/shops/${shopId}/products/${tempProductId}.json`, {
-          headers: { Authorization: `Bearer ${apiToken}` },
-        });
+        const fetchResp = await fetch(
+          `https://api.printify.com/v1/shops/${encodeURIComponent(shopId)}/products/${tempProductId}.json`,
+          { headers: { Authorization: `Bearer ${apiToken}` } },
+        );
         if (fetchResp.ok) {
           const fetchedProduct = await fetchResp.json();
-          for (const v of (fetchedProduct.variants || [])) {
-            if (v.id && typeof v.cost === "number") {
-              costs[String(v.id)] = v.cost;
-            }
-          }
+          costs = extractCostsFromPrintifyProduct(fetchedProduct);
           console.log(`[Printify Costs] Re-fetch extracted ${Object.keys(costs).length} costs for product ${tempProductId}`);
         } else {
           console.warn(`[Printify Costs] Re-fetch of product ${tempProductId} failed: ${fetchResp.status}`);
@@ -13612,10 +14654,13 @@ ${textEdgeRestrictions}
 
     // Clean up immediately
     try {
-      await fetch(`https://api.printify.com/v1/shops/${shopId}/products/${tempProductId}.json`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${apiToken}` },
-      });
+      await fetch(
+        `https://api.printify.com/v1/shops/${encodeURIComponent(shopId)}/products/${tempProductId}.json`,
+        {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${apiToken}` },
+        },
+      );
       console.log(`[Printify Costs] Deleted temp product ${tempProductId}`);
     } catch (delErr) {
       console.error(`[Printify Costs] Failed to delete temp product ${tempProductId}:`, delErr);
@@ -13665,7 +14710,115 @@ ${textEdgeRestrictions}
     return null;
   }
 
-  // Core waterfall logic: tries three strategies to create a temp product and get costs.
+  /** Guaranteed probe artwork: library → mockup URL → embedded 1×1 PNG base64. */
+  async function ensureCostProbeImageId(
+    apiToken: string,
+    mockupUrl?: string,
+  ): Promise<string | null> {
+    const existing = await getExistingUploadId(apiToken);
+    if (existing) return existing;
+    if (mockupUrl) {
+      const fromMockup = await uploadPublicImageToPrintify(apiToken, mockupUrl);
+      if (fromMockup) return fromMockup;
+    }
+    const fallbackUrls = [
+      "https://images.printify.com/mockup/5d39b411749d0a000f30e0f4/45740/2x2-white.jpg",
+      "https://placehold.co/1200x1200/png",
+    ];
+    for (const url of fallbackUrls) {
+      const id = await uploadPublicImageToPrintify(apiToken, url);
+      if (id) return id;
+    }
+    try {
+      const resp = await fetch("https://api.printify.com/v1/uploads/images.json", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ file_name: "cost-probe.png", contents: COST_PROBE_PNG_BASE64 }),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.id) {
+          console.log(`[Printify Costs] Uploaded base64 probe image id=${data.id}`);
+          return String(data.id);
+        }
+      } else {
+        const errText = await resp.text();
+        console.warn(`[Printify Costs] Base64 probe upload failed (${resp.status}): ${errText.slice(0, 200)}`);
+      }
+    } catch (e) {
+      console.warn("[Printify Costs] Base64 probe upload error:", e);
+    }
+    return null;
+  }
+
+  /** Copy cached costs from any platform product type with the same blueprint + provider. */
+  async function findPlatformCostsForBlueprint(
+    blueprintId: number,
+    providerId: number,
+  ): Promise<Record<string, number>> {
+    const allTypes = await storage.getActiveProductTypes();
+    for (const pt of allTypes) {
+      if (Number(pt.printifyBlueprintId) !== Number(blueprintId)) continue;
+      if (Number(pt.printifyProviderId) !== Number(providerId)) continue;
+      const { costs } = parsePrintifyCostsCache(pt.printifyCosts);
+      if (Object.keys(costs).length > 0) return costs;
+    }
+    return {};
+  }
+
+  /**
+   * Resolve Printify production costs for import / refresh / pricing.
+   * Catalog variants.json rarely includes cost fields — waterfall + platform cache fill the gap.
+   */
+  async function resolvePrintifyProductionCosts(args: {
+    merchant: { id: string; printifyApiToken: string; printifyShopId?: string | null };
+    blueprintId: number;
+    providerId: number;
+    catalogVariants: unknown[];
+    printifyVariantIds: number[];
+    baseMockupImages: Record<string, unknown>;
+  }): Promise<{ costs: Record<string, number>; source: string }> {
+    const catalogCosts = extractCostsFromCatalogVariants(args.catalogVariants);
+    if (Object.keys(catalogCosts).length > 0) {
+      return { costs: catalogCosts, source: "catalog_variants" };
+    }
+
+    let shopId = args.merchant.printifyShopId?.trim() ?? "";
+    if (shopId && args.merchant.printifyApiToken) {
+      try {
+        const resolved = await resolvePrintifyShopIdForProducts(args.merchant.printifyApiToken, shopId);
+        shopId = resolved.shopId;
+        if (resolved.corrected) {
+          await storage.updateMerchant(args.merchant.id, { printifyShopId: shopId });
+        }
+      } catch {
+        shopId = args.merchant.printifyShopId?.trim() ?? "";
+      }
+    }
+
+    if (args.printifyVariantIds.length > 0 && args.merchant.printifyApiToken) {
+      const { costs: waterfallCosts, strategyUsed } = await fetchPrintifyCostsWaterfall(
+        shopId,
+        args.merchant.printifyApiToken,
+        args.blueprintId,
+        args.providerId,
+        args.printifyVariantIds,
+        args.baseMockupImages as Record<string, string>,
+      );
+      if (Object.keys(waterfallCosts).length > 0) {
+        return { costs: waterfallCosts, source: strategyUsed ?? "waterfall" };
+      }
+    }
+
+    const platformCosts = await findPlatformCostsForBlueprint(args.blueprintId, args.providerId);
+    if (Object.keys(platformCosts).length > 0) {
+      return { costs: platformCosts, source: "platform_catalog_cache" };
+    }
+
+    return { costs: {}, source: "none" };
+  }
+
+  // Core waterfall logic: tries multiple strategies to create a temp product and get costs.
   // Returns { costs, strategyUsed, diagnostics }
   async function fetchPrintifyCostsWaterfall(
     shopId: string,
@@ -13686,18 +14839,70 @@ ${textEdgeRestrictions}
 
     // Printify API rejects temp product creation if variant count exceeds 100.
     // Costs are catalog-level per variant ID, so a subset is sufficient.
-    const VARIANT_CHUNK_SIZE = 50;
+    const VARIANT_CHUNK_SIZE = 10;
     const variantChunk = variantIds.slice(0, VARIANT_CHUNK_SIZE);
+    const bulkVariantIds = variantIds.slice(0, 100);
+    const hasCosts = (costs: Record<string, number>) => Object.keys(costs).length > 0;
+    const mockupUrl: string | undefined =
+      baseMockupImages.primary || baseMockupImages.front || baseMockupImages.gallery?.[0] || baseMockupImages.lifestyle || (Object.values(baseMockupImages).find((v) => typeof v === "string") as string | undefined);
+    const probeImageId = await ensureCostProbeImageId(apiToken, mockupUrl);
 
-    // Strategy 0: read costs from an existing Printify product with the same blueprint + provider (no temp product needed)
+    // Strategy catalog: production costs from catalog variants.json (no shop product needed)
+    console.log(`[Printify Costs] Strategy catalog — reading costs from catalog variants for blueprint ${blueprintId}`);
+    try {
+      const catalogResp = await fetch(
+        `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`,
+        { headers: { Authorization: `Bearer ${apiToken}` } },
+      );
+      if (catalogResp.ok) {
+        const catalogData = await catalogResp.json();
+        const catalogVariants = catalogData.variants || catalogData || [];
+        const catalogCosts = extractCostsFromCatalogVariants(
+          Array.isArray(catalogVariants) ? catalogVariants : [],
+        );
+        if (hasCosts(catalogCosts)) {
+          console.log(`[Printify Costs] Strategy catalog succeeded — ${Object.keys(catalogCosts).length} costs`);
+          diagnostics.push({ strategy: "catalog_variants", success: true });
+          return { costs: catalogCosts, strategyUsed: "catalog_variants", diagnostics };
+        }
+        diagnostics.push({
+          strategy: "catalog_variants",
+          success: false,
+          error: "Catalog variants response had no cost fields",
+        });
+      } else {
+        diagnostics.push({
+          strategy: "catalog_variants",
+          status: catalogResp.status,
+          success: false,
+          error: `Catalog variants API: ${catalogResp.status}`,
+        });
+      }
+    } catch (catalogErr: any) {
+      diagnostics.push({ strategy: "catalog_variants", success: false, error: String(catalogErr) });
+      console.warn("[Printify Costs] Strategy catalog error:", catalogErr);
+    }
+
+    // Strategy 0: read costs from an existing Printify product
+    if (!shopId?.trim()) {
+      diagnostics.push({
+        strategy: "read_existing_product",
+        success: false,
+        error: "Printify shop ID not configured — catalog had no cost fields",
+      });
+      console.warn("[Printify Costs] Skipping shop-based strategies — no Printify shop ID");
+      return { costs: {}, strategyUsed: null, diagnostics };
+    }
+
     console.log(`[Printify Costs] Strategy 0 — reading costs from existing shop products for blueprint ${blueprintId}`);
     try {
       let page = 1;
       let found = false;
       while (page <= 5) {
-        const listResp = await fetch(`https://api.printify.com/v1/shops/${shopId}/products.json?limit=100&page=${page}`, {
-          headers: { Authorization: `Bearer ${apiToken}` },
-        });
+        const listResp = await fetch(
+          `https://api.printify.com/v1/shops/${encodeURIComponent(shopId)}/products.json?limit=100&page=${page}`,
+          { headers: { Authorization: `Bearer ${apiToken}` } },
+        );
         if (!listResp.ok) {
           diagnostics.push({ strategy: "read_existing_product", status: listResp.status, success: false, error: `List products failed: ${listResp.status}` });
           break;
@@ -13706,20 +14911,15 @@ ${textEdgeRestrictions}
         const products: any[] = listData.data || listData || [];
         if (products.length === 0) break;
         for (const p of products) {
-          if (p.blueprint_id === blueprintId && p.print_provider_id === providerId) {
-            // Fetch full product to get variant costs
-            const fullResp = await fetch(`https://api.printify.com/v1/shops/${shopId}/products/${p.id}.json`, {
-              headers: { Authorization: `Bearer ${apiToken}` },
-            });
+          if (Number(p.blueprint_id) === Number(blueprintId) && Number(p.print_provider_id) === Number(providerId)) {
+            const fullResp = await fetch(
+              `https://api.printify.com/v1/shops/${encodeURIComponent(shopId)}/products/${p.id}.json`,
+              { headers: { Authorization: `Bearer ${apiToken}` } },
+            );
             if (!fullResp.ok) continue;
             const fullProduct = await fullResp.json();
-            const costs: Record<string, number> = {};
-            for (const v of (fullProduct.variants || [])) {
-              if (v.id && typeof v.cost === "number") {
-                costs[String(v.id)] = v.cost;
-              }
-            }
-            if (Object.keys(costs).length > 0) {
+            const costs = extractCostsFromPrintifyProduct(fullProduct);
+            if (hasCosts(costs)) {
               console.log(`[Printify Costs] Strategy 0 succeeded — found ${Object.keys(costs).length} costs from existing product ${p.id}`);
               diagnostics.push({ strategy: "read_existing_product", success: true });
               found = true;
@@ -13739,60 +14939,69 @@ ${textEdgeRestrictions}
       console.warn("[Printify Costs] Strategy 0 error:", s0Err);
     }
 
-    // Strategy 1: print_areas with empty images array
-    console.log(`[Printify Costs] Strategy 1 — empty images[] for position "${position}"`);
-    const s1 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantChunk, position, null);
-    diagnostics.push({ strategy: "empty_images", status: s1.status, success: s1.success, error: s1.error });
-    if (s1.success) return { costs: s1.costs, strategyUsed: "empty_images", diagnostics };
-
-    console.warn(`[Printify Costs] Strategy 1 failed (${s1.status}): ${s1.error?.slice(0, 200)}`);
-
-    // Strategy 2: reuse an existing image from the merchant's Printify library
-    console.log("[Printify Costs] Strategy 2 — reuse existing upload from library");
-    const existingId = await getExistingUploadId(apiToken);
-    if (existingId) {
-      const s2 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantChunk, position, imageSpec(existingId));
-      diagnostics.push({ strategy: "reuse_existing_upload", status: s2.status, success: s2.success, error: s2.error });
-      if (s2.success) return { costs: s2.costs, strategyUsed: "reuse_existing_upload", diagnostics };
-      console.warn(`[Printify Costs] Strategy 2 failed (${s2.status}): ${s2.error?.slice(0, 200)}`);
+    if (probeImageId) {
+      // Strategy A: all variants in one temp product (up to Printify's 100-variant limit)
+      console.log(`[Printify Costs] Strategy A — bulk ${bulkVariantIds.length} variants with probe image`);
+      const sBulk = await tryCreateTempProductForCosts(
+        shopId, apiToken, blueprintId, providerId, bulkVariantIds, position, imageSpec(probeImageId),
+      );
+      diagnostics.push({ strategy: "bulk_with_image", status: sBulk.status, success: sBulk.success && hasCosts(sBulk.costs), error: sBulk.error });
+      if (sBulk.success && hasCosts(sBulk.costs)) {
+        return { costs: sBulk.costs, strategyUsed: "bulk_with_image", diagnostics };
+      }
+      console.warn(`[Printify Costs] Strategy A failed (${sBulk.status}): ${sBulk.error?.slice(0, 200)}`);
     } else {
-      diagnostics.push({ strategy: "reuse_existing_upload", success: false, error: "No existing uploads found in library" });
-      console.warn("[Printify Costs] Strategy 2 skipped — no existing uploads in library");
+      diagnostics.push({ strategy: "bulk_with_image", success: false, error: "Could not upload probe artwork to Printify" });
     }
 
-    // Strategy 3: upload the stored mockup image URL (Printify CDN)
-    const mockupUrl: string | undefined =
-      baseMockupImages.primary || baseMockupImages.front || baseMockupImages.gallery?.[0] || baseMockupImages.lifestyle || (Object.values(baseMockupImages).find((v) => typeof v === "string") as string | undefined);
-    if (mockupUrl) {
-      console.log(`[Printify Costs] Strategy 3a — upload product mockup URL: ${mockupUrl.slice(0, 80)}`);
-      const uploadedId = await uploadPublicImageToPrintify(apiToken, mockupUrl);
-      if (uploadedId) {
-        const s3a = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantChunk, position, imageSpec(uploadedId));
-        diagnostics.push({ strategy: "upload_mockup_url", status: s3a.status, success: s3a.success, error: s3a.error });
-        if (s3a.success) return { costs: s3a.costs, strategyUsed: "upload_mockup_url", diagnostics };
-        console.warn(`[Printify Costs] Strategy 3a failed (${s3a.status}): ${s3a.error?.slice(0, 200)}`);
-      } else {
-        diagnostics.push({ strategy: "upload_mockup_url", success: false, error: "Upload of mockup URL failed" });
-      }
+    // Strategy 1: smaller chunk with probe image
+    if (probeImageId) {
+      console.log("[Printify Costs] Strategy 1 — chunk with probe image");
+      const s1 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantChunk, position, imageSpec(probeImageId));
+      diagnostics.push({ strategy: "chunk_with_image", status: s1.status, success: s1.success && hasCosts(s1.costs), error: s1.error });
+      if (s1.success && hasCosts(s1.costs)) return { costs: s1.costs, strategyUsed: "chunk_with_image", diagnostics };
+      console.warn(`[Printify Costs] Strategy 1 failed (${s1.status}): ${s1.error?.slice(0, 200)}`);
     }
 
-    // Strategy 3b: upload a known-good public placeholder image
-    const fallbackUrls = [
-      "https://images.printify.com/mockup/5d39b411749d0a000f30e0f4/45740/2x2-white.jpg",
-      "https://via.assets.so/img.jpg?w=1200&h=1200&tc=white&bg=999999",
-      "https://placehold.co/1200x1200/png",
-    ];
-    for (const url of fallbackUrls) {
-      console.log(`[Printify Costs] Strategy 3b — upload fallback public URL: ${url}`);
-      const uploadedId = await uploadPublicImageToPrintify(apiToken, url);
-      if (uploadedId) {
-        const s3b = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantChunk, position, imageSpec(uploadedId));
-        diagnostics.push({ strategy: `upload_fallback_url:${url}`, status: s3b.status, success: s3b.success, error: s3b.error });
-        if (s3b.success) return { costs: s3b.costs, strategyUsed: `upload_fallback_url`, diagnostics };
-        console.warn(`[Printify Costs] Strategy 3b (${url}) failed (${s3b.status}): ${s3b.error?.slice(0, 200)}`);
-      } else {
-        diagnostics.push({ strategy: `upload_fallback_url:${url}`, success: false, error: "Upload failed" });
+    // Strategy 2: print_areas with empty images array
+    console.log(`[Printify Costs] Strategy 2 — empty images[] for position "${position}"`);
+    const s2 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantChunk, position, null);
+    diagnostics.push({ strategy: "empty_images", status: s2.status, success: s2.success && hasCosts(s2.costs), error: s2.error });
+    if (s2.success && hasCosts(s2.costs)) return { costs: s2.costs, strategyUsed: "empty_images", diagnostics };
+
+    console.warn(`[Printify Costs] Strategy 2 failed (${s2.status}): ${s2.error?.slice(0, 200)}`);
+
+    // Strategy 3: upload the stored mockup image URL (Printify CDN) — if different from probe source
+    if (mockupUrl && probeImageId) {
+      console.log(`[Printify Costs] Strategy 3a — mockup URL chunk: ${mockupUrl.slice(0, 80)}`);
+      const s3a = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantChunk, position, imageSpec(probeImageId));
+      diagnostics.push({ strategy: "upload_mockup_url", status: s3a.status, success: s3a.success && hasCosts(s3a.costs), error: s3a.error });
+      if (s3a.success && hasCosts(s3a.costs)) return { costs: s3a.costs, strategyUsed: "upload_mockup_url", diagnostics };
+    }
+
+    // Strategy 4: parallel single-variant probe for every variant ID
+    if (probeImageId) {
+      console.log(`[Printify Costs] Strategy 4 — parallel single-variant probe (${variantIds.length} variants)`);
+      const probedCosts: Record<string, number> = {};
+      const BATCH = 8;
+      for (let i = 0; i < variantIds.length; i += BATCH) {
+        const batch = variantIds.slice(i, i + BATCH);
+        await Promise.all(batch.map(async (vid) => {
+          const probe = await tryCreateTempProductForCosts(
+            shopId, apiToken, blueprintId, providerId, [vid], position, imageSpec(probeImageId),
+          );
+          if (probe.success && hasCosts(probe.costs)) {
+            Object.assign(probedCosts, probe.costs);
+          }
+        }));
       }
+      if (hasCosts(probedCosts)) {
+        diagnostics.push({ strategy: "single_variant_probe", success: true });
+        return { costs: probedCosts, strategyUsed: "single_variant_probe", diagnostics };
+      }
+      diagnostics.push({ strategy: "single_variant_probe", success: false, error: "No costs extracted from single-variant probes" });
+    } else {
+      diagnostics.push({ strategy: "single_variant_probe", success: false, error: "No probe artwork available" });
     }
 
     return { costs: {}, strategyUsed: null, diagnostics };
@@ -13831,9 +15040,8 @@ ${textEdgeRestrictions}
       if (!merchant) return res.status(404).json({ error: "Merchant not found" });
 
       const apiToken = merchant.printifyApiToken;
-      const shopId = merchant.printifyShopId;
-      if (!apiToken || !shopId) {
-        return res.status(400).json({ error: "Printify API token and shop ID are required. Configure them in Settings." });
+      if (!apiToken) {
+        return res.status(400).json({ error: "Printify API token is required. Configure it in Settings." });
       }
 
       const productTypeId = parseInt(req.params.productTypeId, 10);
@@ -13841,15 +15049,24 @@ ${textEdgeRestrictions}
 
       const productType = await storage.getProductType(productTypeId);
       if (!productType) return res.status(404).json({ error: "Product type not found" });
+      const accessErr = adminProductTypeAccessError(req, productType, merchant);
+      if (accessErr) {
+        return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
+      }
       if (!productType.printifyBlueprintId || !productType.printifyProviderId) {
         return res.status(400).json({ error: "Product type is missing Printify blueprint or provider info" });
       }
 
-      // Check cache first (24h TTL)
-      const cachedRaw = JSON.parse(productType.printifyCosts || "{}");
-      const cacheAge = cachedRaw._fetchedAt ? Date.now() - new Date(cachedRaw._fetchedAt).getTime() : Infinity;
-      if (cacheAge < 24 * 60 * 60 * 1000 && Object.keys(cachedRaw).length > 1) {
-        const { _fetchedAt, ...cachedCosts } = cachedRaw;
+      const variantMap = JSON.parse(productType.variantMap || "{}");
+      const currentPrintifyVariantIds = new Set<number>();
+      for (const entry of Object.values(variantMap) as any[]) {
+        if (entry?.printifyVariantId) currentPrintifyVariantIds.add(Number(entry.printifyVariantId));
+      }
+
+      // Use import/refresh cache whenever it covers active variants (no TTL — refresh-variants updates it).
+      const { costs: cachedCostsOnly } = parsePrintifyCostsCache(productType.printifyCosts);
+      if (cacheCoversVariantIds(cachedCostsOnly, currentPrintifyVariantIds)) {
+        const cachedCosts = filterCostsToPrintifyVariantIds(cachedCostsOnly, currentPrintifyVariantIds);
         const svIds = (typeof productType.shopifyVariantIds === "string"
           ? JSON.parse(productType.shopifyVariantIds || "{}")
           : productType.shopifyVariantIds || {}) as Record<string, number>;
@@ -13884,43 +15101,80 @@ ${textEdgeRestrictions}
             cachedShopifyCosts[String(shopifyVid)] = cachedCosts[String(vmEntry.printifyVariantId)];
           }
         }
-        return res.json({ costs: cachedCosts, shopifyVariantCosts: cachedShopifyCosts, printifyVariantLabels: cachedLabels, cached: true });
+        return res.json({
+          costs: cachedCosts,
+          shopifyVariantCosts: cachedShopifyCosts,
+          printifyVariantLabels: cachedLabels,
+          costsByNormalizedLabel: buildCostsByNormalizedLabel(cachedCosts, cachedLabels),
+          cached: true,
+        });
       }
 
-      // Extract all unique Printify variant IDs from variantMap
-      const variantMap = JSON.parse(productType.variantMap || "{}");
-      const printifyVariantIds: number[] = [];
-      const seen = new Set<number>();
-      for (const entry of Object.values(variantMap) as any[]) {
-        if (entry?.printifyVariantId && !seen.has(Number(entry.printifyVariantId))) {
-          seen.add(Number(entry.printifyVariantId));
-          printifyVariantIds.push(Number(entry.printifyVariantId));
-        }
-      }
-      if (printifyVariantIds.length === 0) {
+      if (currentPrintifyVariantIds.size === 0) {
         return res.status(400).json({ error: "No Printify variant IDs found in product type" });
       }
+
+      const printifyVariantIds = [...currentPrintifyVariantIds];
 
       const baseMockupImages = typeof productType.baseMockupImages === "string"
         ? JSON.parse(productType.baseMockupImages || "{}")
         : (productType.baseMockupImages || {});
 
-      console.log(`[Printify Costs] Starting waterfall for blueprint ${productType.printifyBlueprintId}, ${printifyVariantIds.length} variants`);
-      const { costs, strategyUsed, diagnostics } = await fetchPrintifyCostsWaterfall(
-        shopId, apiToken,
+      let shopId = merchant.printifyShopId?.trim() ?? "";
+      if (shopId) {
+        try {
+          const resolved = await resolvePrintifyShopIdForProducts(apiToken, shopId);
+          shopId = resolved.shopId;
+          if (resolved.corrected) {
+            await storage.updateMerchant(merchant.id, { printifyShopId: shopId });
+          }
+        } catch (resolveErr: any) {
+          console.warn("[Printify Costs] Shop resolution failed (catalog lookup may still succeed):", resolveErr);
+          shopId = merchant.printifyShopId?.trim() ?? "";
+        }
+      }
+
+      console.log(`[Printify Costs] Starting lookup for blueprint ${productType.printifyBlueprintId}, ${printifyVariantIds.length} variants`);
+      let { costs, strategyUsed, diagnostics } = await fetchPrintifyCostsWaterfall(
+        shopId ?? "",
+        apiToken,
         productType.printifyBlueprintId, productType.printifyProviderId,
         printifyVariantIds, baseMockupImages
       );
 
       if (!strategyUsed || Object.keys(costs).length === 0) {
+        const platformCosts = filterCostsToPrintifyVariantIds(
+          await findPlatformCostsForBlueprint(productType.printifyBlueprintId, productType.printifyProviderId),
+          currentPrintifyVariantIds,
+        );
+        if (Object.keys(platformCosts).length > 0) {
+          console.log(
+            `[Printify Costs] Waterfall failed; serving ${Object.keys(platformCosts).length} costs from platform catalog cache`,
+          );
+          await storage.updateProductType(productTypeId, {
+            printifyCosts: serializePrintifyCostsCache(platformCosts),
+          });
+          costs = platformCosts;
+          strategyUsed = "platform_catalog_cache";
+        }
+      }
+
+      if (!strategyUsed || Object.keys(costs).length === 0) {
         console.error(`[Printify Costs] All strategies failed. Diagnostics:`, JSON.stringify(diagnostics));
-        return res.status(502).json({ error: "Failed to fetch costs from Printify after all strategies", diagnostics });
+        const lastErr = diagnostics.find((d) => d.error)?.error?.slice(0, 300);
+        return res.status(502).json({
+          error: "Failed to fetch production costs from Printify",
+          message: lastErr || "All cost lookup strategies failed. Check Railway logs for diagnostics.",
+          diagnostics,
+        });
       }
 
       console.log(`[Printify Costs] Success via "${strategyUsed}", extracted ${Object.keys(costs).length} costs`);
 
       // Cache costs on the product type
-      await storage.updateProductType(productTypeId, { printifyCosts: JSON.stringify({ ...costs, _fetchedAt: new Date().toISOString() }) });
+      await storage.updateProductType(productTypeId, {
+        printifyCosts: serializePrintifyCostsCache(costs),
+      });
 
       // Build variant-key → cost mapping
       const variantKeyCosts: Record<string, number> = {};
@@ -13964,7 +15218,15 @@ ${textEdgeRestrictions}
         }
       }
 
-      return res.json({ costs, variantKeyCosts, shopifyVariantCosts, printifyVariantLabels, cached: false, strategyUsed });
+      return res.json({
+        costs,
+        variantKeyCosts,
+        shopifyVariantCosts,
+        printifyVariantLabels,
+        costsByNormalizedLabel: buildCostsByNormalizedLabel(costs, printifyVariantLabels),
+        cached: false,
+        strategyUsed,
+      });
     } catch (err: any) {
       console.error("[/api/admin/printify/costs]", err);
       return res.status(500).json({ error: "Failed to fetch Printify costs" });
@@ -14157,8 +15419,9 @@ ${textEdgeRestrictions}
       }
 
       const productType = await storage.getProductType(parseInt(productTypeId));
-      if (!productType || productType.merchantId !== merchant.id) {
-        return res.status(404).json({ error: "Product type not found" });
+      const accessErr = adminProductTypeAccessError(req, productType, merchant);
+      if (accessErr) {
+        return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
       }
 
       // Check if we have Printify credentials and blueprint ID
@@ -14176,24 +15439,19 @@ ${textEdgeRestrictions}
         });
       }
 
-      // Look up the correct variant from the variantMap using server-side data only
-      const variantMapData = JSON.parse(productType.variantMap as string || "{}");
-      const variantKey = `${sizeId || 'default'}:${colorId || 'default'}`;
-      
-      // Try exact match first, then fallback to partial matches, then any available variant
-      const variantData = variantMapData[variantKey] || 
-                          variantMapData[`${sizeId || 'default'}:default`] ||
-                          variantMapData[`default:${colorId || 'default'}`] ||
-                          variantMapData['default:default'] ||
-                          Object.values(variantMapData)[0];
-      
-      if (!variantData || !variantData.printifyVariantId) {
-        return res.status(400).json({ 
+      const variantMapData = JSON.parse(productType.variantMap as string || "{}") as VariantMap;
+      const resolvedVariant = resolveVariantFromMap(variantMapData, sizeId, colorId, {
+        allowSizeFallbackForColor: true,
+      });
+
+      if (!resolvedVariant?.entry.printifyVariantId) {
+        return res.status(400).json({
           error: "Could not resolve product variant for the selected options",
-          availableKeys: Object.keys(variantMapData)
+          availableKeys: Object.keys(variantMapData),
         });
       }
-      
+
+      const variantData = resolvedVariant.entry;
       const providerId = variantData.providerId || productType.printifyProviderId || 1;
       const targetVariantId = variantData.printifyVariantId;
 
@@ -14209,6 +15467,8 @@ ${textEdgeRestrictions}
       const effectiveDoubleSided = productType.isAllOverPrint
         ? resolvedDoubleSided
         : effectivePrintPlacement === "both";
+      const effectiveWrapAround =
+        effectivePrintPlacement === "both" ? resolveWrapAround(productType) : false;
 
       console.log("[Mockup Generate] AOP:", !!aopPositions, "positions:", aopPositions?.length, "mirrorLegs:", !!mirrorLegs, "imageUrl:", absoluteImageUrl.substring(0, 80));
 
@@ -14225,8 +15485,8 @@ ${textEdgeRestrictions}
         y: y !== undefined ? (y - 50) / 50 : 0,
         doubleSided: effectiveDoubleSided,
         printPlacement: effectivePrintPlacement,
-        wrapAround: resolveWrapAround(productType),
-        wrapDirection: resolveWrapAround(productType) ? resolveWrapDirection(productType) : undefined,
+        wrapAround: effectiveWrapAround,
+        wrapDirection: effectiveWrapAround ? resolveWrapDirection(productType) : undefined,
         aopPositions,
         mirrorLegs: !!mirrorLegs,
         panelUrls: Array.isArray(panelUrls) && panelUrls.length > 0 ? panelUrls : undefined,
@@ -14310,8 +15570,9 @@ ${textEdgeRestrictions}
       }
 
       const productType = await storage.getProductType(parseInt(productTypeId));
-      if (!productType || productType.merchantId !== merchant.id) {
-        return res.status(404).json({ error: "Product type not found" });
+      const accessErr = adminProductTypeAccessError(req, productType, merchant);
+      if (accessErr) {
+        return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
       }
 
       // Check if we have Printify credentials and blueprint ID
@@ -14324,23 +15585,18 @@ ${textEdgeRestrictions}
         });
       }
 
-      // Look up the correct variant from the variantMap
-      const variantMapData = JSON.parse(productType.variantMap as string || "{}");
-      const variantKey = `${sizeId || 'default'}:${colorId || 'default'}`;
-      
-      const variantData = variantMapData[variantKey] || 
-                          variantMapData[`${sizeId || 'default'}:default`] ||
-                          variantMapData[`default:${colorId || 'default'}`] ||
-                          variantMapData['default:default'] ||
-                          Object.values(variantMapData)[0];
-      
-      if (!variantData || !variantData.printifyVariantId) {
-        return res.status(400).json({ 
+      const variantMapData = JSON.parse(productType.variantMap as string || "{}") as VariantMap;
+      // allowSizeFallbackForColor: garment mockup photos are identical across sizes.
+      const resolvedVariant = resolveVariantFromMap(variantMapData, sizeId, colorId, { allowSizeFallbackForColor: true });
+
+      if (!resolvedVariant?.entry.printifyVariantId) {
+        return res.status(400).json({
           error: "Could not resolve product variant",
-          availableKeys: Object.keys(variantMapData)
+          availableKeys: Object.keys(variantMapData),
         });
       }
-      
+
+      const variantData = resolvedVariant.entry;
       const providerId = variantData.providerId || productType.printifyProviderId || 1;
       const targetVariantId = variantData.printifyVariantId;
 
@@ -14355,6 +15611,8 @@ ${textEdgeRestrictions}
       const effectiveDoubleSided = productType.isAllOverPrint
         ? resolvedDoubleSided
         : effectivePrintPlacement === "both";
+      const effectiveWrapAround =
+        effectivePrintPlacement === "both" ? resolveWrapAround(productType) : false;
       const correlationId = `mockup_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const { jobId, cached } = await enqueueMockupJob({
         blueprintId: productType.printifyBlueprintId,
@@ -14368,8 +15626,8 @@ ${textEdgeRestrictions}
         y: y !== undefined ? (y - 50) / 50 : 0,
         doubleSided: effectiveDoubleSided,
         printPlacement: effectivePrintPlacement,
-        wrapAround: resolveWrapAround(productType),
-        wrapDirection: resolveWrapAround(productType) ? resolveWrapDirection(productType) : undefined,
+        wrapAround: effectiveWrapAround,
+        wrapDirection: effectiveWrapAround ? resolveWrapDirection(productType) : undefined,
         aopPositions: productType.isAllOverPrint && productType.placeholderPositions
           ? JSON.parse(productType.placeholderPositions as string)
           : undefined,
@@ -14571,13 +15829,14 @@ ${textEdgeRestrictions}
     }
     const shop: string = installation.shopDomain;
 
-    const { title, handle, baseVariantId, baseProductId, productTypeId: incomingProductTypeId, variantPrices } = req.body as {
+    const { title, handle, baseVariantId, baseProductId, productTypeId: incomingProductTypeId, variantPrices, baseMockupImages: incomingBaseMockupImages } = req.body as {
       title?: string;
       handle?: string;
       baseVariantId?: string;
       baseProductId?: string;
       productTypeId?: number;
       variantPrices?: Record<string, string>;
+      baseMockupImages?: { primary?: string; gallery?: string[]; custom?: string[] };
     };
 
     if (!title?.trim()) return res.status(400).json({ error: "Title is required" });
@@ -14607,7 +15866,25 @@ ${textEdgeRestrictions}
     let ptForSync: any | undefined;
     if (!baseVariantId && !baseProductId && incomingProductTypeId) {
       ptForSync = await storage.getProductType(incomingProductTypeId);
-      if (!ptForSync) return res.status(400).json({ error: `Product type ${incomingProductTypeId} not found` });
+      const accessErr = adminProductTypeAccessError(req, ptForSync, merchant);
+      if (accessErr) {
+        return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
+      }
+
+      const ptVariantMap =
+        typeof ptForSync.variantMap === "string"
+          ? JSON.parse(ptForSync.variantMap || "{}")
+          : ptForSync.variantMap || {};
+      const ptSizeIds: string[] = JSON.parse(ptForSync.selectedSizeIds || "[]");
+      const ptColorIds: string[] = JSON.parse(ptForSync.selectedColorIds || "[]");
+      const activeVariantCount = countActiveVariantMapKeys(ptVariantMap, ptSizeIds, ptColorIds);
+      if (activeVariantCount > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+        return res.status(400).json({
+          error: `This product has ${activeVariantCount} variants but Shopify allows ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}. Open Products → Edit Variants to reduce sizes or colors before creating a customizer page.`,
+          code: "SHOPIFY_VARIANT_LIMIT",
+          variantCount: activeVariantCount,
+        });
+      }
 
       if (ptForSync.shopifyProductId) {
         // Already sent to Shopify previously — verify the product still exists and has all variants.
@@ -14642,8 +15919,9 @@ ${textEdgeRestrictions}
             const shopifyVariantCount = shopifyProdCheck.data.product.variants?.length ?? 0;
 
             if (shopifyVariantCount < expectedVariantCount) {
-              // Fewer variants than expected (e.g. after Refresh Variants) — clear and re-create
-              console.log(`[customizer-pages] Product ${ptForSync.shopifyProductId} has ${shopifyVariantCount} Shopify variants but DB expects ${expectedVariantCount}. Clearing for re-creation.`);
+              // Fewer variants than expected (e.g. after Refresh Variants) — delete and re-create
+              console.log(`[customizer-pages] Product ${ptForSync.shopifyProductId} has ${shopifyVariantCount} Shopify variants but DB expects ${expectedVariantCount}. Deleting for re-creation.`);
+              await deleteShopifyProductBestEffort(shop, installation.accessToken, ptForSync.shopifyProductId);
               await storage.updateProductType(incomingProductTypeId!, {
                 shopifyProductId: null,
                 shopifyProductHandle: null,
@@ -14780,7 +16058,8 @@ ${textEdgeRestrictions}
     const matchedType = productTypes.find(
       (pt: any) => String(pt.shopifyProductId) === String(variant.product_id)
     );
-    const resolvedProductTypeId: number | null = matchedType?.id ?? null;
+    const resolvedProductTypeId: number | null =
+      matchedType?.id ?? incomingProductTypeId ?? ptForSync?.id ?? null;
 
     // ── Write variant prices to Shopify ──────────────────────────────────────
     if (variantPrices && typeof variantPrices === "object") {
@@ -14990,6 +16269,36 @@ ${textEdgeRestrictions}
       status: initialStatus,
     });
 
+    if (incomingBaseMockupImages && resolvedProductTypeId) {
+      const linkedPt = await storage.getProductType(resolvedProductTypeId);
+      if (linkedPt) {
+        const currentImages = typeof linkedPt.baseMockupImages === "string"
+          ? JSON.parse(linkedPt.baseMockupImages || "{}")
+          : linkedPt.baseMockupImages || {};
+        const gallery = Array.isArray(incomingBaseMockupImages.gallery)
+          ? incomingBaseMockupImages.gallery.map(String).filter(Boolean).slice(0, 4)
+          : (currentImages.gallery || []);
+        const primary =
+          typeof incomingBaseMockupImages.primary === "string" && incomingBaseMockupImages.primary
+            ? incomingBaseMockupImages.primary
+            : currentImages.primary;
+        const custom = Array.isArray(incomingBaseMockupImages.custom)
+          ? incomingBaseMockupImages.custom.map(String).filter(Boolean).slice(0, 4)
+          : (currentImages.custom || []);
+        const available = Array.isArray(currentImages.available) ? currentImages.available : [];
+        await storage.updateProductType(resolvedProductTypeId, {
+          baseMockupImages: JSON.stringify({
+            ...currentImages,
+            primary,
+            front: primary || currentImages.front,
+            gallery,
+            custom,
+            available,
+          }),
+        });
+      }
+    }
+
     // ── Add navigation menu link (only if active) ──────────────────────────────
     let navWarning: string | null = null;
     if (initialStatus === "active") {
@@ -15113,8 +16422,8 @@ ${textEdgeRestrictions}
         : linkedProductType.baseMockupImages || {};
       const incomingImages = req.body.baseMockupImages || {};
       const available = Array.isArray(currentImages.available) ? currentImages.available : [];
-      const custom = Array.isArray(incomingImages.custom) ? incomingImages.custom.map(String).filter(Boolean).slice(0, 3) : (currentImages.custom || []);
-      const gallery = Array.isArray(incomingImages.gallery) ? incomingImages.gallery.map(String).filter(Boolean).slice(0, 3) : (currentImages.gallery || []);
+      const custom = Array.isArray(incomingImages.custom) ? incomingImages.custom.map(String).filter(Boolean).slice(0, 4) : (currentImages.custom || []);
+      const gallery = Array.isArray(incomingImages.gallery) ? incomingImages.gallery.map(String).filter(Boolean).slice(0, 4) : (currentImages.gallery || []);
       const primary = typeof incomingImages.primary === "string" && incomingImages.primary ? incomingImages.primary : currentImages.primary;
       const nextImages = {
         ...currentImages,
@@ -15197,51 +16506,35 @@ ${textEdgeRestrictions}
     return res.json({ success: true });
   }));
 
-  /** POST /api/appai/customizer-pages/:id/sync-prices — update Shopify variant prices for an existing page */
-  app.post("/api/appai/customizer-pages/:id/sync-prices", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
-    const resolved = await resolveShopInstallation(req);
-    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
+  /** Shared Shopify variant price sync used by customizer pages and Products admin. */
+  async function applyShopifyVariantPrices(args: {
+    shop: string;
+    accessToken: string;
+    baseProductId: string | number;
+    productType: any;
+    variantPrices: Record<string, string>;
+    onBaseVariantUpdated?: (price: string, variantNum: number) => Promise<void>;
+  }): Promise<{
+    updated: Array<{ variantId: number; price: string; success: boolean; error?: string }>;
+    successCount: number;
+    totalCount: number;
+  }> {
+    const { shop, accessToken, baseProductId, productType, variantPrices, onBaseVariantUpdated } = args;
 
-    const { installation } = resolved;
-    const shop: string = installation.shopDomain;
-
-    const dbPage = await storage.getCustomizerPageForShop(req.params.id, shop);
-    if (!dbPage) return res.status(404).json({ error: "Page not found" });
-
-    const { variantPrices } = req.body as { variantPrices?: Record<string, string> };
-    if (!variantPrices || typeof variantPrices !== "object" || Object.keys(variantPrices).length === 0) {
-      return res.status(400).json({ error: "variantPrices is required" });
-    }
-
-    // Validate all prices
-    for (const [vid, price] of Object.entries(variantPrices)) {
-      const num = parseFloat(String(price));
-      if (isNaN(num) || num <= 0) {
-        return res.status(400).json({ error: `Invalid price for variant ${vid}: "${price}". Must be a positive number.` });
-      }
-    }
-
-    // Find the product type for this page
-    const productTypes = await storage.getActiveProductTypes();
-    const matchedType = productTypes.find(
-      (pt: any) => String(pt.shopifyProductId) === String(dbPage.baseProductId)
-    );
-
-    // Build printifyVariantId → shopifyVariantId mapping
     const printifyToShopifyVariantId: Record<string, number> = {};
-    if (matchedType?.variantMap) {
-      const storedVm = typeof matchedType.variantMap === "string"
-        ? JSON.parse(matchedType.variantMap || "{}")
-        : (matchedType.variantMap || {});
-      const svIds = (typeof matchedType.shopifyVariantIds === "string"
-        ? JSON.parse(matchedType.shopifyVariantIds || "{}")
-        : (matchedType.shopifyVariantIds || {})) as Record<string, number>;
-      const ptSizes = (typeof (matchedType as any).sizes === "string"
-        ? JSON.parse((matchedType as any).sizes || "[]")
-        : ((matchedType as any).sizes || [])) as Array<{id: string; name: string}>;
-      const ptColors = (typeof (matchedType as any).frameColors === "string"
-        ? JSON.parse((matchedType as any).frameColors || "[]")
-        : ((matchedType as any).frameColors || [])) as Array<{id: string; name: string}>;
+    if (productType?.variantMap) {
+      const storedVm = typeof productType.variantMap === "string"
+        ? JSON.parse(productType.variantMap || "{}")
+        : (productType.variantMap || {});
+      const svIds = (typeof productType.shopifyVariantIds === "string"
+        ? JSON.parse(productType.shopifyVariantIds || "{}")
+        : (productType.shopifyVariantIds || {})) as Record<string, number>;
+      const ptSizes = (typeof productType.sizes === "string"
+        ? JSON.parse(productType.sizes || "[]")
+        : (productType.sizes || [])) as Array<{ id: string; name: string }>;
+      const ptColors = (typeof productType.frameColors === "string"
+        ? JSON.parse(productType.frameColors || "[]")
+        : (productType.frameColors || [])) as Array<{ id: string; name: string }>;
 
       const nameToShopifyId: Record<string, number> = {};
       for (const [mapKey, shopifyVid] of Object.entries(svIds)) {
@@ -15275,11 +16568,10 @@ ${textEdgeRestrictions}
         }
       }
 
-      // Fallback: match by title from live Shopify variants
       if (Object.keys(printifyToShopifyVariantId).length === 0) {
         const allVariantsResult = await shopifyApiCall(
-          shop, installation.accessToken,
-          `products/${dbPage.baseProductId}.json?fields=id,variants`,
+          shop, accessToken,
+          `products/${baseProductId}.json?fields=id,variants`,
         );
         const allShopifyVariants: any[] = allVariantsResult.data?.product?.variants ?? [];
         const titleToShopifyId: Record<string, number> = {};
@@ -15305,13 +16597,6 @@ ${textEdgeRestrictions}
 
     console.log(`[sync-prices] printifyToShopifyVariantId: ${JSON.stringify(printifyToShopifyVariantId)}`);
 
-    // Also fetch live Shopify variants for direct ID matching
-    const allVariantsResult = await shopifyApiCall(
-      shop, installation.accessToken,
-      `products/${dbPage.baseProductId}.json?fields=id,variants`,
-    );
-    const allShopifyVariants: any[] = allVariantsResult.data?.product?.variants ?? [];
-
     const updated: Array<{ variantId: number; price: string; success: boolean; error?: string }> = [];
 
     for (const [vid, price] of Object.entries(variantPrices)) {
@@ -15327,15 +16612,14 @@ ${textEdgeRestrictions}
         continue;
       }
       const formatted = parseFloat(String(price)).toFixed(2);
-      const priceResult = await shopifyApiCall(shop, installation.accessToken, `variants/${variantNum}.json`, {
+      const priceResult = await shopifyApiCall(shop, accessToken, `variants/${variantNum}.json`, {
         method: "PUT",
         body: JSON.stringify({ variant: { id: variantNum, price: formatted } }),
       });
       if (priceResult.ok) {
         updated.push({ variantId: variantNum, price: formatted, success: true });
-        // Update baseProductPrice if this is the base variant
-        if (String(variantNum) === String(dbPage.baseVariantId)) {
-          await storage.updateCustomizerPage(dbPage.id, { baseProductPrice: formatted });
+        if (onBaseVariantUpdated) {
+          await onBaseVariantUpdated(formatted, variantNum);
         }
       } else {
         updated.push({ variantId: variantNum, price: formatted, success: false, error: priceResult.error });
@@ -15343,8 +16627,102 @@ ${textEdgeRestrictions}
       }
     }
 
-    const successCount = updated.filter(u => u.success).length;
-    return res.json({ success: true, updated, successCount, totalCount: updated.length });
+    const successCount = updated.filter((u) => u.success).length;
+    return { updated, successCount, totalCount: updated.length };
+  }
+
+  app.post("/api/appai/customizer-pages/:id/sync-prices", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveShopInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
+
+    const { installation } = resolved;
+    const shop: string = installation.shopDomain;
+
+    const dbPage = await storage.getCustomizerPageForShop(req.params.id, shop);
+    if (!dbPage) return res.status(404).json({ error: "Page not found" });
+
+    const { variantPrices } = req.body as { variantPrices?: Record<string, string> };
+    if (!variantPrices || typeof variantPrices !== "object" || Object.keys(variantPrices).length === 0) {
+      return res.status(400).json({ error: "variantPrices is required" });
+    }
+
+    // Validate all prices
+    for (const [vid, price] of Object.entries(variantPrices)) {
+      const num = parseFloat(String(price));
+      if (isNaN(num) || num <= 0) {
+        return res.status(400).json({ error: `Invalid price for variant ${vid}: "${price}". Must be a positive number.` });
+      }
+    }
+
+    const productTypes = await storage.getActiveProductTypes();
+    const matchedType = productTypes.find(
+      (pt: any) => String(pt.shopifyProductId) === String(dbPage.baseProductId)
+    );
+
+    const { successCount, totalCount, updated } = await applyShopifyVariantPrices({
+      shop,
+      accessToken: installation.accessToken!,
+      baseProductId: dbPage.baseProductId,
+      productType: matchedType,
+      variantPrices,
+      onBaseVariantUpdated: async (formatted, variantNum) => {
+        if (String(variantNum) === String(dbPage.baseVariantId)) {
+          await storage.updateCustomizerPage(dbPage.id, { baseProductPrice: formatted });
+        }
+      },
+    });
+
+    return res.json({ success: true, updated, successCount, totalCount });
+  }));
+
+  /** POST /api/admin/product-types/:id/sync-prices — resync Shopify variant prices from Products admin */
+  app.post("/api/admin/product-types/:id/sync-prices", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const userId = req.user.claims.sub;
+    const merchant = await storage.getMerchantByUserId(userId);
+    if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+
+    const productTypeId = parseInt(req.params.id, 10);
+    const productType = await storage.getProductType(productTypeId);
+    const accessErr = adminProductTypeAccessError(req, productType, merchant);
+    if (accessErr) {
+      return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
+    }
+    if (!productType.shopifyProductId) {
+      return res.status(400).json({ error: "Product is not on Shopify yet. Send to store first." });
+    }
+
+    const shop = normalizeMyshopifyShopDomain(String(productType.shopifyShopDomain || ""));
+    if (!shop) {
+      return res.status(400).json({ error: "No Shopify shop linked to this product." });
+    }
+    const installation = await getAuthorizedInstallation(shop);
+    if (!installation?.accessToken) {
+      return res.status(403).json({
+        error: "Shop not authorized",
+        reconnectUrl: `/shopify/install?shop=${encodeURIComponent(shop)}`,
+      });
+    }
+
+    const { variantPrices } = req.body as { variantPrices?: Record<string, string> };
+    if (!variantPrices || typeof variantPrices !== "object" || Object.keys(variantPrices).length === 0) {
+      return res.status(400).json({ error: "variantPrices is required" });
+    }
+    for (const [vid, price] of Object.entries(variantPrices)) {
+      const num = parseFloat(String(price));
+      if (isNaN(num) || num <= 0) {
+        return res.status(400).json({ error: `Invalid price for variant ${vid}: "${price}". Must be a positive number.` });
+      }
+    }
+
+    const { successCount, totalCount, updated } = await applyShopifyVariantPrices({
+      shop,
+      accessToken: installation.accessToken,
+      baseProductId: productType.shopifyProductId,
+      productType,
+      variantPrices,
+    });
+
+    return res.json({ success: true, updated, successCount, totalCount });
   }));
 
   /** GET /api/appai/blanks (admin-auth'd, uses offline session) */
@@ -15357,7 +16735,11 @@ ${textEdgeRestrictions}
     const shop: string = installation.shopDomain;
 
     try {
-      const productTypes = await storage.getActiveProductTypes();
+      const productTypes = isPlatformAdminRequest(req)
+        ? await storage.getActiveProductTypes()
+        : installation.merchantId
+          ? (await storage.getProductTypesByMerchant(installation.merchantId)).filter((pt) => pt.isActive)
+          : [];
 
       // Enrich products that are already on Shopify with live variant data.
       // Products not yet on Shopify are included with needsShopifySync: true.
@@ -15373,8 +16755,12 @@ ${textEdgeRestrictions}
         const activeSizes = savedSizeIds.length ? allSizes.filter((s: any) => savedSizeIds.includes(s.id)) : allSizes;
         const activeColors = savedColorIds.length ? allColors.filter((c: any) => savedColorIds.includes(c.id)) : allColors;
         const labels: Record<string, string> = {};
+        const activeSizeSet = savedSizeIds.length ? new Set(savedSizeIds) : null;
+        const activeColorSet = savedColorIds.length ? new Set(savedColorIds) : null;
         for (const [key, entry] of Object.entries(storedVm)) {
-          const [sizeId, colorId] = key.split(":");
+          const [sizeId, colorId = "default"] = key.split(":");
+          if (activeSizeSet && !activeSizeSet.has(sizeId)) continue;
+          if (activeColorSet && !activeColorSet.has(colorId)) continue;
           const sizeName = activeSizes.find((s: any) => s.id === sizeId)?.name ?? allSizes.find((s: any) => s.id === sizeId)?.name ?? sizeId;
           const colorName = activeColors.find((c: any) => c.id === colorId)?.name ?? allColors.find((c: any) => c.id === colorId)?.name;
           const vid = String((entry as any).printifyVariantId);
@@ -15683,10 +17069,13 @@ ${textEdgeRestrictions}
       try {
         const pt = await storage.getProductType(page.productTypeId);
         if (pt) {
-          const sizeChart = pt.printifyBlueprintId
-            ? await getNormalizedSizeChartWithTimeout(pt.printifyBlueprintId)
+          const ptForDesigner = await prepareProductTypeForDesigner(pt, {
+            allowUnpublishedHarvest: true,
+          });
+          const sizeChart = ptForDesigner!.printifyBlueprintId
+            ? await getNormalizedSizeChartWithTimeout(ptForDesigner!.printifyBlueprintId)
             : null;
-          designerConfig = buildDesignerConfig(pt, page.productTypeId, undefined, sizeChart);
+          designerConfig = buildDesignerConfig(ptForDesigner!, page.productTypeId, undefined, sizeChart);
         }
       } catch (e) {
         console.warn(`[proxy/customizer-page] Failed to load designerConfig for productTypeId=${page.productTypeId}:`, e);
@@ -15704,13 +17093,34 @@ ${textEdgeRestrictions}
           const prodResult = await shopifyApiCall(
             shop,
             installation.accessToken,
-            `products/${page.baseProductId}.json?fields=id,status,published_at,variants`
+            `products/${page.baseProductId}.json?fields=id,status,published_at,variants,images`
           );
           const rawVariants: any[] = prodResult.data?.product?.variants ?? [];
-          variants = rawVariants.map((v: any) => ({
+          const productImages: any[] = prodResult.data?.product?.images ?? [];
+          let baseVariants = selectBaseCatalogVariants(rawVariants);
+          if (baseVariants.length === 0 && page.productTypeId) {
+            const pt = await storage.getProductType(page.productTypeId);
+            if (pt) {
+              const fallback = enrichVariantsWithShopifyPrices(
+                buildFallbackVariantsFromProductType(pt),
+                rawVariants,
+              );
+              if (fallback.length > 0) {
+                console.log(
+                  `[proxy/customizer-page] Product ${page.baseProductId} had ${rawVariants.length} Shopify variants but catalog empty; using DB fallback (${fallback.length})`,
+                );
+                baseVariants = fallback;
+              }
+            }
+          }
+          variants = mapVariantsForCatalogResponse(baseVariants, true, productImages).map((v) => ({
             id: String(v.id),
             title: v.title || "",
             price: v.price || "0.00",
+            option1: v.option1 ?? undefined,
+            option2: v.option2 ?? undefined,
+            option3: v.option3 ?? undefined,
+            imageSrc: v.imageSrc ?? undefined,
           }));
 
           // Ensure the product is published to the Online Store channel.
@@ -16486,6 +17896,12 @@ ${textEdgeRestrictions}
 
   // Register admin branding routes
   registerAdminBrandingRoutes(app);
+  const { registerFlatCalibrationMapperRoutes } = await import("./routes/flat-calibration-mapper");
+  registerFlatCalibrationMapperRoutes(app, { storage, isAuthenticated });
+  const { registerPlatformCalibrationRoutes } = await import("./routes/platform-calibration");
+  registerPlatformCalibrationRoutes(app, { storage, isAuthenticated });
+  const { registerOperatorCatalogRoutes } = await import("./routes/operator-catalog");
+  registerOperatorCatalogRoutes(app, { storage, isAuthenticated });
   if (process.env.NODE_ENV !== "production") {
     const { registerAopCalibrationMapperRoutes } = await import("./routes/aop-calibration-mapper");
     registerAopCalibrationMapperRoutes(app);

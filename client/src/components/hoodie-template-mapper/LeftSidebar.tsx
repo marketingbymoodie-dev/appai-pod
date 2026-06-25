@@ -13,8 +13,8 @@ import {
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
-  PANELS_PER_VIEW,
   PANEL_DISPLAY_LABEL,
+  panelsEligibleForView,
   layerRenderPriority,
   type HoodieView,
 } from "@shared/hoodieTemplate";
@@ -151,6 +151,7 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
   const hoverLayerId = useHoodieMapperStore((s) => s.hoverLayerId);
   const saveSeq = useHoodieMapperStore((s) => s.saveSeq);
   const activeTemplateName = useHoodieMapperStore((s) => s.template.name);
+  const blueprintId = useHoodieMapperStore((s) => s.template.blueprintId);
   const actions = useHoodieMapperStore((s) => s.actions);
 
   const [templates, setTemplates] = useState<TemplateListEntry[]>([]);
@@ -209,10 +210,9 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
       return;
     }
     actions.setMockup(inferredView, { src: entry.url, width: dims.width, height: dims.height });
-    actions.markSaved();
     toast({
       title: `Attached ${inferredView} mockup`,
-      description: `${entry.filename} (${dims.width}\u00d7${dims.height}px)`,
+      description: `${entry.filename} (${dims.width}\u00d7${dims.height}px). Save, then Publish — reused zip/other files upload from their on-disk path.`,
     });
   }
 
@@ -231,7 +231,7 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [saveSeq]);
 
-  const eligiblePanels = PANELS_PER_VIEW[view];
+  const eligiblePanels = panelsEligibleForView(view, blueprintId);
 
   return (
     <aside

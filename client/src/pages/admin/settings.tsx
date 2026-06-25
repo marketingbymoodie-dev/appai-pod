@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { queryClient, apiRequest } from "@/lib/queryClient";
+import { queryClient, apiRequest, apiFetch } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -26,7 +26,7 @@ export default function AdminSettings() {
   const [printifyToken, setPrintifyToken] = useState("");
   const [printifyShopId, setPrintifyShopId] = useState("");
   const [detectShopLoading, setDetectShopLoading] = useState(false);
-  const [shopDetectResult, setShopDetectResult] = useState<{ message: string; error?: boolean; shops?: { id: string; title: string }[]; instructions?: string[] } | null>(null);
+  const [shopDetectResult, setShopDetectResult] = useState<{ message: string; error?: boolean; shops?: { id: string; title: string; recommended?: boolean }[]; instructions?: string[] } | null>(null);
   const [useBuiltIn, setUseBuiltIn] = useState(true);
   const [customToken, setCustomToken] = useState("");
 
@@ -130,7 +130,7 @@ export default function AdminSettings() {
   };
 
   const handleDetectShop = async () => {
-    if (!printifyToken) {
+    if (!printifyToken.trim()) {
       toast({
         title: "Token required",
         description: "Please enter your Printify API token first.",
@@ -142,26 +142,53 @@ export default function AdminSettings() {
     setDetectShopLoading(true);
     setShopDetectResult(null);
     try {
-      const res = await fetch("/api/printify/detect-shop", {
+      const res = await apiFetch("/api/admin/printify/detect-shop", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token: printifyToken }),
       });
       const data = await res.json();
-      setShopDetectResult(data);
-      
-      if (data.shopId) {
-        setPrintifyShopId(data.shopId);
+
+      if (!res.ok) {
+        setShopDetectResult({
+          message: data.error || data.message || "Failed to detect shop",
+          error: true,
+          instructions: data.instructions,
+        });
+        return;
+      }
+
+      if (data.shops?.length === 1) {
+        setPrintifyShopId(String(data.shops[0].id));
         toast({
-          title: "Shop detected",
-          description: `Found shop: ${data.shopName || data.shopId}`,
+          title: "Shop detected!",
+          description: `Found "${data.shops[0].title}". Click Save Settings at the top to store it.`,
+        });
+        setShopDetectResult(null);
+      } else if (data.shops?.length > 1) {
+        const recommended = data.shops.find((s: { recommended?: boolean }) => s.recommended);
+        if (recommended) {
+          setPrintifyShopId(String(recommended.id));
+          toast({
+            title: "Shopify store selected",
+            description: `Using recommended shop "${recommended.title}". Click Save Settings at the top.`,
+          });
+        }
+        setShopDetectResult({
+          message: data.message || `Found ${data.shops.length} shops. Select the one you want to use.`,
+          shops: data.shops,
+        });
+      } else {
+        setShopDetectResult({
+          message: data.error || data.message || "No shops found",
+          error: true,
+          instructions: data.instructions,
+          shops: data.shops,
         });
       }
-    } catch (error) {
-      toast({
-        title: "Detection failed",
-        description: "Could not connect to Printify API.",
-        variant: "destructive",
+    } catch {
+      setShopDetectResult({
+        message: "Failed to connect to Printify. Please check your connection and try again.",
+        error: true,
       });
     } finally {
       setDetectShopLoading(false);
@@ -181,6 +208,24 @@ export default function AdminSettings() {
 
   return (
     <AdminLayout title="Settings">
+      <div className="sticky top-0 z-10 -mt-2 mb-6 flex flex-wrap items-center justify-between gap-3 border-b bg-background/95 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+        <p className="text-sm text-muted-foreground">
+          Connect Printify, AI, and Shopify. Save after updating token or shop ID.
+        </p>
+        <Button
+          size="lg"
+          className="gap-2 shrink-0"
+          onClick={handleSave}
+          disabled={updateMerchantMutation.isPending}
+        >
+          {updateMerchantMutation.isPending ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Save className="h-4 w-4" />
+          )}
+          Save Settings
+        </Button>
+      </div>
       <div className="space-y-6">
         <Card>
           <CardHeader>
@@ -224,6 +269,40 @@ export default function AdminSettings() {
                   {detectShopLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Detect"}
                 </Button>
               </div>
+              {shopDetectResult && (
+                <div className={`text-sm p-3 rounded-md ${shopDetectResult.error ? "bg-destructive/10 text-destructive" : "bg-muted"}`}>
+                  <p>{shopDetectResult.message}</p>
+                  {shopDetectResult.shops && shopDetectResult.shops.length > 0 && (
+                    <div className="mt-2 space-y-1">
+                      {shopDetectResult.shops.map((shop) => (
+                        <Button
+                          key={shop.id}
+                          variant={shop.recommended ? "default" : "secondary"}
+                          size="sm"
+                          onClick={() => {
+                            setPrintifyShopId(String(shop.id));
+                            setShopDetectResult(null);
+                            toast({
+                              title: "Shop ID set",
+                              description: `Using "${shop.title}" (ID: ${shop.id}). Click Save Settings at the top.`,
+                            });
+                          }}
+                          className="w-full justify-start"
+                        >
+                          {shop.title} (ID: {shop.id}){shop.recommended ? " — Shopify linked" : ""}
+                        </Button>
+                      ))}
+                    </div>
+                  )}
+                  {shopDetectResult.instructions && (
+                    <ul className="mt-2 text-xs space-y-1 list-none">
+                      {shopDetectResult.instructions.map((step, i) => (
+                        <li key={i}>{step}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -342,22 +421,6 @@ export default function AdminSettings() {
         </Card>
 
         <BrandingSettingsComponent />
-
-        <div className="flex justify-end pt-4">
-          <Button 
-            size="lg" 
-            className="gap-2" 
-            onClick={handleSave}
-            disabled={updateMerchantMutation.isPending}
-          >
-            {updateMerchantMutation.isPending ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Save className="h-4 w-4" />
-            )}
-            Save Settings
-          </Button>
-        </div>
       </div>
     </AdminLayout>
   );

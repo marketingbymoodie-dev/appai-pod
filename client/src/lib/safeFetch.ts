@@ -109,14 +109,14 @@ export const safeFetch = async (
   }
 
   try {
-    const urlStr = String(url).substring(0, 120);
+    const urlStr = String(url);
     const impl = _isStorefrontIframe ? "xhr" : "fetch";
     // eslint-disable-next-line no-console
-    console.log(`[safeFetch] calling ${impl}`, urlStr);
+    console.log(`[safeFetch] calling ${impl}`, urlStr.substring(0, 120));
 
     let res: Response;
     if (_isStorefrontIframe) {
-      res = await xhrFetch(String(url), { ...options, signal: controller.signal });
+      res = await xhrFetch(urlStr, { ...options, signal: controller.signal });
     } else {
       res = await window.fetch(url as RequestInfo, {
         ...options,

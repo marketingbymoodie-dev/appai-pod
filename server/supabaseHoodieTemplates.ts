@@ -19,26 +19,31 @@
  * fetched templates in memory with a TTL to soften brief pauses, and once
  * we're on pro this concern goes away.
  */
+import "./load-env";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-
-const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
-export const HOODIE_TEMPLATES_BUCKET =
-  process.env.SUPABASE_HOODIE_TEMPLATES_BUCKET ?? "hoodie-templates";
 
 let _client: SupabaseClient | null | undefined;
 
 function client(): SupabaseClient | null {
   if (_client !== undefined) return _client;
-  if (!SUPABASE_URL || !SUPABASE_KEY) {
+  const url = process.env.SUPABASE_URL ?? "";
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
+  if (!url || !key) {
     _client = null;
     return null;
   }
-  _client = createClient(SUPABASE_URL, SUPABASE_KEY, {
+  _client = createClient(url, key, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
   return _client;
 }
+
+export function hoodieTemplatesBucketName(): string {
+  return process.env.SUPABASE_HOODIE_TEMPLATES_BUCKET ?? "hoodie-templates";
+}
+
+/** @deprecated prefer hoodieTemplatesBucketName() — resolved lazily after .env load */
+export const HOODIE_TEMPLATES_BUCKET = hoodieTemplatesBucketName();
 
 export function isSupabaseHoodieTemplatesConfigured(): boolean {
   return client() !== null;
@@ -51,9 +56,10 @@ export function isSupabaseHoodieTemplatesConfigured(): boolean {
 export async function ensureHoodieTemplatesBucket(): Promise<void> {
   const c = client();
   if (!c) throw new Error("Supabase is not configured (missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY)");
-  const { data: existing } = await c.storage.getBucket(HOODIE_TEMPLATES_BUCKET);
+  const bucket = hoodieTemplatesBucketName();
+  const { data: existing } = await c.storage.getBucket(bucket);
   if (existing) return;
-  const { error } = await c.storage.createBucket(HOODIE_TEMPLATES_BUCKET, {
+  const { error } = await c.storage.createBucket(bucket, {
     public: true,
     // Storefront only ever reads, but allow generous body size for admin
     // PNG re-publishes (mockups can hit 2-3 MB).
@@ -73,11 +79,12 @@ export async function uploadToHoodieTemplatesBucket(
 ): Promise<string> {
   const c = client();
   if (!c) throw new Error("Supabase is not configured");
+  const bucket = hoodieTemplatesBucketName();
   const { error } = await c.storage
-    .from(HOODIE_TEMPLATES_BUCKET)
+    .from(bucket)
     .upload(filename, data, { contentType, upsert: true });
   if (error) throw new Error(`upload(${filename}) failed: ${error.message}`);
-  const { data: url } = c.storage.from(HOODIE_TEMPLATES_BUCKET).getPublicUrl(filename);
+  const { data: url } = c.storage.from(bucket).getPublicUrl(filename);
   return url.publicUrl;
 }
 
@@ -85,6 +92,7 @@ export async function uploadToHoodieTemplatesBucket(
 export function publicHoodieTemplateUrl(filename: string): string | null {
   const c = client();
   if (!c) return null;
-  const { data } = c.storage.from(HOODIE_TEMPLATES_BUCKET).getPublicUrl(filename);
+  const bucket = hoodieTemplatesBucketName();
+  const { data } = c.storage.from(bucket).getPublicUrl(filename);
   return data.publicUrl;
 }

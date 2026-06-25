@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { queryClient, apiRequest } from "@/lib/queryClient";
+import { queryClient, apiRequest, parseApiErrorMessage } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -13,13 +13,26 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
-import { Package, Plus, Trash2, Edit2, Download, Search, Loader2, ExternalLink, RefreshCw, Settings, Info, Palette, Upload } from "lucide-react";
+import { Package, Plus, Trash2, Edit2, Download, Search, Loader2, ExternalLink, RefreshCw, Settings, Info, Palette, Upload, FlaskConical, DollarSign } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import AdminLayout from "@/components/admin-layout";
+import ResyncPricesDialog from "@/components/admin/ResyncPricesDialog";
 import SizeChartTable from "@/components/SizeChartTable";
 import { getSizeChartByBlueprintId } from "@/lib/printifySizeCharts";
 import type { ProductType, Merchant } from "@shared/schema";
 import { AOP_TEMPLATE_ADMIN_OPTIONS, AOP_TEMPLATE_SELECT_AUTO } from "@/components/designer/aopTemplates/registry";
+import {
+  FULFILLMENT_LAYOUT_LABELS,
+  STOREFRONT_MOCKUP_MODE_LABELS,
+  usesToteFoldedFulfillment,
+  type FulfillmentLayout,
+  type StorefrontMockupMode,
+} from "@shared/productLayoutPolicy";
+import PrintifyCatalogLink from "@/components/catalog/PrintifyCatalogLink";
+import ShippingLocationBadges from "@/components/catalog/ShippingLocationBadges";
+import { usePrintifyCatalogFilters } from "@/hooks/usePrintifyCatalogFilters";
+import { PLATFORM_CATALOG_CATEGORIES, platformCatalogCategoryLabel } from "@shared/platformCatalogCategories";
+import { PRINTIFY_SHIPPING_REGIONS } from "@shared/printifyShippingRegions";
 
 interface VariantOption {
   id: string;
@@ -44,6 +57,25 @@ function getColorOptionLabel(colors: VariantOption[]): string {
     phoneModelPatterns.some((p) => p.test((c.name || "").trim()))
   );
   return isPhoneModel ? "Models" : "Colors";
+}
+
+const LAYOUT_MODE_AUTO = "auto";
+
+function productUsesToteFolded(pt: ProductType): boolean {
+  return usesToteFoldedFulfillment({
+    isAllOverPrint: pt.isAllOverPrint,
+    storefrontMockupMode: (pt as any).storefrontMockupMode,
+    fulfillmentLayout: (pt as any).fulfillmentLayout,
+    printifyBlueprintId: pt.printifyBlueprintId,
+  });
+}
+
+function productSupportsTestPrintifyOrder(pt: ProductType): boolean {
+  return (
+    pt.onTheFlyTier === "flat" ||
+    pt.onTheFlyTier === "mesh" ||
+    productUsesToteFolded(pt)
+  );
 }
 
 interface PrintifyBlueprint {
@@ -81,7 +113,7 @@ export default function AdminProducts() {
   const [, navigate] = useLocation();
   
   const [printifyImportOpen, setPrintifyImportOpen] = useState(false);
-  const [blueprintSearch, setBlueprintSearch] = useState("");
+  const [catalogCategoryFilter, setCatalogCategoryFilter] = useState("all");
   const [selectedBlueprint, setSelectedBlueprint] = useState<PrintifyBlueprint | null>(null);
   const [providerSelectionOpen, setProviderSelectionOpen] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState<PrintifyProvider | null>(null);
@@ -105,23 +137,88 @@ export default function AdminProducts() {
   const [refreshVariantsMutatingId, setRefreshVariantsMutatingId] = useState<number | null>(null);
   const [refreshColorsMutatingId, setRefreshColorsMutatingId] = useState<number | null>(null);
   const [aopTemplateMutatingId, setAopTemplateMutatingId] = useState<number | null>(null);
+  const [layoutPolicyMutatingId, setLayoutPolicyMutatingId] = useState<number | null>(null);
+  const [testOrderMutatingId, setTestOrderMutatingId] = useState<number | null>(null);
+  const [calibrateMutatingId, setCalibrateMutatingId] = useState<number | null>(null);
+  const [resyncPricesTarget, setResyncPricesTarget] = useState<ProductType | null>(null);
 
   const { data: merchant } = useQuery<Merchant>({
     queryKey: ["/api/merchant"],
   });
 
+  const { data: platformStatus } = useQuery<{ isPlatformAdmin: boolean }>({
+    queryKey: ["/api/platform/admin/status"],
+  });
+  const showOperatorCalibrationTools = !!platformStatus?.isPlatformAdmin;
+
   const { data: productTypes, isLoading: productTypesLoading } = useQuery<ProductType[]>({
-    queryKey: ["/api/product-types"],
+    queryKey: ["/api/admin/product-types"],
+    refetchInterval: (query) => {
+      const pts = query.state.data as ProductType[] | undefined;
+      const calibrating = pts?.some(
+        (pt) => pt.flatCalibrationStatus === "pending" || pt.flatCalibrationStatus === "running",
+      );
+      return calibrating ? 15_000 : false;
+    },
   });
 
-  const { data: printifyBlueprints, isLoading: blueprintsLoading, refetch: refetchBlueprints, isFetching: blueprintsFetching } = useQuery<PrintifyBlueprint[]>({
-    queryKey: ["/api/admin/printify/blueprints"],
-    queryFn: async () => {
-      const response = await fetch("/api/admin/printify/blueprints", { credentials: "include" });
-      if (!response.ok) throw new Error("Failed to fetch blueprints");
-      return response.json();
-    },
-    enabled: false,
+  const { data: allowedCatalog } = useQuery<{
+    blueprints: Array<{
+      blueprintId: number;
+      label: string;
+      brand?: string | null;
+      category?: string;
+      kind?: string;
+      publish?: { published: boolean };
+    }>;
+  }>({
+    queryKey: ["/api/admin/catalog/allowed-blueprints"],
+  });
+
+  const allowedBlueprintIds = useMemo(
+    () => new Set(allowedCatalog?.blueprints?.map((b) => b.blueprintId) ?? []),
+    [allowedCatalog],
+  );
+
+  const allowedCatalogById = useMemo(() => {
+    const m = new Map<number, NonNullable<typeof allowedCatalog>["blueprints"][number]>();
+    for (const b of allowedCatalog?.blueprints ?? []) m.set(b.blueprintId, b);
+    return m;
+  }, [allowedCatalog]);
+
+  const catalogAllowlistFilter = useMemo(() => {
+    return (bp: PrintifyBlueprint) => {
+      if (allowedBlueprintIds.size > 0 && !allowedBlueprintIds.has(bp.id)) {
+        return false;
+      }
+      if (catalogCategoryFilter !== "all") {
+        const meta = allowedCatalogById.get(bp.id);
+        if (meta?.category !== catalogCategoryFilter) return false;
+      }
+      return true;
+    };
+  }, [allowedBlueprintIds, catalogCategoryFilter, allowedCatalogById]);
+
+  const {
+    search: blueprintSearch,
+    setSearch: setBlueprintSearch,
+    shipsFromFilter: catalogShipsFromFilter,
+    setShipsFromFilter: setCatalogShipsFromFilter,
+    shipsToFilter: catalogShipsToFilter,
+    setShipsToFilter: setCatalogShipsToFilter,
+    shippingFilterActive,
+    getShippingMeta,
+    shippingMetaLoading,
+    visible: filteredBlueprints,
+    totalMatching: filteredBlueprintCount,
+    isLoading: blueprintsLoading,
+    isFetching: blueprintsFetching,
+    refetch: refetchBlueprints,
+    error: blueprintsFetchError,
+  } = usePrintifyCatalogFilters({
+    enabled: printifyImportOpen && !!merchant?.printifyApiToken,
+    maxResults: 80,
+    extraFilter: catalogAllowlistFilter,
   });
 
   const { data: printifyProviders, isLoading: providersLoading } = useQuery<PrintifyProvider[]>({
@@ -150,34 +247,11 @@ export default function AdminProducts() {
     enabled: !!selectedBlueprint && !!selectedProvider && variantSelectionOpen,
   });
 
-  const { data: allProviders } = useQuery<PrintifyProvider[]>({
-    queryKey: ["/api/admin/printify/providers"],
-    queryFn: async () => {
-      const response = await fetch("/api/admin/printify/providers", {
-        credentials: "include"
-      });
-      if (!response.ok) throw new Error("Failed to fetch providers");
-      return response.json();
-    },
-    enabled: printifyImportOpen && !!merchant?.printifyApiToken,
-    staleTime: 5 * 60 * 1000,
-  });
-
   const { data: selectedBlueprintSizeChart, isLoading: selectedBlueprintSizeChartLoading } = useQuery({
     queryKey: ["printify-size-chart", selectedBlueprint?.id],
     queryFn: () => getSizeChartByBlueprintId(selectedBlueprint!.id),
     enabled: !!selectedBlueprint,
   });
-
-  const availableLocations = useMemo(() => {
-    if (!allProviders) return [];
-    const countries = new Set<string>();
-    allProviders.forEach(p => {
-      if (p.location?.country) countries.add(p.location.country);
-      p.fulfillment_countries?.forEach(c => countries.add(c));
-    });
-    return Array.from(countries).sort();
-  }, [allProviders]);
 
   // Calculate variant count based on selections
   const variantCount = useMemo(() => {
@@ -203,7 +277,8 @@ export default function AdminProducts() {
       return response.json();
     },
     onSuccess: async (data) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
       setPrintifyImportOpen(false);
       setProviderSelectionOpen(false);
       setVariantSelectionOpen(false);
@@ -222,7 +297,7 @@ export default function AdminProducts() {
       if (data?.id) {
         try {
           await apiRequest("POST", `/api/admin/product-types/${data.id}/refresh-images`);
-          queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+          queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
         } catch (e) {
           // Silent fail for image refresh - product was still imported successfully
           console.log("Auto-image refresh skipped:", e);
@@ -230,7 +305,11 @@ export default function AdminProducts() {
       }
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to import blueprint", description: error.message, variant: "destructive" });
+      toast({
+        title: "Failed to import blueprint",
+        description: parseApiErrorMessage(error.message),
+        variant: "destructive",
+      });
     },
   });
   
@@ -243,7 +322,7 @@ export default function AdminProducts() {
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
       setEditVariantsOpen(false);
       setEditingProduct(null);
       setSelectedSizeIds(new Set());
@@ -260,8 +339,11 @@ export default function AdminProducts() {
       await apiRequest("DELETE", `/api/admin/product-types/${id}`);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
-      toast({ title: "Product type deleted" });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
+      toast({
+        title: "Product removed",
+        description: "Removed from your catalog. Linked Shopify product and customizer pages were deleted when possible.",
+      });
     },
   });
 
@@ -271,7 +353,7 @@ export default function AdminProducts() {
       return response.json();
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
       const hasImages = data.baseMockupImages?.front || data.baseMockupImages?.lifestyle;
       toast({ 
         title: hasImages ? "Images refreshed" : "No images available",
@@ -291,7 +373,7 @@ export default function AdminProducts() {
     },
     onSuccess: (data) => {
       setRefreshColorsMutatingId(null);
-      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
       toast({
         title: "Colors refreshed",
         description: data.updatedCount > 0
@@ -313,7 +395,7 @@ export default function AdminProducts() {
     },
     onSuccess: (data) => {
       setRefreshVariantsMutatingId(null);
-      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
       toast({
         title: "Variants refreshed",
         description: data.message || `Found ${data.sizes?.length || 0} sizes and ${data.frameColors?.length || 0} colors.`
@@ -334,7 +416,7 @@ export default function AdminProducts() {
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
     },
     onError: (error: Error) => {
       toast({ title: "Failed to update AOP flag", description: error.message, variant: "destructive" });
@@ -350,13 +432,89 @@ export default function AdminProducts() {
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
       toast({ title: "AOP template updated" });
     },
     onError: (error: Error) => {
       toast({ title: "Failed to update AOP template", description: error.message, variant: "destructive" });
     },
     onSettled: () => setAopTemplateMutatingId(null),
+  });
+
+  const updateLayoutPolicyMutation = useMutation({
+    mutationFn: async (data: {
+      id: number;
+      storefrontMockupMode: StorefrontMockupMode | null;
+      fulfillmentLayout: FulfillmentLayout | null;
+    }) => {
+      setLayoutPolicyMutatingId(data.id);
+      const response = await apiRequest("PATCH", `/api/admin/product-types/${data.id}`, {
+        storefrontMockupMode: data.storefrontMockupMode,
+        fulfillmentLayout: data.fulfillmentLayout,
+      });
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
+      toast({ title: "Layout policy updated" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to update layout policy", description: error.message, variant: "destructive" });
+    },
+    onSettled: () => setLayoutPolicyMutatingId(null),
+  });
+
+  // Send a DRAFT test order to Printify
+  // print file matches the on-screen design before going live. Never produces
+  // or charges — it creates a draft Printify order only.
+  const testPrintifyOrderMutation = useMutation({
+    mutationFn: async (id: number) => {
+      setTestOrderMutatingId(id);
+      const response = await apiRequest("POST", `/api/admin/product-types/${id}/test-printify-order`);
+      return response.json();
+    },
+    onSuccess: (data) => {
+      const url = data?.printifyOrderUrl as string | undefined;
+      toast({
+        title: "Draft test order created in Printify",
+        description: data?.printifyOrderId
+          ? `Order ${data.printifyOrderId} (DRAFT — not sent to production). Open it in Printify to verify the print file.`
+          : "Draft order created. Open Printify to verify the print file.",
+        action: url ? (
+          <a href={url} target="_blank" rel="noopener noreferrer" className="underline text-xs">
+            Open
+          </a>
+        ) : undefined,
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Test order failed", description: error.message, variant: "destructive" });
+    },
+    onSettled: () => setTestOrderMutatingId(null),
+  });
+
+  // (Re)run on-the-fly flat/mesh calibration for an existing product. Only
+  // surfaced for products that have never been calibrated (legacy imports) or
+  // whose last run failed — new imports auto-calibrate, so this never lingers.
+  const calibrateFlatMutation = useMutation({
+    mutationFn: async (id: number) => {
+      setCalibrateMutatingId(id);
+      const response = await apiRequest("POST", `/api/admin/product-types/${id}/calibrate-flat`);
+      return response.json();
+    },
+    onSuccess: () => {
+      toast({
+        title: "Calibration started",
+        description:
+          "Harvesting masks and blank photos via Printify (up to 8 colours, not all variants). " +
+          "Apparel with front + back usually takes 3–8 min. This page auto-refreshes status.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Couldn't start calibration", description: error.message, variant: "destructive" });
+    },
+    onSettled: () => setCalibrateMutatingId(null),
   });
 
   // Fetch connected Shopify shops
@@ -374,7 +532,7 @@ export default function AdminProducts() {
     },
     onSuccess: (data) => {
       setShopifyMutatingProductId(null);
-      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
       toast({
         title: "Shopify product refreshed",
         description: "Product description and metafields updated. The correct design studio will now load."
@@ -427,44 +585,38 @@ export default function AdminProducts() {
     });
   };
 
-  const handleOpenPrintifyImport = async () => {
+  const handleOpenPrintifyImport = () => {
     setPrintifyImportOpen(true);
-    if (!printifyBlueprints) {
-      refetchBlueprints();
-    }
+    refetchBlueprints();
   };
-
-
-  const filteredBlueprints = useMemo(() => {
-    if (!printifyBlueprints) return [];
-    return printifyBlueprints.filter(bp => {
-      const matchesSearch = !blueprintSearch || 
-        bp.title.toLowerCase().includes(blueprintSearch.toLowerCase()) ||
-        bp.brand.toLowerCase().includes(blueprintSearch.toLowerCase());
-      
-      return matchesSearch;
-    });
-  }, [printifyBlueprints, blueprintSearch]);
 
   const filteredProviders = useMemo(() => {
     if (!printifyProviders) return [];
     if (!providerLocationFilter || providerLocationFilter === "all") return printifyProviders;
-    
-    return printifyProviders.filter(p => 
+
+    return printifyProviders.filter(p =>
       p.location?.country === providerLocationFilter ||
       p.fulfillment_countries?.includes(providerLocationFilter)
     );
   }, [printifyProviders, providerLocationFilter]);
 
+  const providerAvailableLocations = useMemo(() => {
+    if (!printifyProviders) return [];
+    const countries = new Set<string>();
+    printifyProviders.forEach((p) => {
+      if (p.location?.country) countries.add(p.location.country);
+      p.fulfillment_countries?.forEach((c) => countries.add(c));
+    });
+    return Array.from(countries).sort();
+  }, [printifyProviders]);
+
   // Load variant data for the selected blueprint/provider
   const loadVariantData = async () => {
-    if (!selectedBlueprint) return;
+    if (!selectedBlueprint || !selectedProvider) return;
     
     setVariantDataLoading(true);
     try {
-      const url = selectedProvider 
-        ? `/api/admin/printify/blueprints/${selectedBlueprint.id}/variants?providerId=${selectedProvider.id}`
-        : `/api/admin/printify/blueprints/${selectedBlueprint.id}/variants`;
+      const url = `/api/admin/printify/blueprints/${selectedBlueprint.id}/variants?providerId=${selectedProvider.id}`;
       
       const response = await fetch(url, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch variants");
@@ -485,6 +637,14 @@ export default function AdminProducts() {
   };
   
   const handleProceedToVariants = async () => {
+    if (!selectedProvider) {
+      toast({
+        title: "Select a print provider",
+        description: "Each supplier has different colours, costs, and shipping. Pick one before choosing variants.",
+        variant: "destructive",
+      });
+      return;
+    }
     setProviderSelectionOpen(false);
     setVariantSelectionOpen(true);
     setPlaceholderPrimaryUrl("");
@@ -493,7 +653,7 @@ export default function AdminProducts() {
   };
 
   const handleImportBlueprint = async () => {
-    if (!selectedBlueprint) return;
+    if (!selectedBlueprint || !selectedProvider) return;
     if (!isVariantCountValid) return;
     
     importPrintifyMutation.mutate({
@@ -652,8 +812,14 @@ export default function AdminProducts() {
                     <div className="flex items-start justify-between gap-2">
                       <div>
                         <CardTitle className="text-base">{pt.name}</CardTitle>
-                        <CardDescription className="text-xs mt-1">
-                          Blueprint: {pt.printifyBlueprintId || "Custom"}
+                        <CardDescription className="text-xs mt-1 space-y-0.5">
+                          <div>
+                            Product ID:{" "}
+                            <span className="font-mono font-medium text-foreground" data-testid={`product-id-${pt.id}`}>
+                              {pt.id}
+                            </span>
+                          </div>
+                          <div>Blueprint: {pt.printifyBlueprintId || "Custom"}</div>
                         </CardDescription>
                       </div>
                       <Badge variant="outline" className="text-xs">
@@ -680,6 +846,78 @@ export default function AdminProducts() {
                         All-Over Print (AOP)
                       </Label>
                     </div>
+                    {(pt.isAllOverPrint || productUsesToteFolded(pt)) && (
+                      <div className="mt-3 space-y-2 rounded-md border p-3">
+                        <p className="text-xs font-medium text-muted-foreground">Layout overrides</p>
+                        <div className="space-y-1">
+                          <Label className="text-xs text-muted-foreground">Storefront mockups</Label>
+                          <Select
+                            value={(pt as any).storefrontMockupMode || LAYOUT_MODE_AUTO}
+                            onValueChange={(v) =>
+                              updateLayoutPolicyMutation.mutate({
+                                id: pt.id,
+                                storefrontMockupMode: v === LAYOUT_MODE_AUTO ? null : (v as StorefrontMockupMode),
+                                fulfillmentLayout:
+                                  ((pt as any).fulfillmentLayout as FulfillmentLayout | null) ?? null,
+                              })
+                            }
+                            disabled={layoutPolicyMutatingId === pt.id}
+                          >
+                            <SelectTrigger className="h-8 text-xs">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value={LAYOUT_MODE_AUTO}>
+                                {STOREFRONT_MOCKUP_MODE_LABELS.auto}
+                              </SelectItem>
+                              {(Object.keys(STOREFRONT_MOCKUP_MODE_LABELS) as StorefrontMockupMode[])
+                                .filter((k) => k !== "auto")
+                                .map((k) => (
+                                  <SelectItem key={k} value={k}>
+                                    {STOREFRONT_MOCKUP_MODE_LABELS[k]}
+                                  </SelectItem>
+                                ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs text-muted-foreground">Fulfillment print file</Label>
+                          <Select
+                            value={(pt as any).fulfillmentLayout || LAYOUT_MODE_AUTO}
+                            onValueChange={(v) =>
+                              updateLayoutPolicyMutation.mutate({
+                                id: pt.id,
+                                storefrontMockupMode:
+                                  ((pt as any).storefrontMockupMode as StorefrontMockupMode | null) ?? null,
+                                fulfillmentLayout: v === LAYOUT_MODE_AUTO ? null : (v as FulfillmentLayout),
+                              })
+                            }
+                            disabled={layoutPolicyMutatingId === pt.id}
+                          >
+                            <SelectTrigger className="h-8 text-xs">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value={LAYOUT_MODE_AUTO}>
+                                {FULFILLMENT_LAYOUT_LABELS.auto}
+                              </SelectItem>
+                              {(Object.keys(FULFILLMENT_LAYOUT_LABELS) as FulfillmentLayout[])
+                                .filter((k) => k !== "auto")
+                                .map((k) => (
+                                  <SelectItem key={k} value={k}>
+                                    {FULFILLMENT_LAYOUT_LABELS[k]}
+                                  </SelectItem>
+                                ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        {productUsesToteFolded(pt) && (
+                          <p className="text-xs text-muted-foreground">
+                            Folded tote: flat front/back mockups, 2650×5250 print file at order time.
+                          </p>
+                        )}
+                      </div>
+                    )}
                     {pt.isAllOverPrint && (
                       <div className="mt-3 space-y-1">
                         <Label className="text-xs text-muted-foreground">AOP layout template</Label>
@@ -767,6 +1005,99 @@ export default function AdminProducts() {
                           </>
                         )}
                       </Button>
+                      {pt.shopifyProductId && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setResyncPricesTarget(pt)}
+                          data-testid={`button-resync-prices-${pt.id}`}
+                        >
+                          <DollarSign className="h-3 w-3 mr-1" />
+                          Resync Prices
+                        </Button>
+                      )}
+                      {/* On-the-fly calibration tools — platform operator only */}
+                      {showOperatorCalibrationTools && !pt.isAllOverPrint && !pt.onTheFlyTier && pt.flatCalibrationStatus !== "unsupported" && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => calibrateFlatMutation.mutate(pt.id)}
+                          disabled={calibrateMutatingId === pt.id}
+                          title="Probe this product's print area and harvest masks/blanks so it can use on-the-fly mockups (flat/mesh) instead of Printify. Runs in the background (~1–2 min). Click again to restart if it stalls."
+                          data-testid={`button-calibrate-flat-${pt.id}`}
+                        >
+                          {(calibrateMutatingId === pt.id || pt.flatCalibrationStatus === "pending" || pt.flatCalibrationStatus === "running") ? (
+                            <>
+                              <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                              Calibrating… (click to restart)
+                            </>
+                          ) : pt.flatCalibrationStatus === "failed" ? (
+                            <>
+                              <FlaskConical className="h-3 w-3 mr-1" />
+                              Retry calibration
+                            </>
+                          ) : (
+                            <>
+                              <FlaskConical className="h-3 w-3 mr-1" />
+                              Calibrate for on-the-fly
+                            </>
+                          )}
+                        </Button>
+                      )}
+                      {showOperatorCalibrationTools && pt.onTheFlyTier && (
+                        <Badge
+                          variant={pt.onTheFlyTier === "reject" ? "secondary" : "default"}
+                          className="self-center"
+                          title={
+                            pt.onTheFlyTier === "reject"
+                              ? "Curved/3D surface — stays on Printify mockups."
+                              : "Eligible for on-the-fly local mockups."
+                          }
+                        >
+                          {pt.onTheFlyTier === "flat" ? "On-the-fly: flat" : pt.onTheFlyTier === "mesh" ? "On-the-fly: mesh" : "On-the-fly: n/a"}
+                        </Badge>
+                      )}
+                      {/* Re-run calibration for products that already have a tier
+                          (e.g. after a code fix, or when a prior run left masks
+                          but missing blank photos). */}
+                      {showOperatorCalibrationTools &&
+                        !pt.isAllOverPrint &&
+                        (pt.onTheFlyTier === "flat" || pt.onTheFlyTier === "mesh") &&
+                        pt.flatCalibrationStatus !== "unsupported" && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => calibrateFlatMutation.mutate(pt.id)}
+                          disabled={calibrateMutatingId === pt.id}
+                          title="Re-harvest masks, shading, and up to 8 blank garment photos (not one per variant). Apparel front+back: typically 3–8 min."
+                          data-testid={`button-recalibrate-flat-${pt.id}`}
+                        >
+                          {(calibrateMutatingId === pt.id || pt.flatCalibrationStatus === "pending" || pt.flatCalibrationStatus === "running") ? (
+                            <>
+                              <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                              Recalibrating…
+                            </>
+                          ) : (
+                            <>
+                              <FlaskConical className="h-3 w-3 mr-1" />
+                              Recalibrate
+                            </>
+                          )}
+                        </Button>
+                      )}
+                      {showOperatorCalibrationTools && productSupportsTestPrintifyOrder(pt) && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => testPrintifyOrderMutation.mutate(pt.id)}
+                          disabled={testOrderMutatingId === pt.id}
+                          title="Bakes the print file for the latest design and creates a DRAFT Printify order (not sent to production) so you can verify the print file matches the design."
+                          data-testid={`button-test-printify-order-${pt.id}`}
+                        >
+                          <FlaskConical className={`h-3 w-3 mr-1 ${testOrderMutatingId === pt.id ? 'animate-pulse' : ''}`} />
+                          Send test order to Printify (draft)
+                        </Button>
+                      )}
                       <Button 
                         variant="ghost" 
                         size="icon"
@@ -803,8 +1134,8 @@ export default function AdminProducts() {
               <DialogTitle>Import from Printify Catalog</DialogTitle>
             </DialogHeader>
             <div className="space-y-4">
-              <div className="flex gap-2 flex-wrap">
-                <div className="flex-1 min-w-[200px]">
+              <div className="flex flex-wrap gap-2">
+                <div className="min-w-[200px] flex-1">
                   <Input
                     placeholder="Search blueprints..."
                     value={blueprintSearch}
@@ -812,35 +1143,116 @@ export default function AdminProducts() {
                     data-testid="input-blueprint-search"
                   />
                 </div>
+                <Select
+                  value={catalogShipsFromFilter}
+                  onValueChange={(v) => setCatalogShipsFromFilter(v as typeof catalogShipsFromFilter)}
+                >
+                  <SelectTrigger className="w-[170px]">
+                    <SelectValue placeholder="Ships from" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PRINTIFY_SHIPPING_REGIONS.map((r) => (
+                      <SelectItem key={`from-${r.id}`} value={r.id}>
+                        Ships from: {r.id === "all" ? "Any" : r.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={catalogShipsToFilter}
+                  onValueChange={(v) => setCatalogShipsToFilter(v as typeof catalogShipsToFilter)}
+                >
+                  <SelectTrigger className="w-[170px]">
+                    <SelectValue placeholder="Ships to" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PRINTIFY_SHIPPING_REGIONS.map((r) => (
+                      <SelectItem key={`to-${r.id}`} value={r.id}>
+                        Ships to: {r.id === "all" ? "Any" : r.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select value={catalogCategoryFilter} onValueChange={setCatalogCategoryFilter}>
+                  <SelectTrigger className="w-[160px]">
+                    <SelectValue placeholder="Category" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All categories</SelectItem>
+                    {PLATFORM_CATALOG_CATEGORIES.map((cat) => (
+                      <SelectItem key={cat.value} value={cat.value}>
+                        {cat.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
+
+              {shippingMetaLoading && shippingFilterActive && (
+                <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Loading shipping data…
+                </p>
+              )}
+
+              {blueprintsFetchError && (
+                <p className="text-sm text-destructive">{(blueprintsFetchError as Error).message}</p>
+              )}
 
               {blueprintsFetching ? (
                 <div className="flex items-center justify-center py-8">
                   <Loader2 className="h-8 w-8 animate-spin" />
                 </div>
               ) : (
-                <div className="grid gap-3 max-h-[400px] overflow-y-auto">
-                  {filteredBlueprints.slice(0, 50).map((bp) => (
+                <>
+                  {filteredBlueprintCount > 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      Showing {filteredBlueprints.length} of {filteredBlueprintCount} allowlisted products
+                    </p>
+                  )}
+                <div className="grid max-h-[400px] gap-3 overflow-y-auto">
+                  {filteredBlueprints.map((bp) => {
+                    const catalogMeta = allowedCatalogById.get(bp.id);
+                    const shipping = getShippingMeta(bp.id);
+                    return (
                     <Card 
                       key={bp.id} 
                       className={`cursor-pointer hover-elevate ${selectedBlueprint?.id === bp.id ? 'ring-2 ring-primary' : ''}`}
                       onClick={() => {
                         setSelectedBlueprint(bp);
+                        setSelectedProvider(null);
+                        setProviderLocationFilter("");
                         setProviderSelectionOpen(true);
                       }}
                     >
-                      <CardContent className="p-4 flex items-center gap-4">
-                        {bp.images[0] && (
-                          <img src={bp.images[0]} alt={bp.title} className="w-16 h-16 object-cover rounded" />
+                      <CardContent className="flex items-center gap-4 p-4">
+                        {bp.images?.[0] && (
+                          <img src={bp.images[0]} alt={bp.title} className="h-16 w-16 rounded object-cover" />
                         )}
-                        <div className="flex-1 min-w-0">
-                          <h4 className="font-medium truncate">{bp.title}</h4>
-                          <p className="text-sm text-muted-foreground">{bp.brand}</p>
+                        <div className="min-w-0 flex-1 space-y-1">
+                          <h4 className="truncate font-medium">{bp.title}</h4>
+                          <p className="text-sm text-muted-foreground">
+                            {bp.brand}
+                            {catalogMeta?.category
+                              ? ` · ${platformCatalogCategoryLabel(catalogMeta.category)}`
+                              : ""}
+                            {" · #"}
+                            {bp.id}
+                            {" · "}
+                            <PrintifyCatalogLink
+                              blueprintId={bp.id}
+                              title={bp.title}
+                              providerTitle={shipping?.primaryProviderTitle}
+                            />
+                          </p>
+                          <ShippingLocationBadges meta={shipping} compact />
                         </div>
                       </CardContent>
                     </Card>
-                  ))}
+                    );
+                  })}
                 </div>
+                </>
               )}
             </div>
           </DialogContent>
@@ -853,9 +1265,17 @@ export default function AdminProducts() {
             </DialogHeader>
             <div className="space-y-4">
               {selectedBlueprint && (
-                <div className="p-3 bg-muted rounded-lg">
+                <div className="rounded-lg bg-muted p-3">
                   <p className="font-medium">{selectedBlueprint.title}</p>
-                  <p className="text-sm text-muted-foreground">{selectedBlueprint.brand}</p>
+                  <p className="text-sm text-muted-foreground">
+                    {selectedBlueprint.brand}
+                    {" · "}
+                    <PrintifyCatalogLink
+                      blueprintId={selectedBlueprint.id}
+                      title={selectedBlueprint.title}
+                      providerTitle={selectedProvider?.title}
+                    />
+                  </p>
                 </div>
               )}
 
@@ -902,7 +1322,7 @@ export default function AdminProducts() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">All locations</SelectItem>
-                    {availableLocations.map(loc => (
+                    {providerAvailableLocations.map(loc => (
                       <SelectItem key={loc} value={loc}>{loc}</SelectItem>
                     ))}
                   </SelectContent>
@@ -919,6 +1339,11 @@ export default function AdminProducts() {
                   <p className="text-xs mt-1">Try selecting a different product or adjusting the location filter.</p>
                 </div>
               ) : (
+                <>
+                <p className="text-sm text-muted-foreground">
+                  One product uses one print provider for fulfilment, costs, and mockup calibration.
+                  Import the same blueprint again with a different supplier if you need a separate EU or US listing.
+                </p>
                 <div className="space-y-2 max-h-[300px] overflow-y-auto">
                   {filteredProviders.map((provider) => (
                     <Card
@@ -946,6 +1371,7 @@ export default function AdminProducts() {
                     </Card>
                   ))}
                 </div>
+                </>
               )}
 
               <div className="flex justify-end gap-2">
@@ -954,7 +1380,7 @@ export default function AdminProducts() {
                 </Button>
                 <Button 
                   onClick={handleProceedToVariants}
-                  disabled={!selectedBlueprint}
+                  disabled={!selectedBlueprint || !selectedProvider}
                 >
                   Select Variants
                 </Button>
@@ -971,10 +1397,15 @@ export default function AdminProducts() {
             </DialogHeader>
             <div className="space-y-4">
               {selectedBlueprint && (
-                <div className="p-3 bg-muted rounded-lg">
+                <div className="p-3 bg-muted rounded-lg space-y-1">
                   <p className="font-medium">{selectedBlueprint.title}</p>
-                  {selectedProvider && (
-                    <p className="text-sm text-muted-foreground">{selectedProvider.title}</p>
+                  {selectedProvider ? (
+                    <p className="text-sm text-muted-foreground">
+                      Supplier: <span className="font-medium text-foreground">{selectedProvider.title}</span>
+                      {selectedProvider.location?.country ? ` · ${selectedProvider.location.country}` : ""}
+                    </p>
+                  ) : (
+                    <p className="text-sm text-destructive">No supplier selected — go back and pick one.</p>
                   )}
                 </div>
               )}
@@ -1155,7 +1586,7 @@ export default function AdminProducts() {
                 </Button>
                 <Button 
                   onClick={handleImportBlueprint}
-                  disabled={!isVariantCountValid || importPrintifyMutation.isPending}
+                  disabled={!selectedProvider || !isVariantCountValid || importPrintifyMutation.isPending}
                 >
                   {importPrintifyMutation.isPending ? (
                     <Loader2 className="h-4 w-4 animate-spin mr-2" />
@@ -1301,6 +1732,13 @@ export default function AdminProducts() {
             </div>
           </DialogContent>
         </Dialog>
+
+        <ResyncPricesDialog
+          open={!!resyncPricesTarget}
+          onOpenChange={(v) => { if (!v) setResyncPricesTarget(null); }}
+          title={resyncPricesTarget?.name ?? ""}
+          productTypeId={resyncPricesTarget?.id ?? 0}
+        />
       </div>
     </AdminLayout>
   );

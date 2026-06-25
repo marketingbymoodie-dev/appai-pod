@@ -29,7 +29,15 @@ export type HoodieView = "front" | "back";
  * Stable canonical panel keys. The admin tool exposes the user-facing
  * subset per view; these keys are the source of truth for the JSON.
  */
+/** Printify blueprint 450 (pullover) — single full front body placeholder. */
+export const PULOVER_HOODIE_BLUEPRINT_ID = 450;
+/** Printify blueprint 451 (zip) — split front_left / front_right placeholders. */
+export const ZIP_HOODIE_BLUEPRINT_ID = 451;
+/** Printify blueprint 449 (unisex sweatshirt AOP) — collar + cuffs, no hood. */
+export const SWEATSHIRT_BLUEPRINT_ID = 449;
+
 export type HoodiePanelKey =
+  | "front"
   | "front_right"
   | "front_left"
   | "front_pocket"
@@ -39,6 +47,8 @@ export type HoodiePanelKey =
   | "right_sleeve"
   | "left_cuff"
   | "right_cuff"
+  | "collar_front"
+  | "collar_back"
   | "left_hood"
   | "right_hood"
   | "waistband"
@@ -99,10 +109,15 @@ export type MeshSourceRotation = number;
  *
  * Length invariant: `targetPoints.length === cols * rows`.
  */
+/** Max mesh columns (mapper slider + engine clamp). Wide panels e.g. collar strips. */
+export const MAX_MESH_COLS = 24;
+/** Max mesh rows (mapper slider + engine clamp). */
+export const MAX_MESH_ROWS = 16;
+
 export type MeshGrid = {
-  /** 2..16 — number of columns in the control grid. */
+  /** 2..{@link MAX_MESH_COLS} — number of columns in the control grid. */
   cols: number;
-  /** 2..16 — number of rows. */
+  /** 2..{@link MAX_MESH_ROWS} — number of rows. */
   rows: number;
   /**
    * Sub-region of the source artwork the mesh samples. `null` means use
@@ -202,7 +217,66 @@ export type MockupAsset = {
   src: string;
   width: number;
   height: number;
+  /**
+   * Top-left position of the rendered mockup in template pixel space.
+   * Masks stay in the original width×height grid; transform only moves/scales
+   * the blank photo so it can align with reused zip-hoodie panel maps.
+   */
+  x?: number;
+  y?: number;
+  /** Uniform scale applied to (width, height). Defaults to 1. */
+  scale?: number;
+  /** When false, the canvas exposes drag + corner-resize on the base mockup. */
+  transformLocked?: boolean;
 };
+
+/** Resolved draw rect for a mockup blank (template pixel space). */
+export function mockupDrawRect(mockup: MockupAsset): {
+  x: number;
+  y: number;
+  scale: number;
+  renderWidth: number;
+  renderHeight: number;
+} {
+  const scale = mockup.scale ?? 1;
+  return {
+    x: mockup.x ?? 0,
+    y: mockup.y ?? 0,
+    scale,
+    renderWidth: mockup.width * scale,
+    renderHeight: mockup.height * scale,
+  };
+}
+
+/** Draw the base mockup image with any saved transform applied. */
+export function drawMockupImage(
+  ctx: CanvasRenderingContext2D,
+  image: CanvasImageSource,
+  mockup: MockupAsset,
+): void {
+  const { x, y, renderWidth, renderHeight } = mockupDrawRect(mockup);
+  ctx.drawImage(image, x, y, renderWidth, renderHeight);
+}
+
+/**
+ * Draw a mockup into a fixed-size canvas using the view's saved transform
+ * when present. Used by every hoodie AOP renderer path (base layer and
+ * per-panel shading multiply) so repositioned/scaled blanks never ghost
+ * a second full-canvas copy at (0,0).
+ */
+export function drawMockupImageInCanvas(
+  ctx: CanvasRenderingContext2D,
+  image: CanvasImageSource,
+  mockup: MockupAsset | null | undefined,
+  width: number,
+  height: number,
+): void {
+  if (mockup) {
+    drawMockupImage(ctx, image, mockup);
+    return;
+  }
+  ctx.drawImage(image, 0, 0, width, height);
+}
 
 export type ReferenceOverlayAsset = {
   src: string;
@@ -468,6 +542,281 @@ export function defaultDesignGroups(): DesignGroup[] {
 }
 
 /**
+ * Design groups for pullover hoodies (Printify bp 450): one continuous
+ * `front` body panel under the kangaroo pocket — no zip L/R split.
+ */
+export function defaultPulloverDesignGroups(): DesignGroup[] {
+  const blank: GroupPlacement = { ...DEFAULT_GROUP_PLACEMENT };
+  const blankPair: Record<HoodieView, GroupPlacement> = {
+    front: { ...blank },
+    back: { ...blank },
+  };
+  return [
+    {
+      id: "hood",
+      name: "Hood",
+      panelKeys: ["left_hood", "right_hood"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      id: "front-body",
+      name: "Front body",
+      panelKeys: ["front"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      id: "back-body",
+      name: "Back body",
+      panelKeys: ["back"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      id: "left-sleeve",
+      name: "Left sleeve",
+      panelKeys: ["left_sleeve", "left_cuff"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      id: "right-sleeve",
+      name: "Right sleeve",
+      panelKeys: ["right_sleeve", "right_cuff"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      id: "trim",
+      name: "Trim",
+      panelKeys: ["waistband", "front_pocket"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+  ];
+  void blankPair;
+}
+
+/**
+ * Design groups for sweatshirt AOP (Printify bp 449): full front/back body,
+ * sleeves (no cuffs — cuffs live in trim), trim (cuffs + waistband + neck rib).
+ */
+export function defaultSweatshirtDesignGroups(): DesignGroup[] {
+  const blank: GroupPlacement = { ...DEFAULT_GROUP_PLACEMENT };
+  const blankPair: Record<HoodieView, GroupPlacement> = {
+    front: { ...blank },
+    back: { ...blank },
+  };
+  return [
+    {
+      id: "front-body",
+      name: "Front body",
+      panelKeys: ["front"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      id: "back-body",
+      name: "Back body",
+      panelKeys: ["back"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      id: "left-sleeve",
+      name: "Left sleeve",
+      panelKeys: ["left_sleeve"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      id: "right-sleeve",
+      name: "Right sleeve",
+      panelKeys: ["right_sleeve"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      id: "trim",
+      name: "Trim",
+      panelKeys: ["waistband", "left_cuff", "right_cuff", "collar_front", "collar_back"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+  ];
+  void blankPair;
+}
+
+/** Sweatshirt trim panel keys — cuffs, waistband, and neck rib. */
+export const SWEATSHIRT_TRIM_PANEL_KEYS: readonly HoodiePanelKey[] = [
+  "waistband",
+  "left_cuff",
+  "right_cuff",
+  "collar_front",
+  "collar_back",
+];
+
+/**
+ * Normalize design groups for bp 449: strip hood, merge collar into trim,
+ * split cuffs out of sleeve groups. Preserves admin placement on matching ids.
+ */
+export function migrateSweatshirtDesignGroups(groups: DesignGroup[]): DesignGroup[] {
+  const defaults = defaultSweatshirtDesignGroups();
+  const withoutHood = groups.filter((g) => g.id !== "hood");
+  const collar = withoutHood.find((g) => g.id === "collar");
+  const filtered = withoutHood.filter((g) => g.id !== "collar");
+
+  const byId = new Map<string, DesignGroup>();
+  for (const g of filtered) {
+    let panelKeys = [...g.panelKeys];
+    if (g.id === "left-sleeve") {
+      panelKeys = panelKeys.filter((k) => k !== "left_cuff");
+      if (!panelKeys.includes("left_sleeve")) panelKeys = ["left_sleeve"];
+    } else if (g.id === "right-sleeve") {
+      panelKeys = panelKeys.filter((k) => k !== "right_cuff");
+      if (!panelKeys.includes("right_sleeve")) panelKeys = ["right_sleeve"];
+    } else if (g.id === "trim") {
+      const merged = new Set<HoodiePanelKey>([
+        ...panelKeys,
+        ...SWEATSHIRT_TRIM_PANEL_KEYS,
+        ...(collar?.panelKeys ?? []),
+      ]);
+      panelKeys = SWEATSHIRT_TRIM_PANEL_KEYS.filter((k) => merged.has(k));
+      if (panelKeys.length === 0) panelKeys = [...SWEATSHIRT_TRIM_PANEL_KEYS];
+    }
+    byId.set(g.id, { ...g, panelKeys });
+  }
+
+  return defaults.map((def) => {
+    const prev = byId.get(def.id);
+    if (!prev) return def;
+    return {
+      ...def,
+      placement: prev.placement,
+      seamAllowance: prev.seamAllowance,
+      lockedRatio: prev.lockedRatio,
+      enabled: prev.enabled,
+    };
+  });
+}
+
+export function isPulloverHoodieBlueprint(blueprintId: number | null | undefined): boolean {
+  return blueprintId === PULOVER_HOODIE_BLUEPRINT_ID;
+}
+
+export function isZipHoodieBlueprint(blueprintId: number | null | undefined): boolean {
+  return blueprintId === ZIP_HOODIE_BLUEPRINT_ID;
+}
+
+export function isSweatshirtBlueprint(blueprintId: number | null | undefined): boolean {
+  return blueprintId === SWEATSHIRT_BLUEPRINT_ID;
+}
+
+/** Zip-only panel keys (hidden when authoring bp 450 pullover templates). */
+const ZIP_ONLY_FRONT_PANEL_KEYS: readonly HoodiePanelKey[] = [
+  "front_left",
+  "front_right",
+  "pocket_left",
+  "pocket_right",
+];
+
+/** Hoodie-only keys hidden when authoring bp 449 sweatshirt templates. */
+const SWEATSHIRT_EXCLUDED_PANEL_KEYS: readonly HoodiePanelKey[] = [
+  "front_left",
+  "front_right",
+  "front_pocket",
+  "pocket_left",
+  "pocket_right",
+  "left_hood",
+  "right_hood",
+];
+
+export function designGroupsForBlueprint(blueprintId: number | null | undefined): DesignGroup[] {
+  if (isSweatshirtBlueprint(blueprintId)) return defaultSweatshirtDesignGroups();
+  if (isPulloverHoodieBlueprint(blueprintId)) return defaultPulloverDesignGroups();
+  return defaultDesignGroups();
+}
+
+/**
+ * When switching blueprint in the mapper, refresh group panel lists while
+ * preserving customer placement / enable flags where group ids match.
+ */
+export function mergeDesignGroupsForBlueprintSwitch(
+  blueprintId: number,
+  existing: DesignGroup[] | undefined,
+): DesignGroup[] {
+  const defaults = designGroupsForBlueprint(blueprintId);
+  if (!existing?.length) return defaults;
+  return defaults.map((def) => {
+    const prev = existing.find((g) => g.id === def.id);
+    if (!prev) return def;
+    return {
+      ...def,
+      placement: prev.placement,
+      seamAllowance: prev.seamAllowance,
+      lockedRatio: prev.lockedRatio,
+      enabled: prev.enabled,
+    };
+  });
+}
+
+/**
+ * Panel keys offered in the mapper dropdown for a view, filtered by blueprint.
+ * Pullover (450): `front` + pocket; zip (451): L/R split, no `front`.
+ */
+export function panelsEligibleForView(
+  view: HoodieView,
+  blueprintId: number | null | undefined,
+): readonly HoodiePanelKey[] {
+  const all = PANELS_PER_VIEW[view];
+  if (isSweatshirtBlueprint(blueprintId)) {
+    return all.filter((k) => !SWEATSHIRT_EXCLUDED_PANEL_KEYS.includes(k));
+  }
+  if (view !== "front") return all;
+  if (isPulloverHoodieBlueprint(blueprintId)) {
+    return all.filter((k) => !ZIP_ONLY_FRONT_PANEL_KEYS.includes(k));
+  }
+  if (isZipHoodieBlueprint(blueprintId)) {
+    return all.filter((k) => k !== "front");
+  }
+  return all;
+}
+
+/**
+ * Map an admin panel key to the Printify placeholder `position` string used
+ * at order time. Most hoodie keys match 1:1; cuffs and collar are exceptions.
+ */
+export function hoodiePanelKeyToPrintifyPosition(panelKey: HoodiePanelKey): string {
+  if (panelKey === "left_cuff") return "left_cuff_panel";
+  if (panelKey === "right_cuff") return "right_cuff_panel";
+  if (panelKey === "collar_front" || panelKey === "collar_back") return "collar";
+  return panelKey;
+}
+
+/**
  * Look up which design group a given panel belongs to. Returns null
  * for unmatched panels — the renderer treats those as "ungrouped"
  * and falls back to the legacy single-design-rect behaviour.
@@ -501,7 +850,8 @@ export const SEAM_PAIR_PANELS: Record<"left" | "right", HoodiePanelKey[]> = {
  * preserved — defaults only fill genuinely-undefined fields.
  */
 export function normalizeHoodieTemplate(template: HoodieTemplate): HoodieTemplate {
-  let designGroups = template.designGroups ?? defaultDesignGroups();
+  let designGroups =
+    template.designGroups ?? designGroupsForBlueprint(template.blueprintId);
   // Migrate legacy single-Sleeves group → Left/Right sleeve groups.
   // Older templates persisted before this split contained one group
   // covering all four sleeve+cuff panels, which made the design rect
@@ -522,17 +872,20 @@ export function normalizeHoodieTemplate(template: HoodieTemplate): HoodieTemplat
           ...legacy,
           id: "left-sleeve",
           name: "Left sleeve",
-          panelKeys: ["left_sleeve", "left_cuff"],
+          panelKeys: ["left_sleeve"],
         },
         {
           ...legacy,
           id: "right-sleeve",
           name: "Right sleeve",
-          panelKeys: ["right_sleeve", "right_cuff"],
+          panelKeys: ["right_sleeve"],
         },
         ...designGroups.slice(legacyIdx + 1),
       ];
     }
+  }
+  if (isSweatshirtBlueprint(template.blueprintId)) {
+    designGroups = migrateSweatshirtDesignGroups(designGroups);
   }
   return {
     ...template,
@@ -543,26 +896,59 @@ export function normalizeHoodieTemplate(template: HoodieTemplate): HoodieTemplat
   };
 }
 
-export function emptyHoodieTemplate(name: string, label?: string): HoodieTemplate {
+/** Matches `SAFE_NAME_RE` in `server/routes/hoodie-template-mapper.ts`. */
+export const AOP_TEMPLATE_SLUG_RE = /^[a-zA-Z0-9_\-]{1,64}$/;
+
+export function isValidAopTemplateSlug(name: string): boolean {
+  return AOP_TEMPLATE_SLUG_RE.test(name);
+}
+
+export function defaultHoodieTypeForBlueprint(blueprintId: number): string {
+  if (isPulloverHoodieBlueprint(blueprintId)) return "pullover-hoodie-aop";
+  if (isZipHoodieBlueprint(blueprintId)) return "zip-hoodie-aop";
+  return `aop-bp-${blueprintId}`;
+}
+
+/** Blank template for a new AOP product — no masks, no mockups, blueprint-aware panel groups. */
+export function createFreshAopTemplate(args: {
+  name: string;
+  label?: string;
+  blueprintId: number;
+  productTypeId?: number | null;
+  hoodieType?: string;
+  size?: string | null;
+}): HoodieTemplate {
   const now = new Date().toISOString();
-  return {
+  const blueprintId = args.blueprintId;
+  return normalizeHoodieTemplate({
     version: HOODIE_TEMPLATE_VERSION,
-    name,
-    label: label ?? name,
-    hoodieType: "zip-hoodie-aop",
-    productTypeId: 20,
-    blueprintId: 451,
-    size: "L",
+    name: args.name,
+    label: args.label ?? args.name,
+    hoodieType: args.hoodieType ?? defaultHoodieTypeForBlueprint(blueprintId),
+    productTypeId: args.productTypeId ?? null,
+    blueprintId,
+    size: args.size ?? "L",
     meta: { createdAt: now, updatedAt: now },
     views: {
       front: { ...EMPTY_HOODIE_VIEW },
       back: { ...EMPTY_HOODIE_VIEW },
     },
     globalExclusions: [],
-    designGroups: defaultDesignGroups(),
+    designGroups: designGroupsForBlueprint(blueprintId),
     tileSettings: { ...DEFAULT_TILE_SETTINGS },
     realWorldCalibration: { ...DEFAULT_REAL_WORLD_CALIBRATION },
-  };
+  });
+}
+
+/** Legacy default — zip hoodie L. Prefer {@link createFreshAopTemplate} for new products. */
+export function emptyHoodieTemplate(name: string, label?: string): HoodieTemplate {
+  return createFreshAopTemplate({
+    name,
+    label,
+    blueprintId: ZIP_HOODIE_BLUEPRINT_ID,
+    hoodieType: "zip-hoodie-aop",
+    productTypeId: 20,
+  });
 }
 
 /**
@@ -571,6 +957,7 @@ export function emptyHoodieTemplate(name: string, label?: string): HoodieTemplat
  */
 export const PANELS_PER_VIEW: Record<HoodieView, readonly HoodiePanelKey[]> = {
   front: [
+    "front",
     "front_right",
     "front_left",
     "front_pocket",
@@ -583,6 +970,8 @@ export const PANELS_PER_VIEW: Record<HoodieView, readonly HoodiePanelKey[]> = {
     "left_hood",
     "right_hood",
     "waistband",
+    "collar_front",
+    "collar_back",
   ],
   back: [
     "back",
@@ -593,10 +982,12 @@ export const PANELS_PER_VIEW: Record<HoodieView, readonly HoodiePanelKey[]> = {
     "left_hood",
     "right_hood",
     "waistband",
+    "collar_back",
   ],
 } as const;
 
 export const PANEL_DISPLAY_LABEL: Record<HoodiePanelKey, string> = {
+  front: "Front (full body)",
   front_right: "Front Right",
   front_left: "Front Left",
   front_pocket: "Front Pocket (legacy)",
@@ -606,6 +997,8 @@ export const PANEL_DISPLAY_LABEL: Record<HoodiePanelKey, string> = {
   right_sleeve: "Right Sleeve",
   left_cuff: "Left Cuff",
   right_cuff: "Right Cuff",
+  collar_front: "Collar (front band)",
+  collar_back: "Collar (back / neck opening)",
   left_hood: "Left Hood",
   right_hood: "Right Hood",
   waistband: "Waistband",
@@ -630,6 +1023,7 @@ export const PANEL_DISPLAY_LABEL: Record<HoodiePanelKey, string> = {
  */
 export const PANEL_RENDER_ORDER: Record<HoodiePanelKey, number> = {
   back: 10,
+  front: 20,
   front_left: 20,
   front_right: 20,
   left_sleeve: 30,
@@ -638,6 +1032,8 @@ export const PANEL_RENDER_ORDER: Record<HoodiePanelKey, number> = {
   right_hood: 40,
   left_cuff: 50,
   right_cuff: 50,
+  collar_back: 52,
+  collar_front: 55,
   waistband: 60,
   front_pocket: 70,
   pocket_left: 70,
@@ -659,8 +1055,8 @@ export function createDefaultMesh(
   rows = 4,
   sourceRect: SourceRect | null = null,
 ): MeshGrid {
-  const safeCols = Math.max(2, Math.min(16, Math.floor(cols)));
-  const safeRows = Math.max(2, Math.min(16, Math.floor(rows)));
+  const safeCols = Math.max(2, Math.min(MAX_MESH_COLS, Math.floor(cols)));
+  const safeRows = Math.max(2, Math.min(MAX_MESH_ROWS, Math.floor(rows)));
   const targetPoints: Pt[] = [];
   for (let r = 0; r < safeRows; r += 1) {
     const v = r / (safeRows - 1);
@@ -689,8 +1085,8 @@ export function resizeMesh(
   newRows: number,
   fallbackBounds: { x: number; y: number; width: number; height: number },
 ): MeshGrid {
-  const safeCols = Math.max(2, Math.min(16, Math.floor(newCols)));
-  const safeRows = Math.max(2, Math.min(16, Math.floor(newRows)));
+  const safeCols = Math.max(2, Math.min(MAX_MESH_COLS, Math.floor(newCols)));
+  const safeRows = Math.max(2, Math.min(MAX_MESH_ROWS, Math.floor(newRows)));
   const old = mesh.targetPoints;
   if (
     old.length !== mesh.cols * mesh.rows ||

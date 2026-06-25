@@ -16,11 +16,20 @@ import {
   Loader2,
   Check,
   Sparkles,
+  CloudUpload,
 } from "lucide-react";
 import type { HoodieToolId, HoodieView } from "@shared/hoodieTemplate";
 import { useHoodieMapperStore } from "./store";
-import { readImageDimensions, saveTemplate, uploadMockup } from "./api";
+import {
+  readImageDimensions,
+  publishTemplateToSupabase,
+  saveTemplate,
+  uploadMockup,
+  type SaveTemplatePublishResult,
+} from "./api";
 import AopPreviewModal from "./AopPreviewModal";
+import FreshStartDialog from "./FreshStartDialog";
+import { clearAutosave } from "./lib/autosave";
 
 type Props = {
   onOpenLoadDialog: () => void;
@@ -56,6 +65,35 @@ function isToolEnabled(t: { id: HoodieToolId; phase: number }): boolean {
   return t.phase <= HIGHEST_ENABLED_PHASE || ENABLED_PHASE_4_TOOLS.has(t.id);
 }
 
+function publishToastLines(
+  publish: SaveTemplatePublishResult,
+  fileHint?: string,
+): { title: string; description: string; variant?: "destructive" } {
+  if (publish.ok) {
+    const mockupSummary =
+      publish.uploadedMockups.length > 0
+        ? `mockups: ${publish.uploadedMockups.join(", ")}`
+        : "JSON only (mockups unchanged)";
+    return {
+      title: "Published to Supabase",
+      description: [fileHint, `→ ${publish.publicName}`, mockupSummary, publish.jsonUrl]
+        .filter(Boolean)
+        .join("\n"),
+    };
+  }
+  if (publish.skipped) {
+    return {
+      title: "Publish skipped",
+      description: [fileHint, publish.reason].filter(Boolean).join("\n"),
+    };
+  }
+  return {
+    title: "Publish failed",
+    description: [fileHint, publish.error].filter(Boolean).join("\n"),
+    variant: "destructive",
+  };
+}
+
 export default function Toolbar({ onOpenLoadDialog }: Props) {
   const { toast } = useToast();
   const tool = useHoodieMapperStore((s) => s.tool);
@@ -69,6 +107,7 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
   const backInputRef = useRef<HTMLInputElement | null>(null);
 
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [freshStartOpen, setFreshStartOpen] = useState(false);
 
   // Per-view layer counts for the Preview button's enabled state. We don't
   // want users opening the modal on a totally empty template — that's just
@@ -133,34 +172,14 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
       //   3. publish.error        → red toast so they know to retry/check creds.
       const publish = result.publish;
       if (publish && publish.ok) {
-        const mockupSummary =
-          publish.uploadedMockups.length > 0
-            ? `mockups: ${publish.uploadedMockups.join(", ")}`
-            : "JSON only (mockups unchanged)";
+        const t = publishToastLines(publish, result.file);
+        toast({ title: `Saved & ${t.title.toLowerCase()}`, description: [t.description, meta].filter(Boolean).join("\n") });
+      } else if (publish) {
+        const t = publishToastLines(publish, result.file);
         toast({
-          title: "Saved & published",
-          description: [
-            `${result.file} → ${publish.publicName}`,
-            mockupSummary,
-            meta,
-          ]
-            .filter(Boolean)
-            .join("\n"),
-        });
-      } else if (publish && !publish.ok && publish.skipped) {
-        toast({
-          title: "Saved (publish skipped)",
-          description: [result.file, publish.reason, meta]
-            .filter(Boolean)
-            .join("\n"),
-        });
-      } else if (publish && !publish.ok && !publish.skipped) {
-        toast({
-          title: "Saved, but publish FAILED",
-          description: [result.file, publish.error, meta]
-            .filter(Boolean)
-            .join("\n"),
-          variant: "destructive",
+          title: publish.skipped ? "Saved (publish skipped)" : "Saved, but publish FAILED",
+          description: [t.description, meta].filter(Boolean).join("\n"),
+          variant: t.variant,
         });
       } else {
         toast({
@@ -170,6 +189,28 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
       }
     } catch (err: any) {
       toast({ title: "Save failed", description: err?.message || String(err), variant: "destructive" });
+    } finally {
+      actions.setBusy(false);
+    }
+  }
+
+  async function handlePublish() {
+    actions.setBusy(true);
+    try {
+      if (dirty) {
+        const saveResult = await saveTemplate(template.name, template);
+        actions.markSaved();
+        if (saveResult.publish?.ok) {
+          const t = publishToastLines(saveResult.publish, saveResult.file);
+          toast({ title: `Saved & ${t.title.toLowerCase()}`, description: t.description });
+          return;
+        }
+      }
+      const result = await publishTemplateToSupabase(template.name);
+      const t = publishToastLines(result.publish, template.name);
+      toast({ title: t.title, description: t.description, variant: t.variant });
+    } catch (err: any) {
+      toast({ title: "Publish failed", description: err?.message || String(err), variant: "destructive" });
     } finally {
       actions.setBusy(false);
     }
@@ -303,13 +344,13 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
           size="sm"
           variant="ghost"
           className="h-8 gap-1 text-xs"
-          onClick={() => actions.resetTemplate()}
+          onClick={() => setFreshStartOpen(true)}
           disabled={busy}
-          title="New template"
-          data-testid="hoodie-new"
+          title="Blank template with a new slug (won't overwrite saved files)"
+          data-testid="hoodie-fresh-start"
         >
           <Plus className="h-3.5 w-3.5" />
-          New
+          Fresh start
         </Button>
         <Button
           size="sm"
@@ -349,9 +390,37 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
           )}
           {busy ? "Saving…" : "Save"}
         </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-8 gap-1 border-sky-700/60 bg-sky-500/10 text-xs text-sky-100 hover:bg-sky-500/20"
+          onClick={handlePublish}
+          disabled={busy}
+          title="Upload saved template + mockups to Supabase (requires SUPABASE_* in .env)"
+          data-testid="hoodie-publish"
+        >
+          {busy ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <CloudUpload className="h-3.5 w-3.5" />
+          )}
+          Publish
+        </Button>
       </div>
 
       <AopPreviewModal open={previewOpen} onOpenChange={setPreviewOpen} />
+      <FreshStartDialog
+        open={freshStartOpen}
+        onOpenChange={setFreshStartOpen}
+        onConfirm={(template) => {
+          actions.loadTemplate(template);
+          clearAutosave();
+          toast({
+            title: "Fresh template started",
+            description: `${template.name} (bp ${template.blueprintId}) — upload mockups, map panels, then Save.`,
+          });
+        }}
+      />
     </div>
   );
 }

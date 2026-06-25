@@ -22,6 +22,22 @@ describe("detectPrintifyAllOverPrint", () => {
     expect(isAop).toBe(true);
   });
 
+  it("detects AOP tote bags by title marker", () => {
+    expect(
+      detectPrintifyAllOverPrint({
+        name: "Shoulder Tote Bag (AOP)",
+        description: "Durable tote",
+        blueprintId: 836,
+      }),
+    ).toBe(true);
+    expect(
+      detectPrintifyAllOverPrint({
+        name: "Adjustable Tote Bag (AOP)",
+        blueprintId: 1300,
+      }),
+    ).toBe(true);
+  });
+
   it("keeps known AOP blueprint exceptions marked as AOP", () => {
     const isAop = detectPrintifyAllOverPrint({
       name: "Women's Capri Leggings",

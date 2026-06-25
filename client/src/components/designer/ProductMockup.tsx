@@ -3,6 +3,7 @@ import { Sparkles, Loader2 } from "lucide-react";
 import { useState, useEffect } from "react";
 import type { PrintSize, FrameColor, ImageTransform, PrintShape, DesignerType } from "./types";
 import { SafeZoneMask } from "./SafeZoneMask";
+import ArtworkTransformOverlay from "./ArtworkTransformOverlay";
 
 interface ProductMockupProps {
   imageUrl?: string | null;
@@ -36,6 +37,10 @@ interface ProductMockupProps {
    *  instead of the grey skeleton shimmer. Supplied by the gallery (which
    *  already knows the thumbnail) so re-opening a design shows it instantly. */
   initialPreviewUrl?: string | null;
+  /** How composite mockup images fit in their container (default "cover").
+   *  Use "contain" for edge-wrap phone-case previews so the full grey bleed
+   *  area is visible instead of being cropped to the container aspect. */
+  mockupFit?: "cover" | "contain";
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -318,6 +323,7 @@ export function ProductMockup({
   aspectRatio,
   isAop = false,
   initialPreviewUrl,
+  mockupFit = "cover",
 }: ProductMockupProps) {
   const displayUrl = mockupUrl ?? imageUrl;
 
@@ -325,11 +331,22 @@ export function ProductMockup({
     (window as any).__productMockupDebug = { designerType, imageUrl, isLoading };
   }
 
-  const isDraggingRef = useRef(false);
-  const dragStartRef = useRef({ x: 0, y: 0 });
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const touchDragTimerRef = useRef<number | null>(null);
-  const touchPendingRef = useRef(false);
+  const [artworkAspect, setArtworkAspect] = useState(1);
+
+  useEffect(() => {
+    if (!imageUrl || mockupUrl) {
+      setArtworkAspect(1);
+      return;
+    }
+    const img = new Image();
+    img.onload = () => {
+      if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+        setArtworkAspect(img.naturalWidth / img.naturalHeight);
+      }
+    };
+    img.src = imageUrl;
+  }, [imageUrl, mockupUrl]);
 
   // Track loading state when switching between composite mockup images (carousel).
   // When `mockupUrl` changes we set loading=true, then drive a programmatic
@@ -371,111 +388,6 @@ export function ProductMockup({
     }
     return false;
   })();
-
-  const handleMouseDown = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      if (!imageUrl || !enableDrag) return;
-      e.preventDefault();
-      e.stopPropagation();
-      isDraggingRef.current = true;
-      dragStartRef.current = { x: e.clientX, y: e.clientY };
-      containerRef.current = e.currentTarget;
-    },
-    [imageUrl, enableDrag]
-  );
-
-  const handleMouseMove = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      if (!isDraggingRef.current || !containerRef.current) return;
-      e.preventDefault();
-      e.stopPropagation();
-      const rect = containerRef.current.getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) return;
-      const dx = e.clientX - dragStartRef.current.x;
-      const dy = e.clientY - dragStartRef.current.y;
-      if (dx === 0 && dy === 0) return;
-      const deltaX = (dx / rect.width) * 100;
-      const deltaY = (dy / rect.height) * 100;
-      onTransformChange({
-        ...transform,
-        x: Math.max(0, Math.min(100, transform.x + deltaX)),
-        y: Math.max(0, Math.min(100, transform.y + deltaY)),
-      });
-      dragStartRef.current = { x: e.clientX, y: e.clientY };
-    },
-    [transform, onTransformChange]
-  );
-
-  const handleMouseUp = useCallback(() => {
-    isDraggingRef.current = false;
-    containerRef.current = null;
-  }, []);
-
-  const clearTouchDragTimer = useCallback(() => {
-    if (touchDragTimerRef.current !== null) {
-      window.clearTimeout(touchDragTimerRef.current);
-      touchDragTimerRef.current = null;
-    }
-  }, []);
-
-  const handleTouchStart = useCallback(
-    (e: React.TouchEvent<HTMLDivElement>) => {
-      if (!imageUrl || !enableDrag || e.touches.length !== 1) return;
-      const touch = e.touches[0];
-      clearTouchDragTimer();
-      touchPendingRef.current = true;
-      isDraggingRef.current = false;
-      dragStartRef.current = { x: touch.clientX, y: touch.clientY };
-      containerRef.current = e.currentTarget;
-      touchDragTimerRef.current = window.setTimeout(() => {
-        if (!touchPendingRef.current) return;
-        isDraggingRef.current = true;
-        touchDragTimerRef.current = null;
-      }, 320);
-    },
-    [imageUrl, enableDrag, clearTouchDragTimer],
-  );
-
-  const handleTouchMove = useCallback(
-    (e: React.TouchEvent<HTMLDivElement>) => {
-      if (!touchPendingRef.current || !containerRef.current || e.touches.length !== 1) return;
-      const touch = e.touches[0];
-      if (!isDraggingRef.current) {
-        const moveX = Math.abs(touch.clientX - dragStartRef.current.x);
-        const moveY = Math.abs(touch.clientY - dragStartRef.current.y);
-        if (moveX > 8 || moveY > 8) {
-          clearTouchDragTimer();
-          touchPendingRef.current = false;
-          containerRef.current = null;
-        }
-        return;
-      }
-
-      e.preventDefault();
-      e.stopPropagation();
-      const rect = containerRef.current.getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) return;
-      const dx = touch.clientX - dragStartRef.current.x;
-      const dy = touch.clientY - dragStartRef.current.y;
-      if (dx === 0 && dy === 0) return;
-      const deltaX = (dx / rect.width) * 100;
-      const deltaY = (dy / rect.height) * 100;
-      onTransformChange({
-        ...transform,
-        x: Math.max(0, Math.min(100, transform.x + deltaX)),
-        y: Math.max(0, Math.min(100, transform.y + deltaY)),
-      });
-      dragStartRef.current = { x: touch.clientX, y: touch.clientY };
-    },
-    [transform, onTransformChange, clearTouchDragTimer],
-  );
-
-  const handleTouchEnd = useCallback(() => {
-    clearTouchDragTimer();
-    touchPendingRef.current = false;
-    isDraggingRef.current = false;
-    containerRef.current = null;
-  }, [clearTouchDragTimer]);
 
   const getProductStyles = () => {
     switch (designerType) {
@@ -524,13 +436,14 @@ export function ProductMockup({
       return <SkeletonLoader />;
     }
 
-    // Composite mockup (Printify) — full-bleed product photo
+    // Composite mockup (Printify / flat on-the-fly) — use object-contain for
+    // edge-wrap previews so the full grey print canvas is visible (not cropped).
     if (mockupUrl) {
       return (
         <img
           src={mockupUrl}
           alt="Product mockup"
-          className="absolute inset-0 w-full h-full object-cover"
+          className={`absolute inset-0 w-full h-full ${mockupFit === "contain" ? "object-contain bg-[#d4d4d4]" : "object-cover"}`}
           style={{ pointerEvents: "none" }}
           draggable={false}
           data-testid="img-mockup"
@@ -544,17 +457,48 @@ export function ProductMockup({
       const scaleVal = transform.scale / 100;
       const xOffset = transform.x - 50;
       const yOffset = transform.y - 50;
+      const artStyle = {
+        pointerEvents: "none" as const,
+        borderRadius: printShape === "circle" ? "50%" : undefined,
+        transform: `scale(${scaleVal}) translate(${xOffset}%, ${yOffset}%)`,
+        transformOrigin: "center center",
+      };
+      const showBlankUnderArt = !!blankImageUrl && designerType === "apparel";
+      if (showBlankUnderArt) {
+        const blankScale = isLandscape ? "scale(1.1)" : undefined;
+        return (
+          <>
+            <img
+              key={blankImageUrl}
+              src={blankImageUrl}
+              alt="Product blank"
+              className="absolute inset-0 w-full h-full object-cover"
+              style={{
+                pointerEvents: "none",
+                opacity: 0.92,
+                transform: blankScale,
+                transformOrigin: "center center",
+              }}
+              draggable={false}
+              data-testid="img-blank"
+            />
+            <img
+              src={displayUrl}
+              alt="Generated artwork"
+              className="absolute inset-0 w-full h-full object-contain"
+              style={artStyle}
+              draggable={false}
+              data-testid="img-generated"
+            />
+          </>
+        );
+      }
       return (
         <img
           src={displayUrl}
           alt="Generated artwork"
           className="absolute inset-0 w-full h-full object-contain"
-          style={{
-            pointerEvents: "none",
-            borderRadius: printShape === "circle" ? "50%" : undefined,
-            transform: `scale(${scaleVal}) translate(${xOffset}%, ${yOffset}%)`,
-            transformOrigin: "center center",
-          }}
+          style={artStyle}
           draggable={false}
           data-testid="img-generated"
           onLoad={() => console.log("[ProductMockup] Image loaded successfully")}
@@ -564,9 +508,14 @@ export function ProductMockup({
     }
 
     if (blankImageUrl) {
-      if (designerType === "mug") {
+      const useContainBlank =
+        designerType === "mug" ||
+        (designerType === "pillow" &&
+          (printShape === "square" || printShape === "circle"));
+      if (useContainBlank) {
         return (
           <img
+            key={blankImageUrl}
             src={blankImageUrl}
             alt="Product blank"
             className="absolute inset-0 w-full h-full object-contain"
@@ -579,6 +528,7 @@ export function ProductMockup({
       const blankScale = isLandscape ? "scale(1.1)" : undefined;
       return (
         <img
+          key={blankImageUrl}
           src={blankImageUrl}
           alt="Product blank"
           className="absolute inset-0 w-full h-full object-cover"
@@ -599,39 +549,11 @@ export function ProductMockup({
 
   /* ── Product-type renderers ─────────────────────────────────────────────── */
 
-  const renderFramedPrint = () => {
-    const showFrameOverlay = !mockupUrl && !!imageUrl;
-    if (!showFrameOverlay) {
-      return (
-        <div className="absolute inset-0 flex items-center justify-center overflow-hidden rounded-md">
-          {renderImageContent()}
-        </div>
-      );
-    }
-    const getFrameInsets = () => {
-      if (!selectedSize) return { outer: "0.75rem", inner: "1rem" };
-      const sizeId = selectedSize.id;
-      if (sizeId === "11x14") return { outer: "0.5rem", inner: "1.5rem" };
-      if (["12x16", "16x16"].includes(sizeId)) return { outer: "0.625rem", inner: "1.25rem" };
-      return { outer: "0.75rem", inner: "1rem" };
-    };
-    const frameInsets = getFrameInsets();
-    return (
-      <>
-        <div
-          className="absolute rounded-sm flex items-center justify-center"
-          style={{ backgroundColor: selectedFrameColor?.hex || "#1a1a1a", pointerEvents: "none", inset: frameInsets.outer }}
-        >
-          <div
-            className="absolute bg-white dark:bg-gray-200 rounded-sm flex items-center justify-center overflow-hidden"
-            style={{ pointerEvents: "none", inset: frameInsets.inner }}
-          >
-            {renderImageContent()}
-          </div>
-        </div>
-      </>
-    );
-  };
+  const renderFramedPrint = () => (
+    <div className="absolute inset-0 flex items-center justify-center overflow-hidden rounded-md">
+      {renderImageContent()}
+    </div>
+  );
 
   const renderPillow = () => {
     const productStyles = getProductStyles();
@@ -684,25 +606,24 @@ export function ProductMockup({
     }
   };
 
-  const isDragActive = !!displayUrl && enableDrag && !mockupUrl;
+  const showTransformOverlay = !!imageUrl && enableDrag && !mockupUrl && !isLoading;
 
   return (
     <div
-      className={`relative rounded-md w-full h-full ${isDragActive ? "cursor-move select-none" : ""}`}
-      style={{ touchAction: "pan-y" }}
-      {...(isDragActive ? {
-        onMouseDown: handleMouseDown,
-        onMouseMove: handleMouseMove,
-        onMouseUp: handleMouseUp,
-        onMouseLeave: handleMouseUp,
-        onTouchStart: handleTouchStart,
-        onTouchMove: handleTouchMove,
-        onTouchEnd: handleTouchEnd,
-        onTouchCancel: handleTouchEnd,
-      } : {})}
+      ref={containerRef}
+      className="relative rounded-md w-full h-full"
+      style={{ touchAction: showTransformOverlay ? "none" : "pan-y" }}
       data-testid="product-mockup"
     >
       {renderProductMockup()}
+      {showTransformOverlay && (
+        <ArtworkTransformOverlay
+          containerRef={containerRef}
+          transform={transform}
+          onTransformChange={onTransformChange}
+          artworkAspect={artworkAspect}
+        />
+      )}
       {/* Small spinner shown only while the next carousel mockup image is loading for the first time. */}
       {mockupImageLoading && !isLoading && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">

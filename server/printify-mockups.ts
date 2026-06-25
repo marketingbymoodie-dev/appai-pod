@@ -1,6 +1,7 @@
 import sharp from "sharp";
 import pRetry from "p-retry";
 import crypto from "crypto";
+import { buildToteFoldedPrintPng } from "./toteFoldedPrintFile";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 const MAX_RETRIES = 3;
@@ -72,6 +73,8 @@ export interface MockupRequest {
   internalProductTags?: string[];
   onPrintifyProductPayload?: (payload: unknown) => void;
   onPrintifyProductCreated?: (productId: string) => void;
+  /** When true, build 2650×5250 folded print canvas before upload (fulfillment only). */
+  toteFoldedFulfillment?: boolean;
 }
 
 export interface MockupImage {
@@ -401,6 +404,7 @@ async function createTemporaryProduct(
    * of the default white template.
    */
   inactivePanelFillImageId?: string,
+  wrapSingleFace?: "front" | "back",
   internalOptions?: {
     title?: string;
     description?: string;
@@ -468,11 +472,21 @@ async function createTemporaryProduct(
     }
   } else {
     const placement = printPlacement ?? (doubleSided ? "both" : "front");
+    const baseEntry = { ...imageEntry };
+    const faceEntry =
+      wrapSingleFace === "front"
+        ? { ...baseEntry, x: 0.25, scale: scale * 0.5 }
+        : wrapSingleFace === "back"
+          ? { ...baseEntry, x: 0.75, scale: scale * 0.5 }
+          : baseEntry;
     if (placement === "front" || placement === "both") {
-      placeholders.push({ position: "front", images: [imageEntry] });
+      placeholders.push({ position: "front", images: [faceEntry] });
     }
     if (placement === "back" || placement === "both") {
-      placeholders.push({ position: "back", images: [imageEntry] });
+      placeholders.push({
+        position: "back",
+        images: [wrapSingleFace === "back" ? faceEntry : baseEntry],
+      });
     }
   }
 
@@ -598,7 +612,34 @@ export function normalizeMockupCameraLabel(raw: string): string {
   }
 }
 
-function selectPreferredViews(images: MockupImage[], frontBackOnly = false): MockupImage[] {
+function labelMatchesPrintPlacement(norm: string, placement: "front" | "back" | "both"): boolean {
+  if (placement === "both") return true;
+  if (placement === "front") {
+    return norm.includes("front") && !norm.includes("back");
+  }
+  return norm.includes("back");
+}
+
+/** True when the blueprint has a single wide wrap canvas (e.g. pillow 2:1) without a separate back area. */
+export function isWrapOnlyPlaceholder(
+  positions: { position: string; width?: number; height?: number }[],
+): boolean {
+  const hasBack = positions.some(
+    (p) => p.position === "back" && (p.width ?? 0) > 0 && (p.height ?? 0) > 0,
+  );
+  if (hasBack) return false;
+  const front = positions.find((p) => p.position === "front" || p.position === "default");
+  if (front?.width && front?.height && front.height > 0) {
+    return front.width / front.height > 1.5;
+  }
+  return positions.length > 0 && !hasBack;
+}
+
+function selectPreferredViews(
+  images: MockupImage[],
+  frontBackOnly = false,
+  printPlacement?: "front" | "back" | "both",
+): MockupImage[] {
   const selected: MockupImage[] = [];
   const seenUrls = new Set<string>();
   const annotated = images.map((img) => ({
@@ -606,11 +647,21 @@ function selectPreferredViews(images: MockupImage[], frontBackOnly = false): Moc
     norm: normalizeMockupCameraLabel(img.label),
   }));
   const preferredLabels = frontBackOnly ? AOP_FLAT_LAY_LABELS : PREFERRED_LABELS;
-  const maxViews = frontBackOnly ? AOP_FLAT_LAY_LABELS.length : MAX_MOCKUP_VIEWS;
+  const maxViews = frontBackOnly
+    ? AOP_FLAT_LAY_LABELS.length
+    : printPlacement === "front" || printPlacement === "back"
+      ? 1
+      : MAX_MOCKUP_VIEWS;
 
   for (const pref of preferredLabels) {
     const prefNorm = normalizeMockupCameraLabel(pref);
-    const match = annotated.find((img) => img.norm === prefNorm && !seenUrls.has(img.url));
+    if (printPlacement && !labelMatchesPrintPlacement(prefNorm, printPlacement)) continue;
+    const match = annotated.find(
+      (img) =>
+        img.norm === prefNorm &&
+        !seenUrls.has(img.url) &&
+        (!printPlacement || labelMatchesPrintPlacement(img.norm, printPlacement)),
+    );
     if (match) {
       selected.push({ url: match.url, label: match.label });
       seenUrls.add(match.url);
@@ -619,7 +670,12 @@ function selectPreferredViews(images: MockupImage[], frontBackOnly = false): Moc
   }
 
   if (selected.length === 0 && images.length > 0) {
-    return images.slice(0, maxViews);
+    const fallback = printPlacement
+      ? annotated.filter((img) => labelMatchesPrintPlacement(img.norm, printPlacement))
+      : annotated;
+    return (fallback.length > 0 ? fallback : annotated)
+      .slice(0, maxViews)
+      .map((img) => ({ url: img.url, label: img.label }));
   }
 
   return selected;
@@ -629,8 +685,9 @@ function selectPreferredViews(images: MockupImage[], frontBackOnly = false): Moc
 export function pickPreferredMockupViews(
   images: { url: string; label: string }[],
   frontBackOnly = false,
+  printPlacement?: "front" | "back" | "both",
 ): { url: string; label: string }[] {
-  return selectPreferredViews(images, frontBackOnly);
+  return selectPreferredViews(images, frontBackOnly, printPlacement);
 }
 
 async function deleteProduct(shopId: string, productId: string, apiToken: string) {
@@ -661,6 +718,7 @@ export async function generatePrintifyMockup(
     doubleSided = false,
     printPlacement,
     wrapAround = false,
+    toteFoldedFulfillment = false,
   } = request;
 
   const imageUrl =
@@ -680,8 +738,32 @@ export async function generatePrintifyMockup(
   try {
     const isAop = !!(request.aopPositions && request.aopPositions.length > 0);
     let uploadUrl: string | Buffer = imageUrl;
+    let toteFoldedPrintPlacement: "front" | "back" | "both" | undefined;
 
-    if (wrapAround && !isAop) {
+    if (toteFoldedFulfillment && !isAop) {
+      try {
+        let originalBuffer: Buffer;
+        if (isDataUrl(imageUrl)) {
+          originalBuffer = Buffer.from(extractBase64FromDataUrl(imageUrl)!, "base64");
+        } else if (typeof imageUrl === "string") {
+          const fetchRes = await fetch(imageUrl);
+          originalBuffer = Buffer.from(await fetchRes.arrayBuffer());
+        } else {
+          originalBuffer = imageUrl as Buffer;
+        }
+        if (originalBuffer.length > 0) {
+          uploadUrl = await buildToteFoldedPrintPng(originalBuffer, {
+            scale,
+            offsetX: x,
+            offsetY: y,
+          });
+          toteFoldedPrintPlacement = "front";
+          console.log("[Printify Mockup] Built tote_folded_v1 fulfillment canvas (2650×5250)");
+        }
+      } catch (foldErr) {
+        console.warn("[Printify Mockup] tote_folded_v1 build failed:", (foldErr as Error).message);
+      }
+    } else if (wrapAround && !isAop) {
       const direction = request.wrapDirection || "horizontal";
       try {
         let originalBuffer: Buffer;
@@ -978,7 +1060,11 @@ export async function generatePrintifyMockup(
       }
     }
 
-    let effectivePrintPlacement = printPlacement;
+    let effectivePrintPlacement = printPlacement ?? (doubleSided ? "both" : "front");
+    let wrapSingleFace: "front" | "back" | undefined;
+    if (toteFoldedPrintPlacement) {
+      effectivePrintPlacement = toteFoldedPrintPlacement;
+    }
     if (!isAop) {
       const discovered = await getBlueprintVariantPlaceholders(
         blueprintId,
@@ -988,23 +1074,44 @@ export async function generatePrintifyMockup(
       );
       if (discovered && discovered.length > 0) {
         const requestedPlacement = printPlacement ?? (doubleSided ? "both" : "front");
-        const hasStandardFrontBack = discovered.some((p) => p.position === "front" || p.position === "back");
-        const selectedPositions = hasStandardFrontBack
-          ? discovered.filter((p) => {
-              if (requestedPlacement === "both") return p.position === "front" || p.position === "back";
-              return p.position === requestedPlacement;
-            })
-          : discovered;
-
-        effectiveAopPositions = selectedPositions.length > 0 ? selectedPositions : discovered;
-        effectivePrintPlacement = undefined;
-        console.log(
-          `[Printify Blueprint] Using discovered placeholder(s) for ${blueprintId}/${providerId}/${variantId}: ` +
-          effectiveAopPositions.map((p) => p.position).join(", "),
+        const wrapOnly = isWrapOnlyPlaceholder(discovered);
+        const hasStandardFrontBack = discovered.some(
+          (p) => p.position === "front" || p.position === "back",
         );
+
+        if (requestedPlacement !== "both" && wrapOnly) {
+          // Wrap-style pillow: use legacy front/back placeholders with half-width
+          // positioning so front-only art stays on one face, not the full 2:1 wrap.
+          effectiveAopPositions = undefined;
+          effectivePrintPlacement = requestedPlacement;
+          wrapSingleFace = requestedPlacement === "back" ? "back" : "front";
+          console.log(
+            `[Printify Blueprint] Wrap-only ${requestedPlacement}-only for ${blueprintId}/${providerId}/${variantId} — half-width legacy placement`,
+          );
+        } else if (hasStandardFrontBack) {
+          const selectedPositions = discovered.filter((p) => {
+            if (requestedPlacement === "both") {
+              return p.position === "front" || p.position === "back";
+            }
+            return p.position === requestedPlacement;
+          });
+          effectiveAopPositions = selectedPositions.length > 0 ? selectedPositions : discovered;
+          effectivePrintPlacement = requestedPlacement;
+          console.log(
+            `[Printify Blueprint] Using discovered placeholder(s) for ${blueprintId}/${providerId}/${variantId}: ` +
+            effectiveAopPositions.map((p) => p.position).join(", "),
+          );
+        } else {
+          effectiveAopPositions = discovered;
+          effectivePrintPlacement = requestedPlacement;
+          console.log(
+            `[Printify Blueprint] Using discovered placeholder(s) for ${blueprintId}/${providerId}/${variantId}: ` +
+            effectiveAopPositions.map((p) => p.position).join(", "),
+          );
+        }
       } else {
         console.warn(
-          `[Printify Blueprint] Falling back to legacy placement "${printPlacement ?? (doubleSided ? "both" : "front")}" ` +
+          `[Printify Blueprint] Falling back to legacy placement "${effectivePrintPlacement}" ` +
           `for ${blueprintId}/${providerId}/${variantId}; live placeholders unavailable.`,
         );
       }
@@ -1020,12 +1127,17 @@ export async function generatePrintifyMockup(
       scale,
       x,
       y,
-      doubleSided,
-      effectiveAopPositions && effectiveAopPositions.length > 0 ? undefined : effectivePrintPlacement,
+      toteFoldedPrintPlacement ? false : doubleSided,
+      effectiveAopPositions && effectiveAopPositions.length > 0
+        ? undefined
+        : toteFoldedPrintPlacement
+          ? toteFoldedPrintPlacement
+          : effectivePrintPlacement,
       effectiveAopPositions,
       undefined,
       panelImageIds,
       inactivePanelFillImageId,
+      wrapSingleFace,
       {
         title: request.internalProductTitle,
         description: request.internalProductDescription,
@@ -1103,7 +1215,8 @@ export async function generatePrintifyMockup(
       }
     }
 
-    const selected = selectPreferredViews(mockupData.images, isAop);
+    const placementForViews = !isAop ? effectivePrintPlacement : undefined;
+    const selected = selectPreferredViews(mockupData.images, isAop, placementForViews);
 
     return {
       success: true,

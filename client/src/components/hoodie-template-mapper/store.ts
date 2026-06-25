@@ -6,6 +6,9 @@ import {
   HOODIE_TEMPLATE_VERSION,
   createDefaultMesh,
   resizeMesh,
+  mergeDesignGroupsForBlueprintSwitch,
+  PULOVER_HOODIE_BLUEPRINT_ID,
+  ZIP_HOODIE_BLUEPRINT_ID,
   type HoodieTemplate,
   type HoodieToolId,
   type HoodieView,
@@ -166,6 +169,7 @@ export type HoodieMapperActions = {
   setBusy: (busy: boolean) => void;
   markSaved: () => void;
   setMockup: (view: HoodieView, mockup: MockupAsset | null) => void;
+  patchMockup: (view: HoodieView, patch: Partial<MockupAsset>) => void;
   setReferenceOverlay: (view: HoodieView, overlay: ReferenceOverlayAsset | null) => void;
   setTemplateMeta: (patch: Partial<Pick<HoodieTemplate, "name" | "label" | "hoodieType" | "productTypeId" | "blueprintId" | "size">>) => void;
   /** Replace the full designGroups array (used by AOP modal save-as-defaults). */
@@ -418,19 +422,55 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
     markSaved: () => set((s) => ({ dirty: false, saveSeq: s.saveSeq + 1 })),
     setMockup: (view, mockup) =>
       set((s) => ({
-        template: patchView(s.template, view, { mockup }),
+        template: patchView(s.template, view, {
+          mockup: mockup
+            ? {
+                ...mockup,
+                x: mockup.x ?? 0,
+                y: mockup.y ?? 0,
+                scale: mockup.scale ?? 1,
+                transformLocked: mockup.transformLocked ?? false,
+              }
+            : null,
+        }),
         dirty: true,
       })),
+    patchMockup: (view, patch) =>
+      set((s) => {
+        const current = s.template.views[view]?.mockup;
+        if (!current) return s;
+        return {
+          template: patchView(s.template, view, { mockup: { ...current, ...patch } }),
+          dirty: true,
+        };
+      }),
     setReferenceOverlay: (view, overlay) =>
       set((s) => ({
         template: patchView(s.template, view, { referenceOverlay: overlay }),
         dirty: true,
       })),
     setTemplateMeta: (patch) =>
-      set((s) => ({
-        template: bumpUpdatedAt({ ...s.template, ...patch }),
-        dirty: true,
-      })),
+      set((s) => {
+        let next: HoodieTemplate = { ...s.template, ...patch };
+        if (patch.blueprintId != null && patch.blueprintId !== s.template.blueprintId) {
+          next = {
+            ...next,
+            designGroups: mergeDesignGroupsForBlueprintSwitch(
+              patch.blueprintId,
+              s.template.designGroups,
+            ),
+          };
+          if (patch.blueprintId === PULOVER_HOODIE_BLUEPRINT_ID && next.hoodieType === "zip-hoodie-aop") {
+            next = { ...next, hoodieType: "pullover-hoodie-aop" };
+          } else if (patch.blueprintId === ZIP_HOODIE_BLUEPRINT_ID && next.hoodieType === "pullover-hoodie-aop") {
+            next = { ...next, hoodieType: "zip-hoodie-aop" };
+          }
+        }
+        return {
+          template: bumpUpdatedAt(next),
+          dirty: true,
+        };
+      }),
     setDesignGroups: (groups) =>
       set((s) => ({
         template: bumpUpdatedAt({ ...s.template, designGroups: groups }),

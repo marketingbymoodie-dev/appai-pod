@@ -1,6 +1,6 @@
 import { useRef, useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { queryClient, apiRequest } from "@/lib/queryClient";
+import { queryClient, apiRequest, parseApiErrorMessage } from "@/lib/queryClient";
 import { useLocation } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -27,8 +27,11 @@ import {
   ToggleLeft, ToggleRight, AlertTriangle, Wand2, Save, ArrowUpRight, TrendingUp,
   CheckCircle2, ChevronRight, DollarSign, Info, RefreshCw, Truck, Factory, Edit2, Upload,
 } from "lucide-react";
+import { SHOPIFY_MAX_VARIANTS_PER_PRODUCT } from "@shared/variantMapResolve";
+import { normalizeVariantLabelForCostMatch } from "@shared/printifyCostLabels";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import AdminLayout from "@/components/admin-layout";
+import ResyncPricesDialog from "@/components/admin/ResyncPricesDialog";
 import PlanPicker from "./plan-picker";
 
 interface CustomizerPage {
@@ -119,6 +122,28 @@ async function uploadPlaceholderFile(file: File): Promise<string> {
   return objectPath?.startsWith("/") ? `${window.location.origin}${objectPath}` : objectPath;
 }
 
+const MAX_GALLERY_PLACEHOLDERS = 4;
+
+type PlaceholderImageOption = { url: string; label: string; position?: string; source?: string };
+
+function buildAvailablePlaceholderImages(
+  images: Blank["baseMockupImages"] | undefined,
+  customUrl?: string,
+): PlaceholderImageOption[] {
+  const imgs = images || {};
+  return [
+    imgs.primary ? { url: imgs.primary, label: "Current primary image", source: "current" } : null,
+    imgs.front ? { url: imgs.front, label: "Front placeholder", position: "front", source: "stored" } : null,
+    imgs.lifestyle ? { url: imgs.lifestyle, label: "Lifestyle placeholder", position: "lifestyle", source: "stored" } : null,
+    ...(imgs.gallery || []).map((url, index) => ({ url, label: `Gallery image ${index + 1}`, source: "gallery" })),
+    ...(imgs.available || []),
+    ...(imgs.custom || []).map((url) => ({ url, label: "Custom image", source: "custom" })),
+    customUrl ? { url: customUrl, label: "Uploaded custom image", source: "custom" } : null,
+  ]
+    .filter((img): img is PlaceholderImageOption => !!img?.url)
+    .filter((img, index, arr) => arr.findIndex((x) => x.url === img.url) === index);
+}
+
 const PLAN_DISPLAY: Record<string, string> = {
   trial: "Trial",
   starter: "Starter",
@@ -135,9 +160,6 @@ export default function AdminCustomizerPages() {
   const [deleteTarget, setDeleteTarget] = useState<CustomizerPage | null>(null);
   const [syncPricesTarget, setSyncPricesTarget] = useState<CustomizerPage | null>(null);
   const [editTarget, setEditTarget] = useState<CustomizerPage | null>(null);
-  const [syncPricesMap, setSyncPricesMap] = useState<Record<string, string>>({});
-  const [syncPricesLoading, setSyncPricesLoading] = useState(false);
-  const [syncMarkupPercent, setSyncMarkupPercent] = useState(60);
   const [editDescription, setEditDescription] = useState("");
   const [editPrimaryPlaceholder, setEditPrimaryPlaceholder] = useState("");
   const [editGalleryPlaceholders, setEditGalleryPlaceholders] = useState<Set<string>>(new Set());
@@ -152,6 +174,9 @@ export default function AdminCustomizerPages() {
   const [formTitle, setFormTitle] = useState("");
   const [formHandle, setFormHandle] = useState("");
   const [formProductId, setFormProductId] = useState("");
+  const [formPrimaryPlaceholder, setFormPrimaryPlaceholder] = useState("");
+  const [formGalleryPlaceholders, setFormGalleryPlaceholders] = useState<Set<string>>(new Set());
+  const [formCustomPlaceholder, setFormCustomPlaceholder] = useState("");
   const [handleTouched, setHandleTouched] = useState(false);
   const [titleTouched, setTitleTouched] = useState(false);
 
@@ -208,17 +233,8 @@ export default function AdminCustomizerPages() {
 
   const { data: blanksData, isLoading: blanksLoading } = useQuery<{ blanks: Blank[] }>({
     queryKey: ["/api/appai/blanks"],
-    enabled: createOpen || !!syncPricesTarget || !!editTarget,
+    enabled: createOpen || !!editTarget,
   });
-
-  // Costs query for the Sync Prices dialog — uses the page's productTypeId
-  const syncBlank = useMemo(() => {
-    if (!syncPricesTarget || !blanksData?.blanks) return null;
-    return blanksData.blanks.find(
-      (b) => b.productTypeId === syncPricesTarget.productTypeId ||
-             b.productId === syncPricesTarget.baseProductId
-    ) ?? null;
-  }, [syncPricesTarget, blanksData]);
 
   const editBlank = useMemo(() => {
     if (!editTarget || !blanksData?.blanks) return null;
@@ -233,90 +249,15 @@ export default function AdminCustomizerPages() {
     const images = editBlank.baseMockupImages || {};
     setEditDescription(plainTextFromHtml(editBlank.description));
     setEditPrimaryPlaceholder(images.primary || images.front || images.gallery?.[0] || "");
-    setEditGalleryPlaceholders(new Set((images.gallery || []).filter(Boolean).slice(0, 3)));
+    setEditGalleryPlaceholders(new Set((images.gallery || []).filter(Boolean).slice(0, MAX_GALLERY_PLACEHOLDERS)));
     setEditCustomPlaceholder("");
   }, [editTarget?.id, editBlank?.productTypeId]);
 
-  const { data: syncCostsData, isLoading: syncCostsLoading } = useQuery<{
-    costs: Record<string, number>;
-    shopifyVariantCosts: Record<string, number>;
-    printifyVariantLabels: Record<string, string>;
-    cached: boolean;
-  }>({
-    queryKey: ["/api/admin/printify/costs", syncBlank?.productTypeId],
-    queryFn: async () => {
-      const res = await apiRequest("GET", `/api/admin/printify/costs/${syncBlank!.productTypeId}`);
-      return res.json();
-    },
-    enabled: !!syncPricesTarget && !!syncBlank?.productTypeId && !!syncBlank?.printifyBlueprintId,
-  });
-
-  // Deduplicated variants for the sync dialog — uses full label so material variants
-  // like Polyester/Microfiber each get their own row
-  const syncVariants: BlankVariant[] = useMemo(() => {
-    const raw = syncBlank?.variants ?? [];
-    const seen = new Set<string>();
-    const deduped: BlankVariant[] = [];
-    for (const v of raw) {
-      if (!seen.has(v.title)) {
-        seen.add(v.title);
-        deduped.push(v);
-      }
-    }
-    return deduped;
-  }, [syncBlank?.variants]);
-
-  // Recommended prices for the sync dialog
-  const syncRecommendedPrices = useMemo(() => {
-    if (!syncCostsData?.costs || syncVariants.length === 0) return {};
-    const result: Record<string, string> = {};
-    const labelToCost: Record<string, number> = {};
-    if (syncCostsData.printifyVariantLabels && syncCostsData.costs) {
-      for (const [printifyVid, label] of Object.entries(syncCostsData.printifyVariantLabels)) {
-        const costCents = syncCostsData.costs[printifyVid];
-        if (costCents != null) labelToCost[label.toLowerCase().trim()] = costCents;
-      }
-    }
-    for (const v of syncVariants) {
-      let costCents: number | undefined = syncCostsData.shopifyVariantCosts?.[v.id];
-      if (costCents == null) costCents = syncCostsData.costs?.[v.id];
-      if (costCents == null && v.title) {
-        const normTitle = v.title.toLowerCase().trim();
-        costCents = labelToCost[normTitle];
-        if (costCents == null) {
-          for (const [label, cost] of Object.entries(labelToCost)) {
-            if (normTitle.includes(label) || label.includes(normTitle)) {
-              costCents = cost;
-              break;
-            }
-          }
-        }
-      }
-      if (costCents == null) continue;
-      const raw = (costCents / 100) * (1 + syncMarkupPercent / 100);
-      result[v.id] = (Math.ceil(raw) - 0.05).toFixed(2);
-    }
-    return result;
-  }, [syncCostsData, syncVariants, syncMarkupPercent]);
-
-  // Auto-fill sync prices when recommended prices load or markup changes
-  useEffect(() => {
-    if (!syncPricesTarget) return;
-    if (Object.keys(syncRecommendedPrices).length === 0) return;
-    setSyncPricesMap((prev) => {
-      const next = { ...prev };
-      let changed = false;
-      for (const [id, price] of Object.entries(syncRecommendedPrices)) {
-        if (!next[id] || next[id] === "" || next[id] === "0" || next[id] === "0.00") {
-          next[id] = price;
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [syncRecommendedPrices, syncPricesTarget]);
-
-  const shopDomain = pagesData?.pages?.[0]?.shop ?? "";
+  const shopDomain =
+    createdPageResult?.page?.shop ??
+    pagesData?.pages?.find((p) => p.shop)?.shop ??
+    pagesData?.pages?.[0]?.shop ??
+    "";
 
   const createMutation = useMutation({
     mutationFn: async (body: {
@@ -325,6 +266,7 @@ export default function AdminCustomizerPages() {
       baseProductId?: string;
       productTypeId?: number;
       variantPrices: Record<string, string>;
+      baseMockupImages?: { primary: string; gallery: string[]; custom?: string[] };
     }) => {
       const res = await apiRequest("POST", "/api/appai/customizer-pages", body);
       return res.json();
@@ -352,7 +294,7 @@ export default function AdminCustomizerPages() {
       const custom = [
         ...(editBlank?.baseMockupImages?.custom || []),
         editCustomPlaceholder.trim(),
-      ].filter(Boolean).slice(0, 3);
+      ].filter(Boolean).slice(0, MAX_GALLERY_PLACEHOLDERS);
       const res = await apiRequest("PATCH", `/api/appai/customizer-pages/${editTarget.id}`, {
         description: editDescription,
         baseMockupImages: {
@@ -391,40 +333,24 @@ export default function AdminCustomizerPages() {
     },
   });
 
-  async function handleSyncPrices() {
-    if (!syncPricesTarget) return;
-    const prices = Object.fromEntries(
-      Object.entries(syncPricesMap).filter(([, v]) => v && parseFloat(v) > 0)
-    );
-    if (Object.keys(prices).length === 0) {
-      toast({ title: "No prices entered", description: "Please enter at least one price.", variant: "destructive" });
-      return;
-    }
-    setSyncPricesLoading(true);
-    try {
-      const res = await apiRequest("POST", `/api/appai/customizer-pages/${syncPricesTarget.id}/sync-prices`, { variantPrices: prices });
-      const data = await res.json();
-      if (data.success) {
-        queryClient.invalidateQueries({ queryKey: ["/api/appai/customizer-pages"] });
-        toast({ title: "Prices updated", description: `Updated ${data.successCount} of ${data.totalCount} variants on Shopify.` });
-        setSyncPricesTarget(null);
-        setSyncPricesMap({});
-      } else {
-        toast({ title: "Sync failed", description: data.error ?? "Unknown error", variant: "destructive" });
-      }
-    } catch (err: any) {
-      toast({ title: "Sync failed", description: err.message ?? "Unknown error", variant: "destructive" });
-    } finally {
-      setSyncPricesLoading(false);
-    }
-  }
-
   function toggleEditGalleryPlaceholder(url: string) {
     setEditGalleryPlaceholders((prev) => {
       const next = new Set(prev);
       if (next.has(url)) {
         next.delete(url);
-      } else if (next.size < 3) {
+      } else if (next.size < MAX_GALLERY_PLACEHOLDERS) {
+        next.add(url);
+      }
+      return next;
+    });
+  }
+
+  function toggleFormGalleryPlaceholder(url: string) {
+    setFormGalleryPlaceholders((prev) => {
+      const next = new Set(prev);
+      if (next.has(url)) {
+        next.delete(url);
+      } else if (next.size < MAX_GALLERY_PLACEHOLDERS) {
         next.add(url);
       }
       return next;
@@ -444,7 +370,30 @@ export default function AdminCustomizerPages() {
       const url = await uploadPlaceholderFile(file);
       setEditCustomPlaceholder(url);
       setEditPrimaryPlaceholder(url);
-      setEditGalleryPlaceholders((prev) => new Set([...Array.from(prev), url].slice(0, 3)));
+      setEditGalleryPlaceholders((prev) => new Set([...Array.from(prev), url].slice(0, MAX_GALLERY_PLACEHOLDERS)));
+      toast({ title: "Placeholder uploaded", description: "The uploaded image is selected as the primary placeholder." });
+    } catch (err: any) {
+      toast({ title: "Upload failed", description: err?.message || "Could not upload placeholder image.", variant: "destructive" });
+    } finally {
+      setUploadingPlaceholder(false);
+      event.target.value = "";
+    }
+  }
+
+  async function handleFormPlaceholderUpload(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!["image/png", "image/jpeg", "image/jpg", "image/webp"].includes(file.type)) {
+      toast({ title: "Unsupported image", description: "Upload a PNG, JPG, or WebP image.", variant: "destructive" });
+      event.target.value = "";
+      return;
+    }
+    setUploadingPlaceholder(true);
+    try {
+      const url = await uploadPlaceholderFile(file);
+      setFormCustomPlaceholder(url);
+      setFormPrimaryPlaceholder(url);
+      setFormGalleryPlaceholders((prev) => new Set([...Array.from(prev), url].slice(0, MAX_GALLERY_PLACEHOLDERS)));
       toast({ title: "Placeholder uploaded", description: "The uploaded image is selected as the primary placeholder." });
     } catch (err: any) {
       toast({ title: "Upload failed", description: err?.message || "Could not upload placeholder image.", variant: "destructive" });
@@ -458,6 +407,9 @@ export default function AdminCustomizerPages() {
     setFormTitle("");
     setFormHandle("");
     setFormProductId("");
+    setFormPrimaryPlaceholder("");
+    setFormGalleryPlaceholders(new Set());
+    setFormCustomPlaceholder("");
     setHandleTouched(false);
     setTitleTouched(false);
     setFormStep(1);
@@ -515,19 +467,40 @@ export default function AdminCustomizerPages() {
   }, [selectedBlank?.variants]);
 
   // Printify costs query -- fetches production costs via temporary product probe
-  const { data: costsData, isLoading: costsLoading } = useQuery<{
+  const {
+    data: costsData,
+    isLoading: costsLoading,
+    isError: costsError,
+    error: costsFetchError,
+    refetch: refetchCosts,
+  } = useQuery<{
     costs: Record<string, number>;
     shopifyVariantCosts: Record<string, number>;
     printifyVariantLabels: Record<string, string>;
+    costsByNormalizedLabel?: Record<string, number>;
     cached: boolean;
+    warning?: string;
   }>({
     queryKey: ["/api/admin/printify/costs", selectedBlank?.productTypeId],
     queryFn: async () => {
       const res = await apiRequest("GET", `/api/admin/printify/costs/${selectedBlank!.productTypeId}`);
       return res.json();
     },
-    enabled: (costsOpen || formStep === 2) && !!selectedBlank?.productTypeId && !!selectedBlank?.printifyBlueprintId,
+    enabled: (costsOpen || formStep === 2) && !!selectedBlank?.productTypeId,
+    retry: false,
   });
+
+  useEffect(() => {
+    if (formStep !== 2 || !costsError || !costsFetchError) return;
+    const msg = parseApiErrorMessage(
+      costsFetchError instanceof Error ? costsFetchError.message : costsFetchError,
+    );
+    toast({
+      title: "Production costs unavailable",
+      description: msg,
+      variant: "destructive",
+    });
+  }, [formStep, costsError, costsFetchError, toast]);
 
   // Mutation: clear all cached costs and refetch for current product
   const clearCostsMutation = useMutation({
@@ -565,9 +538,46 @@ export default function AdminCustomizerPages() {
     return Math.ceil(num) - 0.05;
   }
 
+  /** Blank variant ids from /api/appai/blanks use `printify:{id}`; costs keys are raw Printify ids. */
+  function resolveBlankVariantCostCents(
+    v: BlankVariant,
+    costs: {
+      costs?: Record<string, number>;
+      shopifyVariantCosts?: Record<string, number>;
+      printifyVariantLabels?: Record<string, string>;
+      costsByNormalizedLabel?: Record<string, number>;
+    },
+    labelToCost: Record<string, number>,
+  ): number | undefined {
+    let costCents: number | undefined = costs.shopifyVariantCosts?.[v.id];
+    if (costCents == null && v.id.startsWith("printify:")) {
+      costCents = costs.costs?.[v.id.slice("printify:".length)];
+    }
+    if (costCents == null) costCents = costs.costs?.[v.id];
+    if (costCents == null && v.title && costs.costsByNormalizedLabel) {
+      costCents = costs.costsByNormalizedLabel[normalizeVariantLabelForCostMatch(v.title)];
+    }
+    if (costCents == null && v.title) {
+      const normTitle = normalizeVariantLabelForCostMatch(v.title);
+      costCents = labelToCost[normTitle];
+      if (costCents == null) {
+        for (const [label, cost] of Object.entries(labelToCost)) {
+          if (normTitle.includes(label) || label.includes(normTitle)) {
+            costCents = cost;
+            break;
+          }
+        }
+      }
+    }
+    return costCents;
+  }
+
+  const costsAvailable =
+    !!costsData?.costs && Object.keys(costsData.costs).length > 0;
+
   // Recommended retail prices based on production costs + markup
   const recommendedPrices = useMemo(() => {
-    if (!costsData?.costs || selectedVariants.length === 0) return {};
+    if (!costsAvailable || selectedVariants.length === 0) return {};
     const result: Record<string, string> = {};
     // Build a normalised-label → cost-in-cents lookup from Printify variant labels
     // e.g. { "14x14" → 850, "18x18" → 950, ... }
@@ -576,36 +586,18 @@ export default function AdminCustomizerPages() {
       for (const [printifyVid, label] of Object.entries(costsData.printifyVariantLabels)) {
         const costCents = costsData.costs[printifyVid];
         if (costCents != null) {
-          labelToCost[label.toLowerCase().trim()] = costCents;
+          labelToCost[normalizeVariantLabelForCostMatch(label)] = costCents;
         }
       }
     }
     for (const v of selectedVariants) {
-      // 1) Direct Shopify variant ID bridge
-      let costCents: number | undefined = costsData.shopifyVariantCosts?.[v.id];
-      // 2) Direct Printify variant ID lookup (fallback)
-      if (costCents == null) costCents = costsData.costs?.[v.id];
-      // 3) Label-based fallback: match variant title against Printify variant labels
-      if (costCents == null && v.title) {
-        const normTitle = v.title.toLowerCase().trim();
-        // Try exact match first
-        costCents = labelToCost[normTitle];
-        // Try partial match: check if any label is contained in the variant title or vice versa
-        if (costCents == null) {
-          for (const [label, cost] of Object.entries(labelToCost)) {
-            if (normTitle.includes(label) || label.includes(normTitle)) {
-              costCents = cost;
-              break;
-            }
-          }
-        }
-      }
+      const costCents = resolveBlankVariantCostCents(v, costsData, labelToCost);
       if (costCents == null) continue;
       const raw = (costCents / 100) * (1 + markupPercent / 100);
       result[v.id] = roundUpTo95(raw).toFixed(2);
     }
     return result;
-  }, [costsData, selectedVariants, markupPercent]);
+  }, [costsAvailable, costsData, selectedVariants, markupPercent]);
 
   // Auto-apply recommended prices to empty price fields whenever costs load or markup changes
   useEffect(() => {
@@ -634,9 +626,25 @@ export default function AdminCustomizerPages() {
     if (!handleTouched) setFormHandle(slugify(simplified));
   }, [selectedBlank?.title, titleTouched]);
 
+  useEffect(() => {
+    if (!selectedBlank) return;
+    const images = selectedBlank.baseMockupImages || {};
+    setFormPrimaryPlaceholder(images.primary || images.front || images.gallery?.[0] || "");
+    setFormGalleryPlaceholders(new Set((images.gallery || []).filter(Boolean).slice(0, MAX_GALLERY_PLACEHOLDERS)));
+    setFormCustomPlaceholder("");
+  }, [selectedBlank?.productTypeId, formProductId]);
+
   /** When moving from Step 1 → Step 2, pre-fill prices from Shopify data */
   function advanceToStep2() {
     if (!formTitle.trim() || !formHandle.trim() || !formProductId) return;
+    if (selectedVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+      toast({
+        title: "Too many variants for Shopify",
+        description: `This product has ${selectedVariants.length} variants (max ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}). Open Products → Edit Variants to reduce sizes or colors.`,
+        variant: "destructive",
+      });
+      return;
+    }
     // If the product has no variants (e.g. not yet on Shopify), skip pricing step
     if (selectedVariants.length === 0) {
       setConfirmedVariants([]);
@@ -681,6 +689,14 @@ export default function AdminCustomizerPages() {
       baseProductId: isSync ? undefined : formProductId,
       productTypeId: isSync ? selectedBlank?.productTypeId : undefined,
       variantPrices,
+      baseMockupImages: {
+        primary: formPrimaryPlaceholder,
+        gallery: Array.from(formGalleryPlaceholders),
+        custom: [
+          ...(selectedBlank?.baseMockupImages?.custom || []),
+          formCustomPlaceholder.trim(),
+        ].filter(Boolean).slice(0, MAX_GALLERY_PLACEHOLDERS),
+      },
     });
   }
 
@@ -738,8 +754,8 @@ export default function AdminCustomizerPages() {
                   Create Page
                 </Button>
               </DialogTrigger>
-              <DialogContent className="max-w-lg flex flex-col" style={{maxHeight: 'min(90vh, 700px)'}}>
-                <DialogHeader>
+              <DialogContent className="max-w-lg flex flex-col max-h-[min(90vh,700px)] overflow-hidden">
+                <DialogHeader className="shrink-0">
                   <DialogTitle>
                     {formStep === 4 ? "Page Created!" : "Create Customizer Page"}
                   </DialogTitle>
@@ -766,12 +782,16 @@ export default function AdminCustomizerPages() {
 
                 {/* ── STEP 1: Page info ── */}
                 {formStep === 1 && (
-                  <div className="space-y-4 pt-2">
+                  <div className="flex flex-col min-h-0 flex-1 pt-2">
+                    <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-4">
                     {/* Product first */}
                     <div>
                       <Label>Product</Label>
                       {blanksLoading ? (
-                        <Skeleton className="h-10 w-full mt-1" />
+                        <div className="mt-1 flex h-10 items-center gap-2 rounded-md border border-input bg-muted/30 px-3">
+                          <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                          <span className="text-sm text-muted-foreground">Loading Products…</span>
+                        </div>
                       ) : (blanksData?.blanks ?? []).length === 0 ? (
                         <p className="text-sm text-destructive mt-1">
                           No products found. Import products from Printify first.
@@ -797,6 +817,12 @@ export default function AdminCustomizerPages() {
                       {selectedBlank?.needsShopifySync ? (
                         <p className="text-xs text-muted-foreground mt-1">
                           This product will be automatically created on your store when you finish setting up this page.
+                        </p>
+                      ) : null}
+                      {selectedVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT ? (
+                        <p className="text-xs text-destructive mt-1">
+                          {selectedVariants.length} variants — Shopify allows {SHOPIFY_MAX_VARIANTS_PER_PRODUCT} max.
+                          Open Products → Edit Variants to reduce before continuing.
                         </p>
                       ) : null}
                     </div>
@@ -834,9 +860,111 @@ export default function AdminCustomizerPages() {
                       </p>
                     </div>
 
+                    {selectedBlank && (
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <Label>Placeholder Images</Label>
+                          <span className="text-xs text-muted-foreground">
+                            Choose 1 primary and up to {MAX_GALLERY_PLACEHOLDERS} gallery images
+                          </span>
+                        </div>
+                        {(() => {
+                          const available = buildAvailablePlaceholderImages(
+                            selectedBlank.baseMockupImages,
+                            formCustomPlaceholder || undefined,
+                          );
+                          if (available.length === 0) {
+                            return (
+                              <p className="rounded-md border p-3 text-sm text-muted-foreground">
+                                No placeholder images yet. Upload one below, or refresh images from the Products admin page.
+                              </p>
+                            );
+                          }
+                          return (
+                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 rounded-md border p-2">
+                              {available.map((img, index) => {
+                                const isPrimary = formPrimaryPlaceholder === img.url;
+                                const isGallery = formGalleryPlaceholders.has(img.url);
+                                return (
+                                  <div
+                                    key={`${img.url}-${index}`}
+                                    className={`relative rounded-md border p-2 space-y-2 ${isPrimary ? "ring-2 ring-primary" : ""}`}
+                                  >
+                                    {isPrimary && (
+                                      <span className="absolute right-2 top-2 rounded bg-primary px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary-foreground shadow">
+                                        Primary
+                                      </span>
+                                    )}
+                                    <button
+                                      type="button"
+                                      className="block w-full overflow-hidden rounded bg-muted"
+                                      onClick={() => setFormPrimaryPlaceholder(img.url)}
+                                    >
+                                      <img src={img.url} alt={img.label} className="h-24 w-full object-cover" />
+                                    </button>
+                                    <p className="truncate text-xs font-medium">{img.label}</p>
+                                    <div className="flex items-center justify-between gap-2">
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        variant={isPrimary ? "default" : "outline"}
+                                        className="h-7 px-2 text-xs"
+                                        onClick={() => setFormPrimaryPlaceholder(img.url)}
+                                      >
+                                        Primary
+                                      </Button>
+                                      <label className="flex items-center gap-1 text-xs">
+                                        <input
+                                          type="checkbox"
+                                          checked={isGallery}
+                                          disabled={!isGallery && formGalleryPlaceholders.size >= MAX_GALLERY_PLACEHOLDERS}
+                                          onChange={() => toggleFormGalleryPlaceholder(img.url)}
+                                        />
+                                        Gallery
+                                      </label>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          );
+                        })()}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <input
+                            type="file"
+                            accept="image/png,image/jpeg,image/jpg,image/webp"
+                            className="hidden"
+                            id="create-placeholder-upload"
+                            onChange={handleFormPlaceholderUpload}
+                          />
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => document.getElementById("create-placeholder-upload")?.click()}
+                            disabled={uploadingPlaceholder}
+                          >
+                            {uploadingPlaceholder ? (
+                              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                            ) : (
+                              <Upload className="h-4 w-4 mr-2" />
+                            )}
+                            Upload Custom Image
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+
+                    </div>
+
                     <Button
-                      className="w-full mt-2"
-                      disabled={!formTitle.trim() || !formHandle.trim() || !formProductId}
+                      className="w-full mt-3 shrink-0"
+                      disabled={
+                        !formTitle.trim() ||
+                        !formHandle.trim() ||
+                        !formProductId ||
+                        selectedVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT
+                      }
                       onClick={advanceToStep2}
                     >
                       Next: Set Pricing <ChevronRight className="h-4 w-4 ml-1" />
@@ -931,25 +1059,14 @@ export default function AdminCustomizerPages() {
                                       <span className="text-right text-emerald-700">Premium Cost</span>
                                     </div>
                                     {selectedVariants.length > 0 ? selectedVariants.map((v) => {
-                                      // Try Shopify variant ID first, then fall back to label-based matching
-                                      // (label matching handles cases where shopifyVariantCosts is not populated)
-                                      let costCents: number | undefined = costsData.shopifyVariantCosts?.[v.id] ?? costsData.costs?.[v.id];
-                                      if (costCents == null && costsData.printifyVariantLabels) {
-                                        const matchingPrintifyId = Object.entries(costsData.printifyVariantLabels)
-                                          .find(([, label]) => label === v.title)?.[0];
-                                        if (matchingPrintifyId) costCents = costsData.costs?.[matchingPrintifyId];
-                                        // Partial match fallback
-                                        if (costCents == null && v.title) {
-                                          const normTitle = v.title.toLowerCase().trim();
-                                          for (const [pid, label] of Object.entries(costsData.printifyVariantLabels)) {
-                                            const normLabel = label.toLowerCase().trim();
-                                            if (normTitle.includes(normLabel) || normLabel.includes(normTitle)) {
-                                              costCents = costsData.costs?.[pid];
-                                              if (costCents != null) break;
-                                            }
-                                          }
+                                      const labelToCost: Record<string, number> = {};
+                                      if (costsData.printifyVariantLabels && costsData.costs) {
+                                        for (const [printifyVid, label] of Object.entries(costsData.printifyVariantLabels)) {
+                                          const c = costsData.costs[printifyVid];
+                                          if (c != null) labelToCost[label.toLowerCase().trim()] = c;
                                         }
                                       }
+                                      const costCents = resolveBlankVariantCostCents(v, costsData, labelToCost);
                                       return (
                                         <div key={v.id} className="grid grid-cols-3 gap-2 px-3 py-2 border-t">
                                           <span className="truncate">{v.title}</span>
@@ -1131,6 +1248,46 @@ export default function AdminCustomizerPages() {
                       </Button>
                     </div>
 
+                    {!selectedBlank?.printifyBlueprintId && (
+                      <p className="text-sm text-destructive rounded-md border border-destructive/30 bg-destructive/5 p-3">
+                        This product is not linked to Printify (no blueprint). Import it from Printify in Products, or pick a product with production cost data.
+                      </p>
+                    )}
+
+                    {costsError && (
+                      <p className="text-sm text-destructive rounded-md border border-destructive/30 bg-destructive/5 p-3 flex flex-wrap items-center gap-2">
+                        <span>
+                          {parseApiErrorMessage((costsFetchError as Error)?.message ?? "Could not load Printify production costs.")}
+                          {" "}Click Refresh costs or wait a moment — lookup can take up to a minute for apparel with many variants.
+                        </span>
+                        <Button type="button" variant="outline" size="sm" className="h-8" onClick={() => void refetchCosts()}>
+                          Retry
+                        </Button>
+                      </p>
+                    )}
+
+                    {!costsLoading && !costsError && selectedBlank?.printifyBlueprintId && !costsAvailable && (
+                      <p className="text-sm text-amber-800 rounded-md border border-amber-200 bg-amber-50 p-3 flex flex-wrap items-center gap-2">
+                        <span>
+                          Loading production costs from Printify… If this persists, open Printify Costs or click Refresh costs.
+                        </span>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-8"
+                          onClick={() => {
+                            clearCostsMutation.mutate(undefined, {
+                              onSuccess: () => void refetchCosts(),
+                            });
+                          }}
+                          disabled={clearCostsMutation.isPending}
+                        >
+                          Refresh costs
+                        </Button>
+                      </p>
+                    )}
+
                     <div className="space-y-3 overflow-y-auto pr-1 flex-1 min-h-0" style={{maxHeight: '240px'}}>
                       <p className="text-xs font-semibold shimmer-text">
                         Shipping rates vary by destination and are automatically calculated by Shopify once the customer enters their delivery address at checkout — no action needed. To offer free shipping, open <span className="text-primary font-medium">Printify Costs → Shipping</span> to find the rate for your target market and add it to the RRP below.
@@ -1179,7 +1336,8 @@ export default function AdminCustomizerPages() {
 
                 {/* ── STEP 3: Confirm ── */}
                 {formStep === 3 && (
-                  <div className="space-y-4 pt-2">
+                  <div className="flex flex-col min-h-0 flex-1 pt-2">
+                    <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-4">
                     <div className="rounded-lg border bg-muted/30 p-4 space-y-2 text-sm">
                       <div className="flex justify-between">
                         <span className="text-muted-foreground">Page title</span>
@@ -1217,7 +1375,8 @@ export default function AdminCustomizerPages() {
                     <p className="text-xs text-muted-foreground">
                       This will create the customizer page on your Online Store.
                     </p>
-                    <div className="flex gap-2">
+                    </div>
+                    <div className="flex gap-2 shrink-0 pt-2">
                       <Button variant="outline" className="flex-1" onClick={() => setFormStep(selectedVariants.length === 0 ? 1 : 2)} disabled={createMutation.isPending}>
                         Back
                       </Button>
@@ -1490,11 +1649,8 @@ export default function AdminCustomizerPages() {
                           <Button
                             variant="ghost"
                             size="icon"
-                            title="Sync prices to Shopify"
-                            onClick={() => {
-                              setSyncPricesTarget(page);
-                              setSyncPricesMap({});
-                            }}
+                            title="Resync prices to Shopify"
+                            onClick={() => setSyncPricesTarget(page)}
                           >
                             <DollarSign className="h-4 w-4" />
                           </Button>
@@ -1580,20 +1736,13 @@ export default function AdminCustomizerPages() {
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <Label>Placeholder Images</Label>
-                  <span className="text-xs text-muted-foreground">Choose 1 primary and up to 3 gallery images</span>
+                  <span className="text-xs text-muted-foreground">Choose 1 primary and up to {MAX_GALLERY_PLACEHOLDERS} gallery images</span>
                 </div>
                 {(() => {
-                  const images = editBlank.baseMockupImages || {};
-                  const available = [
-                    images.primary ? { url: images.primary, label: "Current primary image", source: "current" } : null,
-                    images.front ? { url: images.front, label: "Front placeholder", position: "front", source: "stored" } : null,
-                    images.lifestyle ? { url: images.lifestyle, label: "Lifestyle placeholder", position: "lifestyle", source: "stored" } : null,
-                    ...(images.gallery || []).map((url, index) => ({ url, label: `Current gallery image ${index + 1}`, source: "gallery" })),
-                    ...(images.available || []),
-                    ...(images.custom || []).map((url) => ({ url, label: "Custom image", source: "custom" })),
-                    editCustomPlaceholder ? { url: editCustomPlaceholder, label: "Uploaded custom image", source: "custom" } : null,
-                  ].filter((img): img is { url: string; label: string; position?: string; source?: string } => !!img?.url)
-                    .filter((img, index, arr) => arr.findIndex((x) => x.url === img.url) === index);
+                  const available = buildAvailablePlaceholderImages(
+                    editBlank.baseMockupImages,
+                    editCustomPlaceholder || undefined,
+                  );
                   if (available.length === 0) {
                     return (
                       <p className="rounded-md border p-3 text-sm text-muted-foreground">
@@ -1635,7 +1784,7 @@ export default function AdminCustomizerPages() {
                                 <input
                                   type="checkbox"
                                   checked={isGallery}
-                                  disabled={!isGallery && editGalleryPlaceholders.size >= 3}
+                                  disabled={!isGallery && editGalleryPlaceholders.size >= MAX_GALLERY_PLACEHOLDERS}
                                   onChange={() => toggleEditGalleryPlaceholder(img.url)}
                                 />
                                 Gallery
@@ -1682,112 +1831,13 @@ export default function AdminCustomizerPages() {
         </DialogContent>
       </Dialog>
 
-      {/* Sync Prices dialog */}
-      <Dialog open={!!syncPricesTarget} onOpenChange={(v) => { if (!v) { setSyncPricesTarget(null); setSyncPricesMap({}); } }}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <DollarSign className="h-5 w-5" />
-              Sync Prices — {syncPricesTarget?.title}
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4 pt-2">
-            <p className="text-sm text-muted-foreground">
-              Prices are auto-calculated from Printify production costs. Adjust the markup and apply, or edit individually.
-            </p>
-
-            {/* Markup + Apply All row */}
-            <div className="flex items-center gap-4 p-3 bg-muted/50 rounded-lg border">
-              <div className="flex-1">
-                <Label htmlFor="sync-markup" className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Markup</Label>
-                <div className="flex items-center gap-2 mt-1">
-                  <Input
-                    id="sync-markup"
-                    type="number"
-                    className="w-20"
-                    value={syncMarkupPercent}
-                    onChange={(e) => setSyncMarkupPercent(Number(e.target.value))}
-                  />
-                  <span className="text-sm font-medium">%</span>
-                </div>
-              </div>
-              <Button
-                variant="secondary"
-                size="sm"
-                className="h-10"
-                disabled={Object.keys(syncRecommendedPrices).length === 0}
-                onClick={() => {
-                  const next: Record<string, string> = {};
-                  for (const [id, price] of Object.entries(syncRecommendedPrices)) {
-                    next[id] = price;
-                  }
-                  setSyncPricesMap(next);
-                }}
-              >
-                Apply All Suggested
-              </Button>
-            </div>
-
-            {/* Variant price inputs */}
-            {(blanksLoading || syncCostsLoading) ? (
-              <Skeleton className="h-40 w-full" />
-            ) : syncVariants.length === 0 ? (
-              <p className="text-sm text-amber-600">
-                No variant data available. Make sure the product is imported.
-              </p>
-            ) : (
-              <div className="space-y-2 overflow-y-auto pr-1" style={{maxHeight: '240px'}}>
-                {syncVariants.map((v) => (
-                  <div key={v.id} className="space-y-1">
-                    <div className="flex justify-between items-end">
-                      <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{v.title}</Label>
-                      {syncCostsLoading ? (
-                        <div className="flex items-center gap-1">
-                          <Loader2 className="h-2.5 w-2.5 animate-spin text-muted-foreground" />
-                          <span className="text-[10px] text-muted-foreground italic">Calculating...</span>
-                        </div>
-                      ) : syncRecommendedPrices[v.id] ? (
-                        <span className="text-[10px] text-muted-foreground">Suggested: ${syncRecommendedPrices[v.id]}</span>
-                      ) : null}
-                    </div>
-                    <div className="relative">
-                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
-                      <Input
-                        className="pl-7 text-sm"
-                        placeholder="0.00"
-                        value={syncPricesMap[v.id] ?? ""}
-                        onChange={(e) => setSyncPricesMap({ ...syncPricesMap, [v.id]: e.target.value })}
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <div className="flex gap-2 pt-2">
-              <Button
-                variant="outline"
-                className="flex-1"
-                onClick={() => { setSyncPricesTarget(null); setSyncPricesMap({}); }}
-                disabled={syncPricesLoading}
-              >
-                Cancel
-              </Button>
-              <Button
-                className="flex-1"
-                onClick={handleSyncPrices}
-                disabled={syncPricesLoading}
-              >
-                {syncPricesLoading ? (
-                  <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Syncing…</>
-                ) : (
-                  <><RefreshCw className="h-4 w-4 mr-2" /> Sync Prices</>
-                )}
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
+      <ResyncPricesDialog
+        open={!!syncPricesTarget}
+        onOpenChange={(v) => { if (!v) setSyncPricesTarget(null); }}
+        title={syncPricesTarget?.title ?? ""}
+        productTypeId={syncPricesTarget?.productTypeId ?? 0}
+        customizerPageId={syncPricesTarget?.id}
+      />
 
       {/* Confirm delete dialog */}
       <AlertDialog open={!!deleteTarget} onOpenChange={(v) => !v && setDeleteTarget(null)}>

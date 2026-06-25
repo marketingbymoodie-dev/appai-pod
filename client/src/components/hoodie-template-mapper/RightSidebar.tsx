@@ -22,8 +22,12 @@ import {
   FlipVertical,
 } from "lucide-react";
 import {
-  PANELS_PER_VIEW,
+  MAX_MESH_COLS,
+  MAX_MESH_ROWS,
   PANEL_DISPLAY_LABEL,
+  panelsEligibleForView,
+  PULOVER_HOODIE_BLUEPRINT_ID,
+  mockupDrawRect,
   type HoodiePanelKey,
   type MaskLayer,
   type MeshGrid,
@@ -165,10 +169,14 @@ export default function RightSidebar() {
             <Field label="productTypeId">
               <Input
                 type="number"
-                value={template.productTypeId ?? 0}
-                onChange={(e) =>
-                  actions.setTemplateMeta({ productTypeId: Number(e.target.value) || null })
-                }
+                value={template.productTypeId ?? ""}
+                placeholder="optional"
+                onChange={(e) => {
+                  const raw = e.target.value.trim();
+                  actions.setTemplateMeta({
+                    productTypeId: raw === "" ? null : Number(raw) || null,
+                  });
+                }}
                 className="h-8 text-xs"
               />
             </Field>
@@ -176,14 +184,32 @@ export default function RightSidebar() {
               <Input
                 type="number"
                 value={template.blueprintId ?? 0}
-                onChange={(e) =>
-                  actions.setTemplateMeta({ blueprintId: Number(e.target.value) || null })
-                }
+                onChange={(e) => {
+                  const nextId = Number(e.target.value) || null;
+                  actions.setTemplateMeta({ blueprintId: nextId });
+                }}
                 className="h-8 text-xs"
               />
             </Field>
           </div>
+          {template.blueprintId === PULOVER_HOODIE_BLUEPRINT_ID && (
+            <p className="mt-2 text-[10px] leading-snug text-slate-500">
+              Pullover (bp 450): assign the main chest mask to{" "}
+              <span className="text-slate-300">Front (full body)</span> — it renders under{" "}
+              <span className="text-slate-300">Front Pocket</span>. Zip L/R keys are hidden.
+            </p>
+          )}
+          <p className="mt-2 text-[10px] leading-snug text-slate-500">
+            <span className="text-slate-400">blueprintId</span> = Printify catalog number (450 pullover, 451 zip).{" "}
+            <span className="text-slate-400">productTypeId</span> = optional note only — merchants are routed by{" "}
+            <span className="text-slate-300">panelMappingTemplate</span> on the platform catalog row (set in{" "}
+            <span className="text-slate-300">Platform Catalog → Publish for merchants</span>), not this field. After
+            you import blueprint {template.blueprintId ?? "?"} under Admin → Products, you can paste the new row id
+            here and Save if you want it recorded in the JSON; leave blank until then.
+          </p>
         </Section>
+
+        <MockupTransformSection view={view} />
 
         <Section title={`Reference overlay (${view})`}>
           <div className="text-[11px] text-slate-400">
@@ -322,10 +348,11 @@ export default function RightSidebar() {
 
 function SelectedLayerSection({ layer }: { layer: MaskLayer }) {
   const view = useHoodieMapperStore((s) => s.view);
+  const blueprintId = useHoodieMapperStore((s) => s.template.blueprintId);
   const layers = useHoodieMapperStore((s) => s.template.views[s.view].layers);
   const actions = useHoodieMapperStore((s) => s.actions);
 
-  const eligible = PANELS_PER_VIEW[view];
+  const eligible = panelsEligibleForView(view, blueprintId);
   const anchors = useMemo(() => svgPathToAnchors(layer.maskPath), [layer.maskPath]);
   const sortedZ = useMemo(() => [...layers].sort((a, b) => a.zIndex - b.zIndex), [layers]);
   const indexInZ = sortedZ.findIndex((l) => l.id === layer.id);
@@ -459,6 +486,59 @@ function SelectedLayerSection({ layer }: { layer: MaskLayer }) {
 
       <SourceArtworkSection layer={layer} />
       <MeshWarpSection layer={layer} />
+    </Section>
+  );
+}
+
+function MockupTransformSection({ view }: { view: HoodieView }) {
+  const template = useHoodieMapperStore((s) => s.template);
+  const actions = useHoodieMapperStore((s) => s.actions);
+  const mockup = template.views[view].mockup;
+  if (!mockup) {
+    return (
+      <Section title={`Base mockup (${view})`}>
+        <p className="text-[11px] text-slate-500">
+          Upload a {view} mockup with the toolbar first, then you can drag and scale it here to
+          align with reused panel masks.
+        </p>
+      </Section>
+    );
+  }
+
+  const rect = mockupDrawRect(mockup);
+  const locked = mockup.transformLocked === true;
+
+  return (
+    <Section title={`Base mockup (${view})`}>
+      <div className="text-[11px] text-slate-400">
+        Move/scale the garment blank on the canvas. Panel masks stay fixed — use this to line up a
+        new photo with zip-hoodie traces. Saved into the template and used in Preview AOP.
+      </div>
+      <div className="mt-2 space-y-2 rounded border border-slate-800 bg-slate-950 p-2 text-[11px]">
+        <div className="text-slate-300">
+          {mockup.width}×{mockup.height}px source · rendered {Math.round(rect.renderWidth)}×
+          {Math.round(rect.renderHeight)}px
+        </div>
+        <div className="text-[10px] text-slate-500">
+          pos ({Math.round(rect.x)},{Math.round(rect.y)}) · scale {(rect.scale * 100).toFixed(0)}%
+          {!locked && <span className="ml-1 text-sky-300">— drag &amp; resize on canvas</span>}
+        </div>
+        <ToggleRow
+          label="Lock position (prevent accidental drags)"
+          checked={locked}
+          onChange={(c) => actions.patchMockup(view, { transformLocked: c })}
+        />
+        <div className="flex gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            className="flex-1 text-[11px]"
+            onClick={() => actions.patchMockup(view, { x: 0, y: 0, scale: 1 })}
+          >
+            Reset fit
+          </Button>
+        </div>
+      </div>
     </Section>
   );
 }
@@ -700,7 +780,7 @@ function MeshWarpSection({ layer }: { layer: MaskLayer }) {
               <Slider
                 value={[mesh.cols]}
                 min={2}
-                max={12}
+                max={MAX_MESH_COLS}
                 step={1}
                 onValueChange={([v]) => actions.resizeLayerMesh(layer.id, v, mesh.rows)}
               />
@@ -709,7 +789,7 @@ function MeshWarpSection({ layer }: { layer: MaskLayer }) {
               <Slider
                 value={[mesh.rows]}
                 min={2}
-                max={12}
+                max={MAX_MESH_ROWS}
                 step={1}
                 onValueChange={([v]) => actions.resizeLayerMesh(layer.id, mesh.cols, v)}
               />

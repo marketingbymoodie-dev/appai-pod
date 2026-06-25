@@ -1,146 +1,73 @@
 /**
  * Publish a saved hoodie panel-mapping template (and its base mockup PNGs)
- * from the local admin tool's working directory (`tmp/hoodie-templates/`)
- * up to Supabase storage so the production storefront placer can fetch it.
+ * from `tmp/hoodie-templates/` up to Supabase storage.
  *
  * USAGE
- *   npx tsx scripts/publish-hoodie-template.ts \
- *     --source zip-hoodie-aop-L \
- *     --target unisex-zip-hoodie-aop-L
+ *   npx tsx scripts/publish-hoodie-template.ts --source pullover-hoodie-aop-L
+ *   npm run publish:hoodie -- --source pullover-hoodie-aop-L
  *
- *   # or short form when source==target:
- *   npx tsx scripts/publish-hoodie-template.ts --name unisex-zip-hoodie-aop-L
+ * Loads `.env` from the project root automatically (same as `npm run dev`).
+ * Public name comes from `ADMIN_TO_PUBLIC_NAME` in `hoodieTemplateAutoPublish.ts`
+ * (e.g. pullover-hoodie-aop-L → unisex-pullover-hoodie-aop-L).
  *
- * What it does:
- *   1. Loads `tmp/hoodie-templates/templates/<source>.json`.
- *   2. Strips admin-only fields (productionPanelSrc, referenceOverlay) so the
- *      customer-facing copy never points at /api/dev/* URLs that 404 in prod.
- *   3. Uploads the two view-level mockup PNGs (front.png, back.png) to the
- *      `hoodie-templates` bucket under `mockups/<target>-{front,back}.png`.
- *   4. Rewrites the template's `views.{front,back}.mockup.src` to the new
- *      Supabase public URLs.
- *   5. Renames the template (`name`) to <target> and uploads the rewritten
- *      JSON to `templates/<target>.json` in the same bucket.
- *
- * Idempotent — every upload is upsert. Safe to re-run after iterating in the
- * admin tool. Run from your local machine where `tmp/hoodie-templates/` lives.
+ * Easier alternative: open Hoodie Template Mapper and click **Publish** (or
+ * **Save**, which auto-publishes when Supabase env vars are loaded).
  */
-import fs from "node:fs";
-import path from "node:path";
-import {
-  ensureHoodieTemplatesBucket,
-  uploadToHoodieTemplatesBucket,
-  publicHoodieTemplateUrl,
-} from "../server/supabaseHoodieTemplates";
+import "../server/load-env";
+import { autoPublishHoodieTemplate } from "../server/hoodieTemplateAutoPublish";
+import { publicHoodieTemplateUrl } from "../server/supabaseHoodieTemplates";
 
-type Args = { source: string; target: string };
-
-function parseArgs(argv: string[]): Args {
+function parseAdminName(argv: string[]): string {
   const args: Record<string, string> = {};
   for (let i = 2; i < argv.length; i += 1) {
     const k = argv[i];
-    if (k === "--source" || k === "--target" || k === "--name") {
+    if (k === "--source" || k === "--name" || k === "--target") {
       args[k.slice(2)] = argv[++i] ?? "";
     }
   }
-  if (args.name && !args.source) args.source = args.name;
-  if (args.name && !args.target) args.target = args.name;
-  if (!args.source || !args.target) {
-    throw new Error("Usage: --source <name> --target <name>  (or --name <name> for both)");
+  const name = args.source || args.name;
+  if (!name) {
+    throw new Error(
+      "Usage: --source <admin-slug>  (e.g. pullover-hoodie-aop-L)\n" +
+        "Legacy --target is ignored — public name is resolved server-side.",
+    );
   }
-  return { source: args.source, target: args.target };
-}
-
-const ROOT = process.cwd();
-const TEMPLATES_DIR = path.resolve(ROOT, "tmp", "hoodie-templates", "templates");
-const MOCKUPS_DIR = path.resolve(ROOT, "tmp", "hoodie-templates", "mockups");
-
-function readJsonFile(p: string): any {
-  return JSON.parse(fs.readFileSync(p, "utf-8"));
-}
-
-function sanitiseTemplateForPublish(t: any, target: string): any {
-  // Deep clone so we don't mutate the on-disk admin copy.
-  const clone = JSON.parse(JSON.stringify(t));
-  clone.name = target;
-  if (clone.views) {
-    for (const view of Object.values<any>(clone.views)) {
-      // Strip admin reference overlay (admin-only crossfade aid).
-      if ("referenceOverlay" in view) delete view.referenceOverlay;
-      if (Array.isArray(view.layers)) {
-        for (const layer of view.layers) {
-          // Customer placer never reads productionPanelSrc — that's the
-          // calibration triangulated PNG used during admin mesh editing.
-          if ("productionPanelSrc" in layer) delete layer.productionPanelSrc;
-        }
-      }
-    }
+  if (args.target && args.target !== name) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[publish] --target ${args.target} is ignored; public name is resolved from admin slug.`,
+    );
   }
-  return clone;
+  return name;
 }
 
 async function main() {
-  const { source, target } = parseArgs(process.argv);
+  const adminName = parseAdminName(process.argv);
   if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
     throw new Error(
-      "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set (load from .env).",
+      "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set in the project .env file " +
+        "(copy from Railway → Variables). Restart is not required for this script once .env exists.\n" +
+        "Or use Hoodie Template Mapper → Publish while `npm run dev` is running.",
     );
   }
 
-  const templatePath = path.join(TEMPLATES_DIR, `${source}.json`);
-  if (!fs.existsSync(templatePath)) {
-    throw new Error(`Template not found: ${templatePath}`);
-  }
-  const tpl = readJsonFile(templatePath);
-
-  await ensureHoodieTemplatesBucket();
-  console.log(`[publish] bucket ready`);
-
-  // Upload mockup PNGs (front + back)
-  const newMockupUrls: Record<string, string> = {};
-  for (const view of ["front", "back"] as const) {
-    const candidates = [
-      path.join(MOCKUPS_DIR, `${source}-${view}.png`),
-      path.join(MOCKUPS_DIR, `${target}-${view}.png`),
-    ];
-    const found = candidates.find((p) => fs.existsSync(p));
-    if (!found) {
-      console.warn(`[publish] missing mockup for ${view}: tried ${candidates.join(", ")}`);
-      continue;
-    }
-    const buf = fs.readFileSync(found);
-    const filename = `mockups/${target}-${view}.png`;
-    const url = await uploadToHoodieTemplatesBucket(filename, buf, "image/png");
-    newMockupUrls[view] = url;
-    console.log(`[publish] uploaded ${view} mockup → ${url}`);
-  }
-
-  // Sanitise + rewrite mockup URLs
-  const sanitised = sanitiseTemplateForPublish(tpl, target);
-  for (const view of ["front", "back"] as const) {
-    const url = newMockupUrls[view];
-    if (!url) continue;
-    if (!sanitised.views?.[view]) continue;
-    if (sanitised.views[view].mockup && typeof sanitised.views[view].mockup === "object") {
-      sanitised.views[view].mockup.src = url;
+  const result = await autoPublishHoodieTemplate(adminName);
+  if (result.ok) {
+    console.log(`[publish] DONE → ${result.publicName} (${result.elapsedMs}ms)`);
+    console.log(`  JSON: ${result.jsonUrl}`);
+    if (result.uploadedMockups.length > 0) {
+      console.log(`  Mockups uploaded: ${result.uploadedMockups.join(", ")}`);
     } else {
-      sanitised.views[view].mockup = { src: url };
+      console.log("  Mockups unchanged (skipped re-upload — JSON still refreshed)");
     }
+    console.log(`  Storefront: GET /api/storefront/hoodie-template/${result.publicName}`);
+    console.log(`  Public URL: ${publicHoodieTemplateUrl(`templates/${result.publicName}.json`)}`);
+    return;
   }
-
-  // Upload template JSON
-  const jsonBuf = Buffer.from(JSON.stringify(sanitised, null, 2), "utf-8");
-  const jsonFilename = `templates/${target}.json`;
-  const jsonUrl = await uploadToHoodieTemplatesBucket(
-    jsonFilename,
-    jsonBuf,
-    "application/json",
-  );
-  console.log(`[publish] uploaded template JSON → ${jsonUrl}`);
-
-  console.log(`\n[publish] DONE`);
-  console.log(`  Template: ${publicHoodieTemplateUrl(jsonFilename)}`);
-  console.log(`  Frontend will load via: GET /api/storefront/hoodie-template/${target}`);
+  if ("skipped" in result && result.skipped) {
+    throw new Error(result.reason);
+  }
+  throw new Error(("error" in result && result.error) || "Publish failed");
 }
 
 main().catch((err) => {

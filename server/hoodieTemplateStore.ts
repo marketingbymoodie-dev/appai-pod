@@ -19,6 +19,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { normalizeHoodieTemplate } from "@shared/hoodieTemplate";
 import {
   isSupabaseHoodieTemplatesConfigured,
   publicHoodieTemplateUrl,
@@ -42,6 +43,8 @@ export type PublishedHoodieTemplate = {
  */
 const PUBLIC_TEMPLATE_NAMES = new Set<string>([
   "unisex-zip-hoodie-aop-L",
+  "unisex-pullover-hoodie-aop-L",
+  "unisex-sweatshirt-aop-L",
 ]);
 
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
@@ -84,6 +87,8 @@ async function fetchJson(url: string, signal?: AbortSignal): Promise<any> {
  */
 const DEV_LOCAL_NAME: Record<string, string> = {
   "unisex-zip-hoodie-aop-L": "zip-hoodie-aop-L",
+  "unisex-pullover-hoodie-aop-L": "pullover-hoodie-aop-L",
+  "unisex-sweatshirt-aop-L": "sweatshirt-aop-L",
 };
 
 function resolveLocalAdminCandidates(publicName: string): string[] {
@@ -137,15 +142,16 @@ function loadLocalAdminTemplate(publicName: string): PublishedHoodieTemplate | n
     try {
       const raw = JSON.parse(fs.readFileSync(file, "utf-8"));
       const sanitised = sanitiseAdminTemplate(raw, publicName);
+      const template = normalizeHoodieTemplate(sanitised);
       // Local admin saves already point mockup `src` at the dev endpoint
       // (`/api/dev/hoodie-mapper/mockups/...`) so we can pass them through
       // verbatim — they're served by the same dev process.
       return {
         name: publicName,
-        template: sanitised,
+        template,
         mockups: {
-          front: sanitised?.views?.front?.mockup?.src ?? null,
-          back: sanitised?.views?.back?.mockup?.src ?? null,
+          front: template?.views?.front?.mockup?.src ?? null,
+          back: template?.views?.back?.mockup?.src ?? null,
         },
         cachedAt: Date.now(),
       };
@@ -216,7 +222,7 @@ export async function getPublishedHoodieTemplate(
 
     const value: PublishedHoodieTemplate = {
       name,
-      template,
+      template: normalizeHoodieTemplate(template),
       mockups: {
         front: template?.views?.front?.mockup?.src ?? null,
         back: template?.views?.back?.mockup?.src ?? null,

@@ -37,6 +37,23 @@ import HoodieAopPlacer, {
   type HoodieAopPlacerState,
   type HoodieAopPlacerApplyResult,
 } from "@/components/designer/HoodieAopPlacer";
+import FlatProductPlacer, {
+  type FlatApplyStatus,
+  type FlatProductPlacerHandle,
+  type FlatProductPlacerState,
+  type FlatProductPlacerApplyResult,
+} from "@/components/designer/FlatProductPlacer";
+import {
+  flatViewsForColor,
+  renderFlatMockupDataUrl,
+} from "@/components/designer/FlatProductPlacer/lib/flatMockupPreview";
+import { resolveFlatBlankColorId, resolveFlatPlacementGeometryKey } from "@/components/designer/FlatProductPlacer/lib/flatAssets";
+import { hasExactVariantMapping, hasVariantMappingForColor } from "@shared/variantMapResolve";
+
+/** Printify mockup cache key — size affects variant resolution for apparel. */
+function mockupCacheKey(sizeId: string | undefined, colorId: string | undefined): string {
+  return `${sizeId || "default"}:${colorId || "default"}`;
+}
 
 declare global {
   interface Window {
@@ -65,6 +82,84 @@ const DEFAULT_AOP_PATTERN_SETTINGS: {
   bgColor: string;
 } = { tilesAcross: 4, tileInches: 1.5, pattern: "grid", bgColor: "#ffffff" };
 
+/** On-the-fly flat/mesh mockup tier (mirrors server FlatTier). */
+export type FlatTier = "flat" | "mesh" | "reject";
+
+/** Mesh control point (mesh tier): normalized source coord -> mockup pixel. */
+export interface FlatMeshNode {
+  row: number;
+  col: number;
+  xn: number;
+  yn: number;
+  px: { x: number; y: number };
+}
+
+/** Per-view calibration delivered to the storefront (subset of server manifest). */
+export interface FlatViewCalibration {
+  printFileDims: { width: number; height: number };
+  visibleRectNormalized: { x: number; y: number; width: number; height: number } | null;
+  /** Full print canvas bbox (mask); safe visible back face is in visibleRectNormalized for edge-wrap. */
+  printBoundsNormalized?: { x: number; y: number; width: number; height: number } | null;
+  /** Back-face only — excludes perspective side strip on phone mockups (preview crop). */
+  backFaceCropNormalized?: { x: number; y: number; width: number; height: number } | null;
+  /** Phone back silhouette within print canvas (0–1, printFileDims space). */
+  phoneBackNormalized?: { x: number; y: number; width: number; height: number } | null;
+  /** Safe print zone within print canvas (0–1, printFileDims space). */
+  safeZoneNormalized?: { x: number; y: number; width: number; height: number } | null;
+  /** Side-profile blank/mask were pre-cropped at harvest. */
+  sideProfileCropped?: boolean;
+  /** Original back-face crop on full Printify mockup (before mask pre-crop). */
+  sideProfileSourceCropNormalized?: { x: number; y: number; width: number; height: number } | null;
+  mockupDims: { width: number; height: number } | null;
+  maskUrl: string | null;
+  shadingUrl: string | null;
+  shadingMode: "blank" | "map";
+  meshNodes: FlatMeshNode[] | null;
+  meshGrid: { cols: number; rows: number } | null;
+  planarityScore: number | null;
+  coverage: number | null;
+}
+
+/** On-the-fly flat/mesh mockup calibration manifest (mirrors server). */
+export interface FlatCalibrationManifest {
+  productTypeId: number;
+  name: string;
+  blueprintId: number;
+  providerId: number;
+  tier: FlatTier;
+  views: Partial<Record<"front" | "back", FlatViewCalibration>>;
+  blanks: Record<string, Partial<Record<"front" | "back", string>>>;
+  /** Per blank-key geometry (phone cases — mask/shading/guides differ per model). */
+  geometryByBlank?: Record<
+    string,
+    Partial<Record<"front" | "back", Omit<FlatViewCalibration, "printFileDims" | "meshNodes" | "meshGrid" | "planarityScore" | "coverage">>>
+  >;
+  representativeGeometry: boolean;
+  /** Phone cases / rigid edge-print products (auto-detected at harvest). */
+  edgeWrap?: boolean;
+  /** Framed / multi-size decor — blanks keyed by size:color. */
+  decorPerSize?: boolean;
+  /** Manual layer alignment from flat calibrator admin tool. */
+  calibratorGeometry?: {
+    productTypeId: number;
+    models: Record<
+      string,
+      Partial<
+        Record<
+          "front" | "back",
+          {
+            blank: { offsetX: number; offsetY: number; scale: number };
+            mask: { offsetX: number; offsetY: number; scale: number };
+            shading: { offsetX: number; offsetY: number; scale: number };
+          }
+        >
+      >
+    >;
+    updatedAt: string;
+  };
+  generatedAt: string;
+}
+
 interface ProductTypeConfig {
   id: number;
   name: string;
@@ -74,11 +169,18 @@ interface ProductTypeConfig {
   printShape?: PrintShape;
   canvasConfig?: CanvasConfig;
   sizes: Array<{ id: string; name: string; width: number; height: number }>;
-  frameColors: Array<{ id: string; name: string; hex: string }>;
+  frameColors: Array<{ id: string; name: string; hex: string; variantAvailable?: boolean }>;
+  variantMap?: Record<string, { printifyVariantId?: number | string; providerId?: number }>;
   hasPrintifyMockups?: boolean;
   baseMockupImages?: Record<string, any>;
   doubleSidedPrint?: boolean;
   isAllOverPrint?: boolean;
+  /** Resolved from layout policy — when false, tote_folded_v1 uses flat Printify mockups instead of PatternCustomizer. */
+  useAopCustomizer?: boolean;
+  storefrontMockupMode?: string | null;
+  fulfillmentLayout?: string | null;
+  effectiveStorefrontMockupMode?: string;
+  effectiveFulfillmentLayout?: string;
   aopTemplateId?: string | null;
   /**
    * Optional published hoodie panel-mapping template name. When set, this
@@ -87,6 +189,14 @@ interface ProductTypeConfig {
    * to customers.
    */
   panelMappingTemplate?: string | null;
+  /**
+   * On-the-fly flat/mesh mockup tier. When `flat` or `mesh` AND `flatCalibration`
+   * is present, this product renders its mockup locally (masked artwork over a
+   * stored blank) instead of round-tripping to Printify. `reject`/null => Printify.
+   */
+  onTheFlyTier?: FlatTier | null;
+  /** Calibration manifest for on-the-fly rendering; null unless tier is flat/mesh. */
+  flatCalibration?: FlatCalibrationManifest | null;
   placeholderPositions?: { position: string; width: number; height: number }[];
   panelFlatLayImages?: Record<string, string>;
   colorLabel?: string;
@@ -308,6 +418,26 @@ function dataUrlToBlob(dataUrl: string): Blob {
  * If the input is a relative path, resolves it to an absolute URL.
  * If the input is already an https URL, passes through.
  */
+/** True when a mockup URL is safe for Shopify cart properties and shadow-SKU resolution. */
+function isHttpsMockupUrl(url: string): boolean {
+  return !!url && (url.startsWith("https://") || url.startsWith("http://"));
+}
+
+/** Upload data-URL flat mockups before cart — Shopify rejects multi-MB base64 payloads. */
+async function ensureCartMockupUrl(url: string): Promise<string> {
+  if (!url) return "";
+  const abs = toAbsoluteImageUrl(url);
+  if (isHttpsMockupUrl(abs)) return abs;
+  if (!isDataUrl(abs)) return "";
+  try {
+    const hosted = await ensureHostedUrl(abs);
+    return isHttpsMockupUrl(hosted) ? hosted : "";
+  } catch (e) {
+    console.warn("[Design Studio] ensureCartMockupUrl failed:", e);
+    return "";
+  }
+}
+
 async function ensureHostedUrl(url: string): Promise<string> {
   if (!url) throw new Error("No image URL provided");
 
@@ -359,6 +489,165 @@ function normalizeVariantId(raw: string | number): string {
   // Fallback — return as-is and let Shopify reject if invalid
   console.warn('[Design Studio] Unexpected variant ID format:', s);
   return s;
+}
+
+type VariantCatalogEntry = {
+  id: string;
+  title?: string;
+  option1?: string;
+  option2?: string;
+  imageSrc?: string;
+};
+
+/** Normalize size/color tokens for fuzzy matching (red ↔ Red, light_pink ↔ Light Pink). */
+function normalizeVariantToken(value: string): string {
+  return value.toLowerCase().trim().replace(/[\s_-]+/g, "_");
+}
+
+/** Resolve a saved frameColor value (id, name, or slug) to the config color id. */
+function resolveFrameColorId(
+  stored: string | null | undefined,
+  frameColors: Array<{ id: string; name: string }>,
+): string | null {
+  if (!stored?.trim()) return null;
+  const trimmed = stored.trim();
+  if (frameColors.some((f) => f.id === trimmed)) return trimmed;
+  const lower = trimmed.toLowerCase();
+  const byName = frameColors.find((f) => f.name.toLowerCase() === lower);
+  if (byName) return byName.id;
+  const slug = normalizeVariantToken(trimmed);
+  const bySlug = frameColors.find(
+    (f) =>
+      f.id === slug ||
+      normalizeVariantToken(f.id) === slug ||
+      normalizeVariantToken(f.name) === slug,
+  );
+  return bySlug?.id ?? null;
+}
+
+/** Match a Shopify variant from a catalog by human-readable size + color names. */
+function matchVariantBySizeColor(
+  catalog: VariantCatalogEntry[],
+  sizeName: string,
+  frameName: string,
+  hasColors: boolean,
+  frameColorId?: string,
+): string | null {
+  if (catalog.length === 0) return null;
+
+  const sizeNorm = normalizeVariantToken(sizeName);
+  const frameNameNorm = normalizeVariantToken(frameName);
+  const frameIdNorm = frameColorId ? normalizeVariantToken(frameColorId) : "";
+
+  const colorTokenMatches = (raw: string): boolean => {
+    const opt = normalizeVariantToken(raw);
+    if (!opt) return false;
+    if (frameNameNorm && (opt.includes(frameNameNorm) || frameNameNorm.includes(opt))) {
+      return true;
+    }
+    if (frameIdNorm && (opt === frameIdNorm || opt.includes(frameIdNorm) || frameIdNorm.includes(opt))) {
+      return true;
+    }
+    return false;
+  };
+
+  const titleMatch = (v: VariantCatalogEntry) => {
+    const t = normalizeVariantToken(v.title || "");
+    if (!t) return false;
+    const hasSize = !sizeNorm || t.includes(sizeNorm) || sizeNorm.includes(t);
+    const hasFrame = !hasColors || !frameNameNorm && !frameIdNorm
+      ? true
+      : colorTokenMatches(v.title || "");
+    return hasSize && hasFrame;
+  };
+
+  const optionMatch = (v: VariantCatalogEntry) => {
+    const options = [v.option1, v.option2]
+      .filter(Boolean)
+      .map((o) => String(o));
+    if (options.length === 0) return false;
+    let sizeMatch = !sizeNorm;
+    let colorMatch = !hasColors || (!frameNameNorm && !frameIdNorm);
+    if (sizeNorm) {
+      sizeMatch = options.some((opt) => {
+        const o = normalizeVariantToken(opt);
+        return o.includes(sizeNorm) || sizeNorm.includes(o);
+      });
+    }
+    if (hasColors && (frameNameNorm || frameIdNorm)) {
+      colorMatch = options.some(colorTokenMatches);
+    }
+    return sizeMatch && colorMatch;
+  };
+
+  let match = catalog.find(titleMatch);
+  if (!match && sizeNorm) {
+    match = catalog.find((v) => normalizeVariantToken(v.title || "").includes(sizeNorm));
+  }
+  if (!match) {
+    match = catalog.find(optionMatch);
+  }
+  if (!match && catalog.length === 1) {
+    match = catalog[0];
+  }
+  return match ? String(match.id) : null;
+}
+
+function mapServerVariantsToCatalog(
+  raw: any[],
+): Array<{ id: string; title: string; price: string; option1?: string; option2?: string; imageSrc?: string }> {
+  return raw.map((v: any) => ({
+    id: String(v.id),
+    title: v.title || "",
+    price: v.price != null ? String(v.price) : "0.00",
+    option1: v.option1,
+    option2: v.option2,
+    imageSrc: typeof v.imageSrc === "string" ? v.imageSrc : undefined,
+  }));
+}
+
+/** Shopify variant image for the current size + color (color-accurate garment blank). */
+function resolveVariantImageForSelection(
+  catalog: Array<{ id: string; title?: string; option1?: string; option2?: string; imageSrc?: string }>,
+  sizeName: string,
+  frameName: string,
+  hasColors: boolean,
+  frameColorId?: string,
+): string | null {
+  if (catalog.length === 0) return null;
+  const variantId = matchVariantBySizeColor(catalog, sizeName, frameName, hasColors, frameColorId);
+  if (!variantId) return null;
+  const match = catalog.find((v) => String(v.id) === variantId);
+  return match?.imageSrc || null;
+}
+
+/** True when the variant catalog supports size+color matching for the active product. */
+function variantCatalogIsUsable(
+  catalog: Array<{ option1?: string; option2?: string }>,
+  needsColorOptions: boolean,
+): boolean {
+  if (catalog.length === 0) return false;
+  if (!needsColorOptions) return true;
+  return catalog.some((v) => v.option1 || v.option2);
+}
+
+/** Prefer productTypeId (Admin API) over handle — customizer pages often pass the page handle, not the Shopify product handle. */
+function buildProductVariantsFetchUrl(
+  shop: string,
+  productTypeId: string,
+  productHandle: string,
+): string | null {
+  if (!shop) return null;
+  const params = new URLSearchParams({ shop });
+  const parsedTypeId = parseInt(productTypeId, 10);
+  if (productTypeId && productTypeId !== "0" && !Number.isNaN(parsedTypeId) && parsedTypeId > 0) {
+    params.set("productTypeId", String(parsedTypeId));
+  } else if (productHandle) {
+    params.set("handle", productHandle);
+  } else {
+    return null;
+  }
+  return `${API_BASE}/api/shopify/product-variants?${params.toString()}`;
 }
 
 /**
@@ -436,6 +725,16 @@ const _isStorefrontIframe = typeof window !== 'undefined' &&
 
 const DIRECT_APP_API_BASE = "https://appai-pod-production.up.railway.app";
 
+/** Absolute http(s) URL for save-mockups (server rejects relative/proxy paths). */
+function toAbsoluteMockupUrlForSave(u: string | null | undefined): string | null {
+  if (!u) return null;
+  if (u.startsWith("http://") || u.startsWith("https://")) return u;
+  const resolved = toAbsoluteImageUrl(u);
+  if (resolved.startsWith("http")) return resolved;
+  const path = u.startsWith(PROXY_PREFIX) ? u.slice(PROXY_PREFIX.length) : u;
+  return `${DIRECT_APP_API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
 /**
  * Core fetch wrapper — uses XHR in Shopify storefront iframes (where window.fetch
  * is broken by Shopify's service worker) and window.fetch everywhere else.
@@ -459,9 +758,9 @@ const safeFetch = async (url: string | RequestInfo | URL, options: RequestInit =
   }
 
   try {
-    const urlStr = String(url).substring(0, 120);
+    const urlStr = String(url);
     const impl = _isStorefrontIframe ? 'xhr' : 'fetch';
-    console.log(`[safeFetch] calling ${impl}`, urlStr);
+    console.log(`[safeFetch] calling ${impl}`, urlStr.substring(0, 120));
 
     let res: Response;
     if (_isStorefrontIframe) {
@@ -892,6 +1191,29 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }, delayMs);
   }, []);
 
+  /** Product preview box — scroll landing target on hard refresh (storefront iframe). */
+  const previewLandingRef = useRef<HTMLDivElement | null>(null);
+  const initialLandingScrollDoneRef = useRef(false);
+
+  const scrollPreviewLanding = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+    } catch {
+      /* ignore */
+    }
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+    requestAnimationFrame(() => {
+      const target = previewLandingRef.current ?? artworkColumnRef.current;
+      target?.scrollIntoView({ block: 'start', behavior: 'auto' });
+      try {
+        window.parent.postMessage({ type: 'ai-art-studio:scroll-to-preview' }, '*');
+      } catch {
+        /* cross-origin parent */
+      }
+    });
+  }, []);
+
   const [stylePresets, setStylePresets] = useState<StylePreset[]>([]);
   const [productTypeConfig, setProductTypeConfig] = useState<ProductTypeConfig | null>(null);
   const [configLoading, setConfigLoading] = useState(true);
@@ -900,6 +1222,29 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [brandingSettings, setBrandingSettings] = useState<any>(null);
   const [sizeChart, setSizeChart] = useState<NormalizedSizeChart | null>(null);
   const [sizeChartLoading, setSizeChartLoading] = useState(false);
+
+  // Derived early — cart-state sync and load-design helpers reference these before JSX.
+  const printSizes: PrintSize[] = useMemo(
+    () =>
+      (productTypeConfig?.sizes || []).map((s) => ({
+        id: s.id,
+        name: s.name,
+        width: s.width,
+        height: s.height,
+        aspectRatio: productTypeConfig?.aspectRatio || "3:4",
+      })),
+    [productTypeConfig],
+  );
+
+  const frameColorObjects: FrameColor[] = useMemo(
+    () =>
+      (productTypeConfig?.frameColors || []).map((c) => ({
+        id: c.id,
+        name: c.name,
+        hex: c.hex,
+      })),
+    [productTypeConfig],
+  );
 
   // Resolve shop domain - try URL param first, then try to extract from referrer
   // This handles cases where the theme extension hasn't been redeployed with the latest changes
@@ -1064,6 +1409,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [mockupError, setMockupError] = useState<string | null>(null);
   const [mockupFailed, setMockupFailed] = useState(false);
   const [selectedMockupIndex, setSelectedMockupIndex] = useState(0);
+  const [catalogPreviewIndex, setCatalogPreviewIndex] = useState(0);
   const [mockupsStale, setMockupsStale] = useState(false);
 
   // AOP (All-Over-Print) pattern step state
@@ -1092,12 +1438,29 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [hoodieAopPlacerState, setHoodieAopPlacerState] =
     useState<HoodieAopPlacerState | null>(null);
 
+  /**
+   * On-the-fly flat/mesh placer state + a graceful-fallback flag. When the
+   * local renderer or its assets fail, `flatRenderFailed` flips true and the
+   * customizer falls back to the normal Printify mockup flow instead of
+   * hard-erroring. Persisted into `designState.flatPlacerState` for resume.
+   */
+  const [flatPlacerState, setFlatPlacerState] =
+    useState<FlatProductPlacerState | null>(null);
+  const [flatPlacerEditOpen, setFlatPlacerEditOpen] = useState(false);
+  const [flatApplyStatus, setFlatApplyStatus] = useState<FlatApplyStatus>("idle");
+  const [flatRenderFailed, setFlatRenderFailed] = useState(false);
+  const flatPlacerRef = useRef<FlatProductPlacerHandle>(null);
+  /** Dedupes save-mockups + gallery refresh for flat on-the-fly previews. */
+  const lastFlatGalleryMockupKeyRef = useRef<string>("");
+
   // Per-color mockup cache: instantly swap mockups when the user picks a different frame color
   const mockupColorCacheRef = useRef<Record<string, { urls: string[]; images: { url: string; label: string }[] }>>({});
   const currentMockupColorRef = useRef<string>('');
   // Always-current base variant ID for shadow product pre-creation.
   // Updated by a useEffect so fetchPrintifyMockups (which has limited deps) can read it.
   const baseVariantForShadowRef = useRef<string>('');
+  const variantsLoadedKeyRef = useRef("");
+  const variantsFetchingKeyRef = useRef("");
   // Suppress the stale-on-transform effect during design loading (applyLoadedDesign sets transform
   // and mockups in the same batch; we don't want that to mark the freshly-loaded mockups as stale)
   const suppressMockupStaleRef = useRef(false);
@@ -1113,17 +1476,125 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [addedToCart, setAddedToCart] = useState(false);
   const { toast } = useToast();
 
+  const notifyInsufficientCredits = useCallback(() => {
+    setCreditsPopoverOpen(true);
+    toast({
+      title: "No artwork credits remaining",
+      description:
+        "Purchase more credits to generate new artwork. Credits are refunded when you complete a purchase.",
+      duration: 8000,
+    });
+  }, [toast]);
+
   // Computed zoom values based on product type (apparel uses 135%, others use 100%)
   const isApparel = productTypeConfig?.designerType === "apparel";
+  const flatEdgeWrapMode = !!productTypeConfig?.flatCalibration?.edgeWrap;
+  const flatDecorMode = !!(
+    productTypeConfig?.flatCalibration &&
+    !flatEdgeWrapMode &&
+    (productTypeConfig.flatCalibration.decorPerSize ||
+      productTypeConfig.designerType === "framed-print")
+  );
+  const flatBlankColorId = useMemo(() => {
+    if (!productTypeConfig?.flatCalibration) return selectedFrameColor || selectedSize || "";
+    return resolveFlatBlankColorId(productTypeConfig.flatCalibration, {
+      sizeId: selectedSize || undefined,
+      frameColorId: selectedFrameColor || undefined,
+      isApparel,
+    });
+  }, [
+    productTypeConfig?.flatCalibration,
+    selectedSize,
+    selectedFrameColor,
+    isApparel,
+  ]);
+  const flatPlacerGeometryKey = useMemo(() => {
+    if (!productTypeConfig?.flatCalibration) return flatBlankColorId;
+    return resolveFlatPlacementGeometryKey(productTypeConfig.flatCalibration, {
+      sizeId: selectedSize || undefined,
+      frameColorId: selectedFrameColor || undefined,
+      isApparel,
+    });
+  }, [
+    productTypeConfig?.flatCalibration,
+    flatBlankColorId,
+    selectedSize,
+    selectedFrameColor,
+    isApparel,
+  ]);
+  const useAopCustomizer =
+    productTypeConfig?.useAopCustomizer ?? !!productTypeConfig?.isAllOverPrint;
+  const toteFoldedLayout = productTypeConfig?.effectiveFulfillmentLayout === "tote_folded_v1";
   const defaultZoom = isApparel ? 135 : 100;
   const maxZoom = isApparel ? 135 : 200;
   const supportsPrintPlacementSelection = !!(
     productTypeConfig?.hasPrintifyMockups &&
-    !productTypeConfig?.isAllOverPrint &&
-    productTypeConfig?.doubleSidedPrint
+    !useAopCustomizer &&
+    (productTypeConfig?.doubleSidedPrint || toteFoldedLayout)
   );
 
-  // Stable references for PatternCustomizer props — prevents the SVG-loading useEffect from
+  const catalogPreviewImages = useMemo(() => {
+    const imgs = productTypeConfig?.baseMockupImages;
+    if (!imgs) return [] as string[];
+
+    const seen = new Set<string>();
+    const out: string[] = [];
+    const urlKey = (url: string) => {
+      try {
+        const u = new URL(url, 'https://example.com');
+        return `${u.origin}${u.pathname}`.toLowerCase();
+      } catch {
+        return url.split(/[?#]/)[0].toLowerCase();
+      }
+    };
+    const add = (url: string | null | undefined) => {
+      if (!url || typeof url !== 'string') return;
+      const key = urlKey(url);
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push(url);
+    };
+
+    // Merchant-curated placeholders only (Customizer Pages primary + gallery picks).
+    // `available` is the full Printify catalog pool for admin picker — not storefront carousel.
+    const primary = imgs.primary || imgs.front || null;
+    add(primary);
+    for (const url of Array.isArray(imgs.gallery) ? imgs.gallery : []) add(url);
+    for (const url of Array.isArray((imgs as { custom?: string[] }).custom)
+      ? (imgs as { custom?: string[] }).custom!
+      : []) {
+      add(url);
+    }
+    return out.slice(0, 5);
+  }, [productTypeConfig?.baseMockupImages]);
+
+  useEffect(() => {
+    setCatalogPreviewIndex(0);
+  }, [productTypeConfig?.id, catalogPreviewImages.join("|")]);
+
+  // Storefront / theme iframe: land on the product preview box after hard refresh.
+  // The parent page often restores scroll at the footer once the iframe auto-resizes.
+  useEffect(() => {
+    if (!isStorefront && !isEmbedded) return;
+    if (configLoading || !productTypeConfig) return;
+    if (initialLandingScrollDoneRef.current) return;
+    initialLandingScrollDoneRef.current = true;
+    scrollPreviewLanding();
+    const t1 = window.setTimeout(scrollPreviewLanding, 400);
+    const t2 = window.setTimeout(scrollPreviewLanding, 1200);
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+    };
+  }, [isStorefront, isEmbedded, configLoading, productTypeConfig, scrollPreviewLanding]);
+
+  useEffect(() => {
+    if (toteFoldedLayout && supportsPrintPlacementSelection && printPlacement !== "both") {
+      setPrintPlacement("both");
+    }
+  }, [toteFoldedLayout, supportsPrintPlacementSelection, printPlacement]);
+
+  // Stable references for PatternCustomizer props
   // re-firing on every parent render (e.g. polling intervals) due to new object/function refs.
   const patternFetchFn = useCallback(
     (url: string, options?: RequestInit) => safeFetch(url, options, 60000),
@@ -1264,8 +1735,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       baseMockupImages: dc.baseMockupImages || undefined,
       doubleSidedPrint: dc.doubleSidedPrint || false,
       isAllOverPrint: dc.isAllOverPrint || false,
+      useAopCustomizer: dc.useAopCustomizer,
+      storefrontMockupMode: dc.storefrontMockupMode ?? null,
+      fulfillmentLayout: dc.fulfillmentLayout ?? null,
+      effectiveStorefrontMockupMode: dc.effectiveStorefrontMockupMode,
+      effectiveFulfillmentLayout: dc.effectiveFulfillmentLayout,
       aopTemplateId: dc.aopTemplateId ?? null,
       panelMappingTemplate: dc.panelMappingTemplate ?? null,
+      onTheFlyTier: dc.onTheFlyTier ?? null,
+      flatCalibration: dc.flatCalibration ?? null,
       placeholderPositions: dc.placeholderPositions || [],
       panelFlatLayImages: dc.panelFlatLayImages || {},
       colorLabel: dc.colorLabel || "Color",
@@ -1278,6 +1756,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
     if (dc.frameColors?.length > 0) {
       setSelectedFrameColor(dc.frameColors[0].id);
+    } else {
+      setSelectedFrameColor("");
     }
     setProductTypeError(null);
   }, []);
@@ -1379,9 +1859,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       const logPrefix = `[EmbedDesign] [${sessionId}]`;
       let lastError: Error | null = null;
 
-      // GUARD: If this is a designer endpoint call, it MUST have shop= parameter
-      if (frozenUrl.includes('/designer') && !frozenUrl.includes('shop=')) {
-        const errorMsg = `CRITICAL BUG: Designer endpoint called without shop parameter! URL: ${frozenUrl}`;
+      // GUARD: A STOREFRONT designer endpoint call MUST have a shop= parameter
+      // (it resolves the merchant from the shop). The admin-tester path uses the
+      // session-authenticated admin endpoint `/api/product-types/:id/designer`,
+      // which has no shop and must NOT trip this guard.
+      if (frozenUrl.includes('/storefront/') && frozenUrl.includes('/designer') && !frozenUrl.includes('shop=')) {
+        const errorMsg = `CRITICAL BUG: Storefront designer endpoint called without shop parameter! URL: ${frozenUrl}`;
         console.error(`${logPrefix} ${errorMsg}`);
         throw new Error(errorMsg);
       }
@@ -1597,12 +2080,20 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             canvasConfig: designerConfig.canvasConfig,
             sizes: designerConfig.sizes || [],
             frameColors: designerConfig.frameColors || [],
+            variantMap: designerConfig.variantMap || {},
             hasPrintifyMockups: designerConfig.hasPrintifyMockups || false,
             baseMockupImages: designerConfig.baseMockupImages || undefined,
             doubleSidedPrint: designerConfig.doubleSidedPrint || false,
             isAllOverPrint: designerConfig.isAllOverPrint || false,
+            useAopCustomizer: designerConfig.useAopCustomizer,
+            storefrontMockupMode: designerConfig.storefrontMockupMode ?? null,
+            fulfillmentLayout: designerConfig.fulfillmentLayout ?? null,
+            effectiveStorefrontMockupMode: designerConfig.effectiveStorefrontMockupMode,
+            effectiveFulfillmentLayout: designerConfig.effectiveFulfillmentLayout,
             aopTemplateId: designerConfig.aopTemplateId ?? null,
             panelMappingTemplate: designerConfig.panelMappingTemplate ?? null,
+            onTheFlyTier: designerConfig.onTheFlyTier ?? null,
+            flatCalibration: designerConfig.flatCalibration ?? null,
             placeholderPositions: designerConfig.placeholderPositions || [],
             panelFlatLayImages: designerConfig.panelFlatLayImages || {},
             colorLabel: designerConfig.colorLabel || "Color",
@@ -1615,7 +2106,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             setSizeChartLoading(false);
           }
           if (designerConfig.frameColors?.length > 0) {
-            setSelectedFrameColor(designerConfig.frameColors[0].id);
+            const vm = designerConfig.variantMap || {};
+            // Pick first color that has ANY variant mapping (across all sizes).
+            // This avoids defaulting to grey just because defaultSize+color has no entry.
+            const firstAvailable = designerConfig.frameColors.find((c: { id: string }) =>
+              hasVariantMappingForColor(vm, c.id),
+            );
+            setSelectedFrameColor((firstAvailable ?? designerConfig.frameColors[0]).id);
           }
           setProductTypeError(null);
         } else {
@@ -1703,8 +2200,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               root.setProperty('--ring', primaryHSL);
             }
             if (textHSL) {
-              root.setProperty('--foreground', textHSL);
-              root.setProperty('--card-foreground', textHSL);
+              // Guard against the merchant background so a light brand text
+              // colour can't render white-on-pale; no-op when contrast is fine.
+              const safeFg = ensureContrastingForeground(bgHSL, textHSL) ?? textHSL;
+              root.setProperty('--foreground', safeFg);
+              root.setProperty('--card-foreground', safeFg);
             }
             if (bgHSL) {
               root.setProperty('--background', bgHSL);
@@ -1771,7 +2271,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   // Load saved design from loadDesignId URL param (navigated from Saved Designs panel)
   // Helper to apply a saved design record to the UI state
-  const applyLoadedDesign = (designId: string, imageUrl: string, promptText: string, ds: Record<string, any> | null | undefined, topLevel: { size?: string | null; frameColor?: string | null; stylePreset?: string | null; mockupUrls?: string[] | null }) => {
+  const applyLoadedDesign = (designId: string, imageUrl: string, promptText: string, ds: Record<string, any> | null | undefined, topLevel: { size?: string | null; frameColor?: string | null; stylePreset?: string | null; mockupUrls?: string[] | null; productTypeId?: string | null }) => {
     const abs = (u?: string) => u && u.startsWith('/') ? buildAppUrl(u) : u;
     const absUrl = abs(imageUrl);
     if (!absUrl) return;
@@ -1779,6 +2279,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     setGeneratedDesign({ id: designId, imageUrl: absUrl, prompt: promptText || '' });
     if (promptText) setPrompt(promptText);
     savedJobIdRef.current = designId;
+    setFlatPlacerEditOpen(false);
     // Immediately poll for a pre-existing shadow product for this design.
     // If the shadow product was created within the last 7 days, it will be returned
     // instantly and the Add to Cart will be instant without calling resolve-design-variant.
@@ -1797,8 +2298,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         setTransform(restoredTransform);
         initialTransformRef.current = restoredTransform;
       }
-      if (ds.selectedSize) setSelectedSize(ds.selectedSize);
-      if (ds.selectedFrameColor) setSelectedFrameColor(ds.selectedFrameColor);
+      if (ds.selectedSize) {
+        const sizeOk = !printSizes.length || printSizes.some((s) => s.id === ds.selectedSize);
+        if (sizeOk) setSelectedSize(ds.selectedSize);
+      }
+      if (ds.selectedFrameColor) {
+        const resolved = resolveFrameColorId(ds.selectedFrameColor, frameColorObjects);
+        if (resolved) setSelectedFrameColor(resolved);
+      }
       if (ds.stylePreset) setSelectedPreset(ds.stylePreset);
       if (ds.aopPlacementSettings && typeof ds.aopPlacementSettings === 'object') {
         setAopPlacementSettings(ds.aopPlacementSettings as AopPlacementSettings);
@@ -1822,32 +2329,78 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       if (ds.hoodieAopPlacerState && typeof ds.hoodieAopPlacerState === 'object') {
         setHoodieAopPlacerState(ds.hoodieAopPlacerState as HoodieAopPlacerState);
       }
+      // Restore on-the-fly flat/mesh placer state so the customer resumes
+      // their per-view placement mid-edit.
+      if (ds.flatPlacerState && typeof ds.flatPlacerState === 'object') {
+        setFlatPlacerState(ds.flatPlacerState as FlatProductPlacerState);
+      }
+      if (ds.flatMockups && typeof ds.flatMockups === "object") {
+        const flatImages: { url: string; label: string }[] = [];
+        const frontUrl = abs(ds.flatMockups.front);
+        const backUrl = abs(ds.flatMockups.back);
+        if (frontUrl) flatImages.push({ url: frontUrl, label: "front" });
+        if (backUrl) flatImages.push({ url: backUrl, label: "back" });
+        if (flatImages.length > 0) {
+          const flatUrls = flatImages.map((i) => i.url);
+          setPrintifyMockupImages(flatImages);
+          setPrintifyMockups(flatUrls);
+          setSelectedMockupIndex(1);
+          setMockupsStale(false);
+          sendMockupsToParent(flatUrls);
+        }
+      }
     } else {
-      if (topLevel.size) setSelectedSize(topLevel.size);
-      if (topLevel.frameColor) setSelectedFrameColor(topLevel.frameColor);
+      if (topLevel.size) {
+        const sizeOk = !printSizes.length || printSizes.some((s) => s.id === topLevel.size);
+        if (sizeOk) setSelectedSize(topLevel.size);
+      }
+      if (topLevel.frameColor) {
+        const resolved = resolveFrameColorId(topLevel.frameColor, frameColorObjects);
+        if (resolved) setSelectedFrameColor(resolved);
+      }
       if (topLevel.stylePreset) setSelectedPreset(topLevel.stylePreset);
     }
     // Some older saved AOP designs only persisted panel URLs in designState; their
     // size/color/style live on the top-level saved-design row. Always fall back to
     // those values so Edit Pattern -> Apply can regenerate mockups.
-    if (!ds?.selectedSize && topLevel.size) setSelectedSize(topLevel.size);
-    if (!ds?.selectedFrameColor && topLevel.frameColor) setSelectedFrameColor(topLevel.frameColor);
+    if (!ds?.selectedSize && topLevel.size) {
+      const sizeOk = !printSizes.length || printSizes.some((s) => s.id === topLevel.size);
+      if (sizeOk) setSelectedSize(topLevel.size);
+    }
+    if (!ds?.selectedFrameColor && topLevel.frameColor) {
+      const resolved = resolveFrameColorId(topLevel.frameColor, frameColorObjects);
+      if (resolved) setSelectedFrameColor(resolved);
+    }
     if (!ds?.stylePreset && topLevel.stylePreset) setSelectedPreset(topLevel.stylePreset);
     const mockups = topLevel.mockupUrls;
-    if (mockups?.length) {
+    const savedProductTypeId = topLevel.productTypeId ? String(topLevel.productTypeId) : null;
+    const currentProductTypeId = productTypeId ? String(productTypeId) : null;
+    const mockupsMatchProduct =
+      !savedProductTypeId || !currentProductTypeId || savedProductTypeId === currentProductTypeId;
+    if (mockups?.length && mockupsMatchProduct) {
       const absMockups = mockups.map(toAbsoluteImageUrl);
       // Restore aopPatternUrl so the ATC button is not blocked by the
-      // "productTypeConfig.isAllOverPrint && !aopPatternUrl" guard for saved AOP
+      // "useAopCustomizer && !aopPatternUrl" guard for saved AOP
       // designs. The design URL is the same value set by onApply when applying fresh.
       // Non-AOP products ignore this because their button condition checks isAllOverPrint first.
       if (absUrl) setAopPatternUrl(absUrl);
-      const durableMockups = productTypeConfig?.isAllOverPrint
+      const durableMockups = useAopCustomizer
         ? absMockups.filter((url: string) => !isTemporaryPrintifyMockupUrl(url))
         : absMockups;
 
       if (durableMockups.length > 0) {
         setPrintifyMockups(durableMockups);
-        setPrintifyMockupImages(durableMockups.map((url: string, i: number) => ({ url, label: `Mockup ${i + 1}` })));
+        const isFlatTier =
+          productTypeConfig?.onTheFlyTier === "flat" ||
+          productTypeConfig?.onTheFlyTier === "mesh";
+        setPrintifyMockupImages(
+          durableMockups.map((url: string, i: number) => ({
+            url,
+            label: isFlatTier
+              ? (i === 0 ? "front" : i === 1 ? "back" : `view-${i + 1}`)
+              : (i === 0 ? "Front" : i === 1 ? "Back" : `View ${i + 1}`),
+          })),
+        );
         setSelectedMockupIndex(1); // Auto-show first mockup when loading a saved design
         // The loaded mockups are already correct for this design — mark them fresh.
         // Without this, setTransform() called above triggers the stale-on-transform
@@ -1867,6 +2420,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         setMockupsStale(true);
         sendMockupsToParent([]);
       }
+    } else if (mockups?.length && !mockupsMatchProduct) {
+      console.warn("[LoadDesign] Skipping mockup restore — saved design product type differs from active product");
+      setPrintifyMockups([]);
+      setPrintifyMockupImages([]);
+      setSelectedMockupIndex(0);
+      setMockupsStale(true);
     }
     scrollArtworkIntoViewOnMobile(150);
 
@@ -1892,7 +2451,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     // Do not silently replace saved AOP artwork on re-edit. Pattern/placement previews
     // must use the original motif; bg removal remains an explicit processing step.
     const shouldAutoRemoveBg =
-      !productTypeConfig?.isAllOverPrint && productTypeConfig?.designerType === "apparel";
+      !useAopCustomizer &&
+      productTypeConfig?.designerType === "apparel" &&
+      !productTypeConfig?.flatCalibration;
     if (shouldAutoRemoveBg && !bgRemovedLoadedDesignsRef.current.has(designId)) {
       bgRemovedLoadedDesignsRef.current.add(designId);
       void (async () => {
@@ -1938,6 +2499,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     setAopPlacementSettings(undefined);
     setAopPatternSettings(DEFAULT_AOP_PATTERN_SETTINGS);
     setHoodieAopPlacerState(null);
+    setFlatPlacerState(null);
+    setFlatPlacerEditOpen(false);
+    setFlatApplyStatus("idle");
+    setFlatRenderFailed(false);
     lastAopPanelUrlsRef.current = null;
     setPrintifyMockups([]);
     setPrintifyMockupImages([]);
@@ -1963,13 +2528,58 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
 
     const baseVariant = config.baseVariantId ? String(config.baseVariantId) : "";
-    const targetVariants = Array.isArray(config.variants) ? config.variants : [];
+    let targetVariants = Array.isArray(config.variants)
+      ? mapServerVariantsToCatalog(config.variants)
+      : [];
+
+    // customizer-page may return an empty variants array; fetch from Admin API as fallback.
+    if (targetVariants.length === 0) {
+      const resolvedProductTypeId = config.productTypeId ? String(config.productTypeId) : "";
+      const resolvedHandle = config.baseProductHandle || "";
+      const fetchUrl = buildProductVariantsFetchUrl(
+        shopDomain,
+        resolvedProductTypeId,
+        resolvedHandle,
+      );
+      if (fetchUrl) {
+        try {
+          const variantRes = await safeFetch(fetchUrl);
+          if (variantRes.ok) {
+            const variantData = await variantRes.json();
+            if (Array.isArray(variantData.variants) && variantData.variants.length > 0) {
+              targetVariants = mapServerVariantsToCatalog(variantData.variants);
+              console.log('[SavedDesigns] Fetched', targetVariants.length, 'variants after product switch');
+            }
+          }
+        } catch (e) {
+          console.warn('[SavedDesigns] Variant fallback fetch failed:', e);
+        }
+      }
+    }
+
+    const variantCatalogKey = `${config.productTypeId ? String(config.productTypeId) : "0"}|${config.baseProductHandle || pageHandle}`;
+    const configFrameColors = Array.isArray(config.designerConfig?.frameColors)
+      ? config.designerConfig.frameColors
+      : [];
+    const variantsHaveOptions = targetVariants.some((v) => v.option1 || v.option2);
+    // Only mark the catalog loaded when variants include option columns (needed for
+    // size+color matching) or the product has no color dimension.
+    if (targetVariants.length > 0 && (variantsHaveOptions || configFrameColors.length === 0)) {
+      variantsLoadedKeyRef.current = variantCatalogKey;
+      variantsFetchingKeyRef.current = "";
+    } else {
+      variantsLoadedKeyRef.current = "";
+      variantsFetchingKeyRef.current = "";
+    }
+
     setVariants(targetVariants);
-    setVariantsFetched(true);
+    setVariantsFetched(targetVariants.length > 0);
     setShopifyVariants(targetVariants);
-    setShopifyVariantId(baseVariant || (targetVariants[0]?.id ? String(targetVariants[0].id) : null));
-    setOverrideVariantId(baseVariant || (targetVariants[0]?.id ? String(targetVariants[0].id) : null));
-    baseVariantForShadowRef.current = baseVariant ? normalizeVariantId(baseVariant) : "";
+    const initialVariantId =
+      baseVariant || (targetVariants[0]?.id ? String(targetVariants[0].id) : null);
+    setShopifyVariantId(initialVariantId);
+    setOverrideVariantId(initialVariantId);
+    baseVariantForShadowRef.current = initialVariantId ? normalizeVariantId(initialVariantId) : "";
 
     setActiveProductContext({
       productTypeId: config.productTypeId ? String(config.productTypeId) : "0",
@@ -2008,8 +2618,27 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (mockupAbsForUrl) params.set("loadMockup", mockupAbsForUrl);
     window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
 
+    applyDesignerConfig(config.designerConfig, "SWITCH SAVED DESIGN");
+    if (Array.isArray(config.stylePresets)) {
+      setStylePresets(config.stylePresets);
+    }
+    setConfigLoading(false);
+
+    try {
+      window.parent.postMessage({
+        type: "AI_ART_STUDIO_PRODUCT_CONTEXT",
+        productTypeId: config.productTypeId ? String(config.productTypeId) : null,
+        productId: config.baseProductId ? String(config.baseProductId) : null,
+        productHandle: config.baseProductHandle || pageHandle,
+        selectedVariant: initialVariantId,
+        variants: targetVariants,
+      }, "*");
+    } catch {
+      // Parent may be unavailable in local/dev embeds.
+    }
+
     setBridgeLoadDesignId(designId);
-  }, []);
+  }, [applyDesignerConfig, shopDomain]);
 
   // Reset the applied flag whenever loadDesignId changes so we restore the new design
   useEffect(() => {
@@ -2024,6 +2653,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       setAopPlacementSettings(undefined);
       setAopPatternSettings(DEFAULT_AOP_PATTERN_SETTINGS);
       setHoodieAopPlacerState(null);
+      setFlatPlacerState(null);
+      setFlatPlacerEditOpen(false);
+      setFlatApplyStatus("idle");
+      setFlatRenderFailed(false);
       lastAopPanelUrlsRef.current = null;
       setPrintifyMockups([]);
       setPrintifyMockupImages([]);
@@ -2045,7 +2678,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
     console.log('[LoadDesign] Found design:', d.id, 'artworkUrl:', d.artworkUrl);
     loadDesignAppliedRef.current = true;
-    applyLoadedDesign(d.id, d.artworkUrl, d.prompt, d.designState, { size: d.size, frameColor: d.frameColor, stylePreset: d.stylePreset, mockupUrls: d.mockupUrls });
+    applyLoadedDesign(d.id, d.artworkUrl, d.prompt, d.designState, { size: d.size, frameColor: d.frameColor, stylePreset: d.stylePreset, mockupUrls: d.mockupUrls, productTypeId: d.productTypeId });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveLoadDesignId, savedDesigns, configLoading]);
 
@@ -2065,7 +2698,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           if (!status || status.status !== 'complete') return;
           if (loadDesignAppliedRef.current) return; // list restored it in the meantime
           loadDesignAppliedRef.current = true;
-          applyLoadedDesign(effectiveLoadDesignId, status.imageUrl, status.prompt || '', status.designState, { size: status.size, frameColor: status.frameColor, stylePreset: status.stylePreset, mockupUrls: status.mockupUrls });
+          applyLoadedDesign(effectiveLoadDesignId, status.imageUrl, status.prompt || '', status.designState, { size: status.size, frameColor: status.frameColor, stylePreset: status.stylePreset, mockupUrls: status.mockupUrls, productTypeId: status.productTypeId });
         })
         .catch(() => {});
     }, 2000);
@@ -2433,7 +3066,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       // server uses it to fill any blueprint placeholder the client doesn't
       // render — e.g. inner hood / collar yoke / placket trim on zip hoodies
       // — so those regions don't show the default white garment template.
-      const aopBgColor = productTypeConfig?.isAllOverPrint
+      const aopBgColor = useAopCustomizer
         ? (() => {
             const candidate = aopPlacementSettings?.bgColor ?? aopPatternSettings?.bgColor;
             return typeof candidate === "string" && /^#[0-9a-fA-F]{6}$/.test(candidate)
@@ -2441,7 +3074,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               : undefined;
           })()
         : undefined;
-      const mockupPrintPlacement = productTypeConfig?.isAllOverPrint
+      const mockupPrintPlacement = useAopCustomizer
         ? undefined
         : supportsPrintPlacementSelection
           ? (printPlacementOverride ?? printPlacement)
@@ -2522,9 +3155,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         setPrintifyMockupImages(absImages);
         setSelectedMockupIndex(1); // Auto-show first mockup (not raw artwork)
         sendMockupsToParent(absUrls);
-        currentMockupColorRef.current = colorId;
-        mockupColorCacheRef.current[colorId] = { urls: absUrls, images: absImages };
-        console.log('[Mockups] Stored', absUrls.length, 'mockup URLs for color', colorId);
+        const cacheKey = mockupCacheKey(sizeId, colorId);
+        currentMockupColorRef.current = cacheKey;
+        mockupColorCacheRef.current[cacheKey] = { urls: absUrls, images: absImages };
+        console.log('[Mockups] Stored', absUrls.length, 'mockup URLs for', cacheKey);
         // Persist mockup URLs on the job record so saved designs can be re-loaded with mockups.
         // Also pass base product/variant info so the server can pre-create the shadow product
         // in the background — enabling instant Add to Cart.
@@ -2643,6 +3277,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       console.error("Failed to generate Printify mockups:", error);
       setMockupError(error instanceof Error ? error.message : "Failed to generate product preview");
       setMockupFailed(true);
+      // Keep mockupsStale so the UI surfaces an error rather than silently
+      // showing a stale mockup from a previous size/color combination.
+      setMockupsStale(true);
     } finally {
       if (activeMockupJobKeyRef.current === mockupJobKey) {
         activeMockupJobKeyRef.current = null;
@@ -2656,7 +3293,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         }
       }
     }
-  }, [isShopify, isStorefront, shopDomain, sessionToken, sendMockupsToParent, runtimeMode, printPlacement, supportsPrintPlacementSelection, productTypeConfig?.isAllOverPrint, aopPlacementSettings?.bgColor, aopPatternSettings?.bgColor]);
+  }, [isShopify, isStorefront, shopDomain, sessionToken, sendMockupsToParent, runtimeMode, printPlacement, supportsPrintPlacementSelection, useAopCustomizer, aopPlacementSettings?.bgColor, aopPatternSettings?.bgColor]);
 
   // Reset mockupFailed when a new design image becomes available so the
   // useEffect hooks below can trigger a fresh mockup attempt.
@@ -2680,11 +3317,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       !mockupLoading &&
       !mockupFailed
     ) {
-      if (productTypeConfig.isAllOverPrint) {
+      if (useAopCustomizer) {
         console.log('[EmbedDesign] First useEffect: Triggering AOP Pattern Customizer');
         setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
         setAopPatternUrl(null);
         setShowPatternStep(true);
+      } else if (
+        (productTypeConfig.onTheFlyTier === "flat" || productTypeConfig.onTheFlyTier === "mesh") &&
+        productTypeConfig.flatCalibration
+      ) {
+        setFlatPlacerEditOpen(true);
       } else {
         fetchPrintifyMockups(
           toAbsoluteImageUrl(generatedDesign.imageUrl),
@@ -2713,11 +3355,19 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       mockupFailed
     ) return;
 
-    if (productTypeConfig.isAllOverPrint) {
+    if (useAopCustomizer) {
       console.log('[EmbedDesign] AOP Fallback: Triggering Pattern Customizer');
       setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
       setAopPatternUrl(null);
       setShowPatternStep(true);
+      return;
+    }
+
+    if (
+      (productTypeConfig.onTheFlyTier === "flat" || productTypeConfig.onTheFlyTier === "mesh") &&
+      productTypeConfig.flatCalibration
+    ) {
+      setFlatPlacerEditOpen(true);
       return;
     }
 
@@ -2735,6 +3385,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   // Mark mockups as stale when transform changes and mockups already exist
   useEffect(() => {
+    if (
+      (productTypeConfig?.onTheFlyTier === "flat" ||
+        productTypeConfig?.onTheFlyTier === "mesh") &&
+      productTypeConfig?.flatCalibration
+    ) {
+      return;
+    }
     if (suppressMockupStaleRef.current) {
       // Transform changed during design load — mockups are already correct, don't mark stale
       suppressMockupStaleRef.current = false;
@@ -2747,25 +3404,114 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transform.scale, transform.x, transform.y]);
 
-  // When frame color changes, swap mockups from the per-color cache or mark stale
+  // Keep frame colour aligned with the variant map. We only auto-switch when
+  // the selected color has NO mapping at any size — not just the current size.
+  // This prevents force-switching to grey when the user picks XL but xl:red is
+  // absent while s:red exists (the mockup server resolves it via size fallback).
   useEffect(() => {
-    const hasMockups = printifyMockups.length > 0 || printifyMockupImages.length > 0;
-    if (!hasMockups || !selectedFrameColor || mockupLoading) return;
-    if (selectedFrameColor === currentMockupColorRef.current) return;
+    const colors = productTypeConfig?.frameColors || [];
+    if (!productTypeConfig?.variantMap || colors.length === 0) return;
+    if (hasVariantMappingForColor(productTypeConfig.variantMap, selectedFrameColor)) return;
+    const fallback = colors.find((c) =>
+      hasVariantMappingForColor(productTypeConfig.variantMap, c.id),
+    );
+    if (fallback) setSelectedFrameColor(fallback.id);
+  }, [productTypeConfig?.variantMap, productTypeConfig?.frameColors, selectedFrameColor]);
 
-    const cached = mockupColorCacheRef.current[selectedFrameColor];
+  // When frame color changes, swap mockups from the per-color cache or auto-refetch
+  useEffect(() => {
+    if (
+      (productTypeConfig?.onTheFlyTier === "flat" ||
+        productTypeConfig?.onTheFlyTier === "mesh") &&
+      productTypeConfig?.flatCalibration
+    ) {
+      return;
+    }
+
+    if (!generatedDesign?.imageUrl || !selectedFrameColor || !selectedSize || !productTypeConfig?.hasPrintifyMockups) {
+      return;
+    }
+    if (mockupLoading) return;
+
+    const cacheKey = mockupCacheKey(selectedSize, selectedFrameColor);
+    if (cacheKey === currentMockupColorRef.current) return;
+
+    const cached = mockupColorCacheRef.current[cacheKey];
     if (cached && cached.images.length > 0) {
       setPrintifyMockups(cached.urls);
       setPrintifyMockupImages(cached.images);
-      currentMockupColorRef.current = selectedFrameColor;
-      setSelectedMockupIndex(prev => prev === 0 ? 1 : prev); // Keep mockup view when swapping colors
+      currentMockupColorRef.current = cacheKey;
+      setSelectedMockupIndex(1);
       setMockupsStale(false);
-      console.log('[Mockups] Swapped to cached mockups for color', selectedFrameColor);
+      console.log('[Mockups] Swapped to cached mockups for', cacheKey);
+      return;
+    }
+
+    console.log('[Mockups] No cache for color', selectedFrameColor, '— auto-refetching');
+    setMockupError(null);
+    setMockupFailed(false);
+    setPrintifyMockups([]);
+    setPrintifyMockupImages([]);
+    setSelectedMockupIndex(1);
+    setMockupsStale(false);
+    fetchPrintifyMockups(
+      toAbsoluteImageUrl(generatedDesign.imageUrl),
+      productTypeConfig.id,
+      selectedSize,
+      selectedFrameColor,
+      transform.scale,
+      transform.x,
+      transform.y
+    );
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedFrameColor]);
+
+  // When size changes, swap mockups from size+color cache or mark stale / refetch
+  useEffect(() => {
+    if (
+      (productTypeConfig?.onTheFlyTier === "flat" ||
+        productTypeConfig?.onTheFlyTier === "mesh") &&
+      productTypeConfig?.flatCalibration
+    ) {
+      return;
+    }
+
+    const hasMockups = printifyMockups.length > 0 || printifyMockupImages.length > 0;
+    if (!hasMockups || !selectedFrameColor || !selectedSize || mockupLoading) return;
+    const cacheKey = mockupCacheKey(selectedSize, selectedFrameColor);
+    if (cacheKey === currentMockupColorRef.current) return;
+
+    const cached = mockupColorCacheRef.current[cacheKey];
+    if (cached && cached.images.length > 0) {
+      setPrintifyMockups(cached.urls);
+      setPrintifyMockupImages(cached.images);
+      currentMockupColorRef.current = cacheKey;
+      setSelectedMockupIndex(prev => prev === 0 ? 1 : prev);
+      setMockupsStale(false);
+      console.log('[Mockups] Swapped to cached mockups for size change', cacheKey);
+    } else if (generatedDesign?.imageUrl && productTypeConfig && selectedFrameColor) {
+      console.log('[Mockups] No cache for size', selectedSize, '— auto-refetching');
+      setMockupError(null);
+      setMockupFailed(false);
+      setPrintifyMockups([]);
+      setPrintifyMockupImages([]);
+      setSelectedMockupIndex(0);
+      setMockupsStale(false);
+      currentMockupColorRef.current = '';
+      fetchPrintifyMockups(
+        toAbsoluteImageUrl(generatedDesign.imageUrl),
+        productTypeConfig.id,
+        selectedSize,
+        selectedFrameColor,
+        transform.scale,
+        transform.x,
+        transform.y
+      );
     } else {
       setMockupsStale(true);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedFrameColor]);
+  }, [selectedSize]);
 
   // Background prefetch: after primary mockups load, fetch other frame colors silently.
   // AOP products require per-panel data — skip prefetch unless we have saved panel refs.
@@ -2782,14 +3528,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     // AOP panel rasters are colour-specific because transparent mockup pixels
     // are flattened to the selected garment colour. Regenerate on colour change
     // instead of caching mismatched background-colour mockups.
-    if (productTypeConfig?.isAllOverPrint) {
+    if (useAopCustomizer) {
       console.log('[Mockups] Background prefetch skipped — AOP panel rasters are color-specific');
       return;
     }
 
-    const otherColors = productTypeConfig.frameColors.filter(
-      (c: { id: string }) => c.id !== currentMockupColorRef.current && !mockupColorCacheRef.current[c.id]
-    );
+    const activeCacheKey = mockupCacheKey(selectedSize, selectedFrameColor);
+    const otherColors = productTypeConfig.frameColors.filter((c: { id: string }) => {
+      const key = mockupCacheKey(selectedSize, c.id);
+      return key !== activeCacheKey && !mockupColorCacheRef.current[key];
+    });
     if (otherColors.length === 0) return;
 
     console.log('[Mockups] Background prefetch queued for colors:', otherColors.map((c: { id: string }) => c.id));
@@ -2810,10 +3558,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
       for (const color of otherColors) {
         if (controller.signal.aborted) break;
-        if (mockupColorCacheRef.current[color.id]) continue;
+        const prefetchKey = mockupCacheKey(selectedSize, color.id);
+        if (mockupColorCacheRef.current[prefetchKey]) continue;
 
         try {
-          const aopPanels = productTypeConfig?.isAllOverPrint
+          const aopPanels = useAopCustomizer
             ? (lastAopPanelUrlsRef.current ?? undefined)
             : undefined;
           const payload: Record<string, unknown> = {
@@ -2845,8 +3594,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               ...img,
               url: toAbsoluteImageUrl(img.url),
             }));
-            mockupColorCacheRef.current[color.id] = { urls: absUrls, images: absImages };
-            console.log('[Mockups] Background cached color', color.id, '—', absUrls.length, 'mockups');
+            mockupColorCacheRef.current[prefetchKey] = { urls: absUrls, images: absImages };
+            console.log('[Mockups] Background cached', prefetchKey, '—', absUrls.length, 'mockups');
           }
         } catch {
           // Silently fail for background prefetch
@@ -2875,15 +3624,51 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   // Shopify variants with prices delivered from the embed parent via BRIDGE_ACK postMessage.
   // Used to render a variant selector inside the generator on customizer pages.
-  const [shopifyVariants, setShopifyVariants] = useState<Array<{ id: string; title: string; price: string }>>([]);
+  const [shopifyVariants, setShopifyVariants] = useState<Array<{ id: string; title: string; price: string; option1?: string; option2?: string; imageSrc?: string }>>([]);
   const [shopifyVariantId, setShopifyVariantId] = useState<string | null>(null);
 
-  const getPreferredMockupUrl = useCallback((): string => {
+  /** Color-accurate garment photo from Shopify variant catalog (falls back to catalog placeholder). */
+  const colorAwareBlankUrl = useMemo(() => {
+    if (productTypeConfig?.designerType !== "apparel" || !selectedSize) return null;
+    const catalog = shopifyVariants.length > 0 ? shopifyVariants : variants;
+    if (catalog.length === 0) return null;
+    const sizeName = printSizes.find((s) => s.id === selectedSize)?.name ?? selectedSize;
+    const frameName =
+      frameColorObjects.find((f) => f.id === selectedFrameColor)?.name ?? selectedFrameColor ?? "";
+    return resolveVariantImageForSelection(
+      catalog,
+      sizeName,
+      frameName,
+      frameColorObjects.length > 0,
+      selectedFrameColor || undefined,
+    );
+  }, [
+    productTypeConfig?.designerType,
+    selectedSize,
+    selectedFrameColor,
+    shopifyVariants,
+    variants,
+    printSizes,
+    frameColorObjects,
+  ]);
+
+  const getPreferredMockupUrl = useCallback((opts?: { cartSafeOnly?: boolean }): string => {
+    const pick = (url: string | undefined): string => {
+      if (!url) return "";
+      const abs = toAbsoluteImageUrl(url);
+      if (opts?.cartSafeOnly && !isHttpsMockupUrl(abs)) return "";
+      return abs;
+    };
     const frontImage = printifyMockupImages.find(img => img.label === 'front');
-    if (frontImage?.url) return toAbsoluteImageUrl(frontImage.url);
-    if (printifyMockups.length > 0) return toAbsoluteImageUrl(printifyMockups[0]);
+    const fromFront = pick(frontImage?.url);
+    if (fromFront) return fromFront;
+    if (printifyMockups.length > 0) {
+      const u = pick(printifyMockups[0]);
+      if (u) return u;
+    }
     if (printifyMockupImages.length > 0 && printifyMockupImages[0]?.url) {
-      return toAbsoluteImageUrl(printifyMockupImages[0].url);
+      const u = pick(printifyMockupImages[0].url);
+      if (u) return u;
     }
     return '';
   }, [printifyMockups, printifyMockupImages]);
@@ -2948,25 +3733,50 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       properties['_artwork_url'] = toAbsoluteImageUrl(artworkUrl);
     }
 
-    const mockupFullUrl = mockupsStale ? '' : getPreferredMockupUrl();
+    const flatOnTheFlyEligible = !!(
+      (productTypeConfig?.onTheFlyTier === "flat" ||
+        productTypeConfig?.onTheFlyTier === "mesh") &&
+      productTypeConfig?.flatCalibration &&
+      generatedDesign?.imageUrl &&
+      !flatRenderFailed
+    );
+    const mockupFullUrl =
+      mockupsStale && !flatOnTheFlyEligible ? "" : getPreferredMockupUrl({ cartSafeOnly: true });
     // Use `_mockup_url` only — Shopify hides underscore-prefixed line properties from
     // buyer-facing cart/checkout; a public `mockup_url` showed the full Supabase URL as text.
     if (mockupFullUrl) {
       properties['_mockup_url'] = mockupFullUrl;
     }
     if (selectedSize) properties['Size'] = selectedSize;
-    if (selectedFrameColor) properties['Color'] = selectedFrameColor;
+    if (frameColorObjects.length > 0 && selectedFrameColor) {
+      properties['Color'] = selectedFrameColor;
+    }
 
-    const shouldDisable = waitingForMockups || isAddingToCart || mockupsStale;
-    const label = waitingForMockups
-      ? 'Generating preview\u2026'
-      : mockupsStale
-        ? 'Refresh Mockups to Continue'
-        : 'Add to Cart';
+    const flatPlacerOn = !!(
+      (productTypeConfig?.onTheFlyTier === "flat" ||
+        productTypeConfig?.onTheFlyTier === "mesh") &&
+      productTypeConfig?.flatCalibration &&
+      generatedDesign?.imageUrl &&
+      !flatRenderFailed &&
+      flatPlacerEditOpen
+    );
+    const flatSaveBlocking = !!(flatPlacerOn && flatApplyStatus === "saving");
+    const mockupsStaleBlocksCart = mockupsStale && !flatOnTheFlyEligible;
+    const shouldDisable =
+      waitingForMockups || isAddingToCart || mockupsStaleBlocksCart || mockupLoading || flatSaveBlocking;
+    const label = flatSaveBlocking
+      ? "Saving design\u2026"
+      : waitingForMockups
+        ? "Generating preview\u2026"
+        : mockupLoading
+          ? "Refreshing Mockups\u2026"
+        : mockupsStaleBlocksCart
+          ? "Refresh Mockups to Continue"
+          : "Add to Cart";
 
     window.parent.postMessage({
       type: 'AI_ART_STUDIO_CART_STATE',
-      ready: !waitingForMockups && !mockupsStale,
+      ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupLoading && !flatSaveBlocking,
       disabled: shouldDisable,
       waitingForMockups,
       label,
@@ -2976,7 +3786,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         properties,
       },
     }, '*');
-  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, productTypeConfig, bridgeReady, variants, overrideVariantId, shopifyVariantId, mockupsStale]);
+  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, frameColorObjects, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatRenderFailed, flatPlacerEditOpen]);
 
   const generateMutation = useMutation({
     mutationFn: async (payload: {
@@ -3029,7 +3839,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             throw new Error(jobData.message || "Free generation limit reached. Please create an account to continue.");
           }
           if (jobData.error === 'INSUFFICIENT_CREDITS') {
-            setCreditsPopoverOpen(true);
+            notifyInsufficientCredits();
             throw new Error(jobData.message || "You've run out of credits. Purchase more to continue.");
           }
           if (jobData.error === 'GALLERY_FULL') {
@@ -3060,6 +3870,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
         while (Date.now() < deadline) {
           await new Promise<void>(r => setTimeout(r, 2000));
+          let status: { status?: string; error?: string; imageUrl?: string; thumbnailUrl?: string } | null = null;
           try {
             const statusRes = await raceTimeout(
               safeFetch(statusUrl, { headers: { "X-Req-Id": reqId } }),
@@ -3073,18 +3884,23 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               continue;
             }
             consecutiveErrors = 0;
-            const status = await safeJson(statusRes, 'GET /generate/status');
-            console.log('[EmbedDesign] Job status:', status.status, jobId);
-            if (status.status === 'complete') {
-              const abs = (u?: string) => u && u.startsWith('/') ? buildAppUrl(u) : u;
-              return { ...status, jobId, imageUrl: abs(status.imageUrl), thumbnailUrl: abs(status.thumbnailUrl) };
-            }
-            if (status.status === 'failed') throw new Error(status.error || 'Generation failed');
+            status = await safeJson(statusRes, 'GET /generate/status');
           } catch (pollErr: any) {
             consecutiveErrors++;
             console.warn('[EmbedDesign] Poll error:', pollErr.message, `(${consecutiveErrors}/5)`);
             if (consecutiveErrors > 5) throw new Error(`Status polling failed: ${pollErr.message}`);
-            // Keep polling on transient errors
+            // Keep polling on transient network/parse errors only
+            continue;
+          }
+
+          console.log('[EmbedDesign] Job status:', status?.status, jobId);
+          if (status?.status === 'complete') {
+            const abs = (u?: string) => u && u.startsWith('/') ? buildAppUrl(u) : u;
+            return { ...status, jobId, imageUrl: abs(status.imageUrl), thumbnailUrl: abs(status.thumbnailUrl) };
+          }
+          if (status?.status === 'failed') {
+            console.error('[EmbedDesign] Job failed:', jobId, status.error);
+            throw new Error(status.error || 'Generation failed');
           }
         }
         throw new Error('Generation timed out after 5 minutes');
@@ -3196,6 +4012,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       const saveShop = variables.shop || shopDomain;
       // Store jobId for mockup saving after fetchPrintifyMockups completes
       if (data.jobId) savedJobIdRef.current = data.jobId;
+      lastFlatGalleryMockupKeyRef.current = "";
       // Reset pre-created shadow variant for this new design
       setPreShadowVariantId(null);
       if (preShadowPollRef.current) { clearTimeout(preShadowPollRef.current); preShadowPollRef.current = null; }
@@ -3261,11 +4078,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         willFetch: shouldFetchMockups,
       });
       if (shouldFetchMockups) {
-        if (productTypeConfig?.isAllOverPrint) {
+        if (useAopCustomizer) {
           // AOP: show pattern customizer step first
           setAopPendingMotifUrl(toAbsoluteImageUrl(imageUrl));
           setAopPatternUrl(null);
           setShowPatternStep(true);
+        } else if (
+          (productTypeConfig?.onTheFlyTier === "flat" || productTypeConfig?.onTheFlyTier === "mesh") &&
+          productTypeConfig?.flatCalibration
+        ) {
+          setFlatPlacerEditOpen(true);
         } else {
           console.log('[Mockups] Triggering mockup generation');
           // Set mockupTriggered synchronously so the overlay stays up between
@@ -3278,6 +4100,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     onError: (err: any) => {
       console.error('[EmbedDesign] Generation error:', err?.message ?? err);
       const msg: string = err?.message ?? '';
+      if (/credit/i.test(msg)) {
+        return;
+      }
       if (msg.startsWith('SHOP_NEEDS_REINSTALL:')) {
         const reinstallUrl = msg.replace('SHOP_NEEDS_REINSTALL:', '');
         setLoginError(`The app needs to be reconnected to your store. <a href="${reinstallUrl}" target="_top" style="text-decoration:underline">Click here to reconnect</a>.`);
@@ -3393,7 +4218,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (!prompt.trim() && !activePresetForCheck?.descriptionOptional) return;
 
     if ((isShopify || isStorefront) && customer && credits <= 0) {
-      setCreditsPopoverOpen(true);
+      notifyInsufficientCredits();
       return;
     }
 
@@ -3617,10 +4442,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       mockupColorCacheRef.current = {};
       currentMockupColorRef.current = '';
       if (productTypeConfig?.hasPrintifyMockups && importedImageUrl && selectedSize) {
-        if (productTypeConfig.isAllOverPrint) {
+        if (useAopCustomizer) {
           setAopPendingMotifUrl(toAbsoluteImageUrl(importedImageUrl));
           setAopPatternUrl(null);
           setShowPatternStep(true);
+        } else if (
+          (productTypeConfig.onTheFlyTier === "flat" || productTypeConfig.onTheFlyTier === "mesh") &&
+          productTypeConfig.flatCalibration
+        ) {
+          setFlatPlacerEditOpen(true);
         } else {
           fetchPrintifyMockups(toAbsoluteImageUrl(importedImageUrl), productTypeConfig.id, selectedSize, selectedFrameColor || 'default', zoomDefault, 50, 50);
         }
@@ -3660,9 +4490,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       if (variantsData) {
         const parsed = JSON.parse(variantsData);
         if (Array.isArray(parsed)) {
-          setVariants(parsed);
+          const mapped = mapServerVariantsToCatalog(parsed);
+          setVariants(mapped);
+          setShopifyVariants(mapped);
           setVariantsFetched(true);
-          console.log('[Design Studio] Parsed variants from URL:', parsed.length);
+          console.log('[Design Studio] Parsed variants from URL:', mapped.length);
         }
       }
     } catch (e) {
@@ -3670,122 +4502,144 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
   }, []);
 
-  // Fetch variants from server if not provided in URL (works for all themes)
+  // Fetch variants from server when product identity changes (works for all themes).
+  // Always load the full catalog — selectedVariantParam alone is not enough after
+  // in-app product switches because size/color matching needs every variant.
   useEffect(() => {
-    if (variantsFetched || (!isShopify && !isStorefront)) return;
-    if (selectedVariantParam) {
-      // If we have a selected variant, we don't need to fetch all variants
-      setVariantsFetched(true);
+    if (!isShopify && !isStorefront) return;
+
+    const fetchKey = `${productTypeId}|${productHandle}`;
+    if (variantsFetchingKeyRef.current === fetchKey) {
       return;
     }
-    
-    // Use the myshopify.com domain specifically for variant API calls
-    const myShopifyDomain = getMyShopifyDomain();
-    if (!myShopifyDomain) {
-      console.log('[Design Studio] Could not determine myshopify.com domain, skipping variant fetch');
-      setVariantsFetched(true);
+
+    const needsColorOptions = (productTypeConfig?.frameColors?.length ?? 0) > 0;
+    const catalogUsable =
+      variantCatalogIsUsable(shopifyVariants.length > 0 ? shopifyVariants : variants, needsColorOptions);
+    if (variantsLoadedKeyRef.current === fetchKey && catalogUsable) {
       return;
     }
-    
-    // Build the fetch URL - prefer productHandle but fall back to productTypeId
-    let fetchUrl: string;
-    if (productHandle) {
-      console.log('[Design Studio] Fetching variants using productHandle:', productHandle);
-      fetchUrl = `${API_BASE}/api/shopify/product-variants?shop=${encodeURIComponent(myShopifyDomain)}&handle=${encodeURIComponent(productHandle)}`;
-    } else if (productTypeId) {
-      console.log('[Design Studio] Fetching variants using productTypeId:', productTypeId);
-      fetchUrl = `${API_BASE}/api/shopify/product-variants?shop=${encodeURIComponent(myShopifyDomain)}&productTypeId=${encodeURIComponent(productTypeId)}`;
-    } else {
-      console.log('[Design Studio] No productHandle or productTypeId available, skipping variant fetch');
+    variantsFetchingKeyRef.current = fetchKey;
+
+    const fetchUrl = buildProductVariantsFetchUrl(shopDomain, productTypeId, productHandle);
+    if (!fetchUrl) {
+      console.log('[Design Studio] No shop/productTypeId/productHandle available, skipping variant fetch');
+      variantsFetchingKeyRef.current = "";
       setVariantsFetched(true);
       return;
     }
 
     console.log('[Design Studio] Fetching variants from:', fetchUrl);
     safeFetch(fetchUrl)
-      .then(res => {
+      .then(async (res) => {
         if (!res.ok) {
-          console.log('[Design Studio] Variant fetch failed with status:', res.status);
+          const errBody = await res.text().catch(() => "");
+          console.log('[Design Studio] Variant fetch failed with status:', res.status, errBody.substring(0, 200));
           return { variants: [] };
         }
         return res.json();
       })
       .then(data => {
-        if (data.variants && Array.isArray(data.variants)) {
-          console.log('[Design Studio] Fetched variants from server:', data.variants.length);
-          setVariants(data.variants);
+        if (data.variants && Array.isArray(data.variants) && data.variants.length > 0) {
+          const mapped = mapServerVariantsToCatalog(data.variants);
+          console.log('[Design Studio] Fetched variants from server:', mapped.length, data.source ? `(source: ${data.source})` : '');
+          setVariants(mapped);
+          setShopifyVariants(mapped);
+          if (variantCatalogIsUsable(mapped, needsColorOptions)) {
+            variantsLoadedKeyRef.current = fetchKey;
+          } else {
+            variantsLoadedKeyRef.current = "";
+            console.warn(
+              '[Design Studio] Variant catalog missing option columns for color product — will retry',
+              'productTypeId:', productTypeId, 'handle:', productHandle,
+            );
+          }
+        } else {
+          variantsLoadedKeyRef.current = "";
+          console.warn(
+            '[Design Studio] Variant fetch returned empty catalog',
+            'productTypeId:', productTypeId, 'handle:', productHandle,
+          );
         }
-        setVariantsFetched(true);
       })
       .catch(err => {
         console.error('[Design Studio] Failed to fetch variants:', err);
+        variantsLoadedKeyRef.current = "";
+      })
+      .finally(() => {
+        variantsFetchingKeyRef.current = "";
         setVariantsFetched(true);
       });
-  }, [isShopify, isStorefront, productHandle, productTypeId, selectedVariantParam, variantsFetched]);
+  }, [isShopify, isStorefront, shopDomain, productHandle, productTypeId, productTypeConfig?.frameColors?.length]);
 
   const findVariantId = (): string | null => {
     if (!isShopify && !isStorefront) return null;
 
-    console.log('[Design Studio] Finding variant. selectedVariantParam:', selectedVariantParam, 
-                'variants:', variants.length, 'selectedSize:', selectedSize, 
-                'selectedFrameColor:', selectedFrameColor, 'hasColors:', frameColorObjects.length > 0);
+    const hasColors = frameColorObjects.length > 0;
+    const sizeName = printSizes.find(s => s.id === selectedSize)?.name ?? selectedSize ?? "";
+    const frameName =
+      frameColorObjects.find(f => f.id === selectedFrameColor)?.name ?? selectedFrameColor ?? "";
 
-    // Highest priority: variant chosen by storefront dropdown via postMessage
-    if (overrideVariantId) {
+    console.log('[Design Studio] Finding variant. selectedVariantParam:', selectedVariantParam,
+                'variants:', variants.length, 'shopifyVariants:', shopifyVariants.length,
+                'selectedSize:', selectedSize, 'selectedFrameColor:', selectedFrameColor,
+                'hasColors:', hasColors);
+
+    // Highest priority: match current size + color against the live variant catalog.
+    // This must beat overrideVariantId/selectedVariantParam, which can be stale after
+    // in-app product switches (e.g. pillow → sweatshirt).
+    const fromShopify = shopifyVariants.length > 0
+      ? matchVariantBySizeColor(
+          shopifyVariants,
+          sizeName,
+          frameName,
+          hasColors,
+          selectedFrameColor || undefined,
+        )
+      : null;
+    if (fromShopify) {
+      console.log('[Design Studio] Matched variant from shopifyVariants:', fromShopify);
+      return fromShopify;
+    }
+
+    const fromVariants = variants.length > 0
+      ? matchVariantBySizeColor(
+          variants.map((v: any) => ({
+            id: String(v.id),
+            title: v.title,
+            option1: v.option1,
+            option2: v.option2,
+          })),
+          sizeName,
+          frameName,
+          hasColors,
+          selectedFrameColor || undefined,
+        )
+      : null;
+    if (fromVariants) {
+      console.log('[Design Studio] Matched variant from variants:', fromVariants);
+      return fromVariants;
+    }
+
+    const catalogIds = new Set([
+      ...shopifyVariants.map(v => String(v.id)),
+      ...variants.map((v: any) => String(v.id)),
+    ]);
+
+    // Only trust parent-provided IDs when they belong to the current product catalog.
+    // Never fall back when the catalog is empty — that would reuse a stale ID from
+    // a prior product after an in-app switch (pillow → sweatshirt).
+    if (overrideVariantId && catalogIds.has(String(overrideVariantId))) {
       console.log('[Design Studio] Using overrideVariantId from parent:', overrideVariantId);
       return overrideVariantId;
     }
 
-    // Second priority: use selectedVariantParam if provided (most reliable from theme)
-    if (selectedVariantParam) {
+    if (selectedVariantParam && catalogIds.has(selectedVariantParam)) {
       console.log('[Design Studio] Using selectedVariantParam:', selectedVariantParam);
       return selectedVariantParam;
     }
 
-    // Second: try to match using variant options from Shopify
-    if (variants.length > 0 && (selectedSize || selectedFrameColor)) {
-      const matchedVariant = variants.find((v: any) => {
-        // Only use option1 and option2 for matching — option3 is the 'Design' option
-        // and including it would cause design variants to be selected accidentally.
-        const options = [v.option1, v.option2].filter(Boolean);
-
-        let sizeMatch = true;
-        let colorMatch = true;
-
-        if (selectedSize) {
-          sizeMatch = options.some(
-            (opt) =>
-              opt?.toLowerCase().includes(selectedSize.toLowerCase()) ||
-              selectedSize.toLowerCase().includes(opt?.toLowerCase())
-          );
-        }
-
-        // Only check color if the product has frame colors
-        if (selectedFrameColor && frameColorObjects.length > 0) {
-          colorMatch = options.some(
-            (opt) =>
-              opt?.toLowerCase().includes(selectedFrameColor.toLowerCase()) ||
-              selectedFrameColor.toLowerCase().includes(opt?.toLowerCase())
-          );
-        }
-
-        return sizeMatch && colorMatch;
-      });
-
-      if (matchedVariant) {
-        console.log('[Design Studio] Matched variant from options:', matchedVariant.id);
-        return matchedVariant.id?.toString() || null;
-      }
-    }
-
-    // Third: for single-variant products, use the first variant
-    if (variants.length === 1) {
-      console.log('[Design Studio] Using single variant:', variants[0].id);
-      return variants[0].id?.toString() || null;
-    }
-
-    // Fourth: fall back to shopifyVariantId received via postMessage from the parent page
-    if (shopifyVariantId) {
+    if (shopifyVariantId && catalogIds.has(String(shopifyVariantId))) {
       console.log('[Design Studio] Falling back to shopifyVariantId:', shopifyVariantId);
       return shopifyVariantId;
     }
@@ -3797,13 +4651,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // Keep baseVariantForShadowRef current so fetchPrintifyMockups (with limited deps) can
   // read the latest resolved variant for shadow-product pre-creation without closure staleness.
   useEffect(() => {
-    const vid = selectedVariantParam || overrideVariantId || null;
-    if (vid) {
-      baseVariantForShadowRef.current = normalizeVariantId(vid);
-    } else {
-      const matched = findVariantId();
-      baseVariantForShadowRef.current = matched ? normalizeVariantId(matched) : '';
-    }
+    const matched = findVariantId();
+    baseVariantForShadowRef.current = matched ? normalizeVariantId(matched) : "";
   }); // run after every render so it's always in sync with variant state
 
   /**
@@ -3900,12 +4749,57 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     });
   };
 
+  const flushFlatPlacer = useCallback(async () => {
+    if (!flatPlacerRef.current) return;
+    await flatPlacerRef.current.applyIfNeeded();
+  }, []);
+
+  useEffect(() => {
+    const onHide = () => {
+      if (!flatPlacerEditOpen) return;
+      void flushFlatPlacer();
+    };
+    document.addEventListener("visibilitychange", onHide);
+    window.addEventListener("pagehide", onHide);
+    return () => {
+      document.removeEventListener("visibilitychange", onHide);
+      window.removeEventListener("pagehide", onHide);
+    };
+  }, [flatPlacerEditOpen, flushFlatPlacer]);
+
   const handleAddToCart = async () => {
     if (!generatedDesign || (!isShopify && !isStorefront)) return;
     if (isAddingToCart) return; // double-click guard
+
+    const flatEditorOpen = !!(
+      (productTypeConfig?.onTheFlyTier === "flat" ||
+        productTypeConfig?.onTheFlyTier === "mesh") &&
+      productTypeConfig?.flatCalibration &&
+      generatedDesign?.imageUrl &&
+      !flatRenderFailed &&
+      flatPlacerEditOpen
+    );
+    if (flatEditorOpen) {
+      try {
+        await flushFlatPlacer();
+      } catch {
+        setVariantError("Couldn't save your placement. Please try again.");
+        return;
+      }
+    }
+
     if (mockupsStale) {
-      setVariantError("Please refresh mockups before adding to cart — your frame color selection has changed.");
-      return;
+      const flatOnTheFly = !!(
+        (productTypeConfig?.onTheFlyTier === "flat" ||
+          productTypeConfig?.onTheFlyTier === "mesh") &&
+        productTypeConfig?.flatCalibration &&
+        generatedDesign?.imageUrl &&
+        !flatRenderFailed
+      );
+      if (!flatOnTheFly) {
+        setVariantError("Please refresh mockups before adding to cart — your frame color selection has changed.");
+        return;
+      }
     }
 
     const variantId = findVariantId();
@@ -3932,7 +4826,20 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     // re-run handleAddToCart once mockups are ready via the atcWaitingForMockups path.
     const hasMockupProduct = !!(productTypeConfig?.hasPrintifyMockups);
     const hasMockups = printifyMockups.length > 0 || printifyMockupImages.length > 0;
-    if (hasMockupProduct && !hasMockups && generatedDesign?.imageUrl && productTypeConfig && selectedSize) {
+    const flatOnTheFlyCart = !!(
+      (productTypeConfig?.onTheFlyTier === "flat" ||
+        productTypeConfig?.onTheFlyTier === "mesh") &&
+      productTypeConfig?.flatCalibration &&
+      !flatRenderFailed
+    );
+    if (
+      hasMockupProduct &&
+      !hasMockups &&
+      generatedDesign?.imageUrl &&
+      productTypeConfig &&
+      selectedSize &&
+      !flatOnTheFlyCart
+    ) {
       console.log('[Design Studio] No mockups loaded for saved design — triggering fresh mockup generation before cart add');
       setMockupError(null);
       setMockupFailed(false);
@@ -3984,13 +4891,24 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     // stripping _mockup_url from cart entirely while mockups were still on-screen.
     // Wrong-color risk is bounded: mockupsStale already blocks add when transforms
     // are stale, and color-change triggers refresh or cache swap elsewhere.
-    const mockupFullUrl = getPreferredMockupUrl();
+    let mockupFullUrl = await ensureCartMockupUrl(getPreferredMockupUrl());
     if (!mockupFullUrl) {
-      console.warn('[Design Studio] No mockup URL available for cart.',
+      console.warn('[Design Studio] No hosted mockup URL available for cart.',
         'currentColor:', currentMockupColorRef.current, 'selected:', selectedFrameColor,
         'printifyMockups:', printifyMockups.length, 'printifyMockupImages:', printifyMockupImages.length);
     } else {
       console.log('[Design Studio] Mockup URL for cart:', mockupFullUrl.substring(0, 120));
+      // Pin hosted URL in state so shadow-SKU pre-create and cart-state sync reuse it.
+      const frontIdx = printifyMockupImages.findIndex((img) => img.label === "front");
+      if (frontIdx >= 0 && printifyMockupImages[frontIdx].url !== mockupFullUrl) {
+        const nextImages = printifyMockupImages.map((img, i) =>
+          i === frontIdx ? { ...img, url: mockupFullUrl } : img,
+        );
+        setPrintifyMockupImages(nextImages);
+        setPrintifyMockups(nextImages.map((i) => i.url));
+      } else if (printifyMockupImages.length === 0 && printifyMockups.length > 0) {
+        setPrintifyMockups([mockupFullUrl, ...printifyMockups.slice(1)]);
+      }
     }
 
     // Build line item properties for Printify fulfillment
@@ -4018,7 +4936,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       properties['_mockup_url'] = mockupFullUrl;
     }
     if (selectedSize) properties['Size'] = selectedSize;
-    if (selectedFrameColor) properties['Color'] = selectedFrameColor;
+    if (frameColorObjects.length > 0 && selectedFrameColor) {
+      properties['Color'] = selectedFrameColor;
+    }
 
     // Resolve the unique design variant before adding to cart.
     // Fast path: use pre-created shadow variant if available (created in background after mockups).
@@ -4358,6 +5278,164 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
   }, [isStorefront, shopDomain, storefrontCustomerId]);
 
+  /** Persist flat on-the-fly preview rasters to the job + refresh Saved Designs gallery. */
+  const persistFlatMockupsForGallery = useCallback(
+    async (mockupUrls: string[], dedupeKey: string) => {
+      if (!isStorefront || !savedJobIdRef.current || !shopDomain) return;
+      if (dedupeKey && dedupeKey === lastFlatGalleryMockupKeyRef.current) return;
+
+      const absUrls = mockupUrls
+        .map((u) => toAbsoluteMockupUrlForSave(u))
+        .filter((u): u is string => !!u);
+      if (absUrls.length === 0) return;
+
+      try {
+        await safeFetch(`${API_BASE}/api/storefront/save-mockups`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jobId: savedJobIdRef.current,
+            shop: shopDomain,
+            mockupUrls: absUrls,
+          }),
+        });
+        lastFlatGalleryMockupKeyRef.current = dedupeKey;
+        try {
+          window.parent.postMessage({ type: "APPAI_REFRESH_GALLERY" }, "*");
+        } catch {
+          /* cross-origin parent */
+        }
+        if (storefrontCustomerId && shopDomain) {
+          void safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ shop: shopDomain, customerId: storefrontCustomerId }),
+          })
+            .then((r) => r.json())
+            .then((d) => {
+              if (d?.designs) setSavedDesigns(d.designs);
+            })
+            .catch(() => {});
+        }
+      } catch (e) {
+        console.error("[FlatMockups] save-mockups failed:", e);
+      }
+    },
+    [isStorefront, shopDomain, storefrontCustomerId],
+  );
+
+  /**
+   * Handle the customer's auto-apply from `FlatProductPlacer` (on-the-fly
+   * flat/mesh products). Renders the enabled view(s) locally, uploads the PNGs
+   * via the SAME upload path the hoodie placer uses (`ensureHostedUrl` →
+   * object storage), and pins the front raster as `printifyMockupImages[front]`
+   * so `getPreferredMockupUrl()` returns it for the cart `_mockup_url` line
+   * property + the shadow-SKU checkout image. Per-view placement is persisted
+   * to `designState` so the placer resumes mid-edit. If anything fails we flag
+   * `flatRenderFailed` so the customizer falls back to the Printify flow.
+   *
+   * This is preview-only: it never touches the file sent to print. The
+   * normalized placement saved here is what a later (out-of-scope) order-time
+   * task will reuse to build the print file.
+   */
+  const handleFlatApply = useCallback(async (
+    result: FlatProductPlacerApplyResult,
+  ) => {
+    setFlatPlacerState(result.state);
+
+    const frontCanvas = result.renderView("front");
+    const backCanvas = result.renderView("back");
+    if (!frontCanvas) {
+      console.warn("[FlatApply] No front canvas — placer not ready?");
+      return;
+    }
+
+    let frontDataUrl: string;
+    let backDataUrl: string | null = null;
+    try {
+      frontDataUrl = frontCanvas.toDataURL("image/png");
+      backDataUrl = backCanvas?.toDataURL("image/png") ?? null;
+    } catch (e) {
+      // Tainted canvas (cross-origin asset without CORS) — can't export.
+      // Fall back to the normal Printify mockup flow rather than hard-error.
+      console.error("[FlatApply] Canvas export failed, falling back:", e);
+      setFlatRenderFailed(true);
+      return;
+    }
+
+    try {
+      const [frontHosted, backHosted] = await Promise.all([
+        ensureHostedUrl(frontDataUrl),
+        backDataUrl ? ensureHostedUrl(backDataUrl) : Promise.resolve<string | null>(null),
+      ]);
+
+      const images: { url: string; label: string }[] = [
+        { url: frontHosted, label: "front" },
+      ];
+      if (backHosted) images.push({ url: backHosted, label: "back" });
+      const urls = images.map((i) => i.url);
+
+      setPrintifyMockupImages(images);
+      setPrintifyMockups(urls);
+      setSelectedMockupIndex(0);
+      setMockupFailed(false);
+      setMockupError(null);
+      setMockupsStale(false);
+      currentMockupColorRef.current = flatBlankColorId;
+
+      if (isStorefront && savedJobIdRef.current && shopDomain) {
+        const jobId = savedJobIdRef.current;
+        await safeFetch(`${API_BASE}/api/storefront/save-state`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jobId,
+            shop: shopDomain,
+            designState: {
+              flatPlacerState: result.state,
+              flatMockups: { front: frontHosted, back: backHosted },
+            },
+          }),
+        }).catch((e) => {
+          console.error("[FlatApply] Failed to persist designState:", e);
+        });
+
+        const mockupUrls = [frontHosted, backHosted].filter((u): u is string => !!u);
+        if (mockupUrls.length > 0) {
+          await persistFlatMockupsForGallery(
+            mockupUrls,
+            `${flatBlankColorId}::${selectedSize ?? ""}::apply`,
+          );
+        }
+      }
+    } catch (err: any) {
+      console.error("[FlatApply] Upload failed:", err);
+      setMockupError(err?.message || "Failed to apply design");
+      setMockupFailed(true);
+      throw err;
+    }
+  }, [isStorefront, shopDomain, selectedFrameColor, flatBlankColorId, selectedSize, persistFlatMockupsForGallery]);
+
+  const handleFlatPlacerChange = useCallback(
+    (s: FlatProductPlacerState) => {
+      const artworkUrl = generatedDesign?.imageUrl
+        ? toAbsoluteImageUrl(generatedDesign.imageUrl)
+        : s.artworkUrl;
+      setFlatPlacerState({ ...s, artworkUrl });
+    },
+    [generatedDesign?.imageUrl],
+  );
+
+  const handleFlatAssetsFailed = useCallback((reason: string) => {
+    console.warn("[FlatPlacer] assets failed:", reason);
+    setFlatRenderFailed(true);
+  }, []);
+
+  // A failed blank swap must not permanently disable flat tier for other models/colours.
+  useEffect(() => {
+    setFlatRenderFailed(false);
+  }, [selectedFrameColor, selectedSize]);
+
   const handleShare = async () => {
     if (!generatedDesign) return;
 
@@ -4516,15 +5594,34 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
       // Shopify variants with prices pushed by parent after bridge handshake
       if (type === "AI_ART_STUDIO_SHOPIFY_VARIANTS" && Array.isArray(event.data.variants)) {
-        console.log('[Design Studio] SHOPIFY_VARIANTS received:', event.data.variants.length, 'variants');
-        setShopifyVariants(event.data.variants);
+        const msgProductTypeId =
+          event.data.productTypeId != null ? String(event.data.productTypeId) : null;
+        const currentProductTypeId = productTypeId ? String(productTypeId) : null;
+        if (
+          msgProductTypeId &&
+          currentProductTypeId &&
+          msgProductTypeId !== currentProductTypeId &&
+          shopifyVariants.length > 0
+        ) {
+          console.log(
+            '[Design Studio] Ignoring stale SHOPIFY_VARIANTS for productTypeId',
+            msgProductTypeId,
+            'current:',
+            currentProductTypeId,
+          );
+          return;
+        }
+        const mapped = mapServerVariantsToCatalog(event.data.variants);
+        console.log('[Design Studio] SHOPIFY_VARIANTS received:', mapped.length, 'variants');
+        setShopifyVariants(mapped);
+        setVariants(mapped);
         const base = event.data.baseVariantId ? String(event.data.baseVariantId) : null;
         if (base) {
           setShopifyVariantId(base);
           setOverrideVariantId(base);
-        } else if (event.data.variants.length > 0) {
-          setShopifyVariantId(String(event.data.variants[0].id));
-          setOverrideVariantId(String(event.data.variants[0].id));
+        } else if (mapped.length > 0) {
+          setShopifyVariantId(String(mapped[0].id));
+          setOverrideVariantId(String(mapped[0].id));
         }
       }
 
@@ -4544,11 +5641,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         const fgHSL = cssColorToHSL(t.textColor);
         if (bgHSL) root.setProperty('--background', bgHSL);
         if (fgHSL) {
-          root.setProperty('--foreground', fgHSL);
-          // Tentative card-foreground = body text. Re-validated against
+          // Guard body text against the body background. Some themes set a
+          // light heading/body colour intended for dark hero sections; applied
+          // verbatim it renders white-on-pale inside the studio's light cards.
+          // The guard is a no-op whenever the merchant's pair already contrasts.
+          const safeFg = ensureContrastingForeground(bgHSL, fgHSL) ?? fgHSL;
+          root.setProperty('--foreground', safeFg);
+          // Tentative card-foreground = guarded body text. Re-validated against
           // --card below once it's set, since input bg can differ from
           // body bg and would otherwise leave invisible card text.
-          root.setProperty('--card-foreground', fgHSL);
+          root.setProperty('--card-foreground', safeFg);
         }
 
         // -- Primary button --
@@ -4601,12 +5703,27 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           root.setProperty('--input', inputBorderHSL);
         }
         const inputBgHSL = cssColorToHSL(t.inputBg);
-        if (inputBgHSL) {
-          root.setProperty('--card', inputBgHSL);
-          // Bulletproof card-foreground against the (possibly different)
-          // card bg. If body text doesn't contrast with input bg, fall
-          // back to black/white based on luminance.
-          const safeCardFg = ensureContrastingForeground(inputBgHSL, fgHSL);
+        // The studio is a light-surface UI: its cards/panels render on
+        // `--background` AND `--card`, so these must stay on the same
+        // light/dark side. A mis-extracted input bg (e.g. from a dark
+        // footer/search field) would otherwise invert `--card`, flip
+        // `--card-foreground` to white, and render white-on-pale text in
+        // panels that use `bg-background` (Saved Designs, Redeem, etc.).
+        // App default `--background` is white, so when the theme didn't supply
+        // a background colour treat the surface as light (lightness 100).
+        const effectiveBgHSL = bgHSL ?? '0 0% 100%';
+        const bgLightness = hslLightness(effectiveBgHSL) ?? 100;
+        const cardLightness = hslLightness(inputBgHSL);
+        let cardHSL = inputBgHSL;
+        if (cardLightness === null || Math.abs(bgLightness - cardLightness) > 25) {
+          // No usable input bg, or it disagrees with the page background —
+          // derive a card surface from the background instead of trusting it.
+          cardHSL = adjustHSLLightness(effectiveBgHSL, bgLightness >= 50 ? -3 : 6);
+        }
+        if (cardHSL) {
+          root.setProperty('--card', cardHSL);
+          // Guarantee card text contrasts the (reconciled) card surface.
+          const safeCardFg = ensureContrastingForeground(cardHSL, fgHSL);
           if (safeCardFg) root.setProperty('--card-foreground', safeCardFg);
         }
 
@@ -4627,9 +5744,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           root.setProperty('--popover', adjustHSLLightness(bgHSL, -3));
         }
         if (fgHSL) {
-          // Muted foreground is a lighter version of the text color
-          root.setProperty('--muted-foreground', adjustHSLLightness(fgHSL, 30));
-          root.setProperty('--secondary-foreground', fgHSL);
+          // Muted foreground is a lighter version of the text color, but still
+          // guarded so it can't drop below readable contrast on its surface.
+          const mutedBg = bgHSL ? adjustHSLLightness(bgHSL, -8) : null;
+          const secBg = bgHSL ? adjustHSLLightness(bgHSL, -6) : null;
+          const mutedFg = adjustHSLLightness(fgHSL, 30);
+          root.setProperty('--muted-foreground', ensureContrastingForeground(mutedBg, mutedFg) ?? mutedFg);
+          root.setProperty('--secondary-foreground', ensureContrastingForeground(secBg, fgHSL) ?? fgHSL);
         }
 
         console.log('[Design Studio] Applied store theme CSS variables');
@@ -4716,7 +5837,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       if (bridgeTimeout) clearTimeout(bridgeTimeout);
       if (iframeReadyTimer) clearInterval(iframeReadyTimer);
     };
-  }, [isStorefront, debugBridge, applyDesignerConfig, switchToSavedDesignProduct]);
+  }, [isStorefront, debugBridge, applyDesignerConfig, switchToSavedDesignProduct, productTypeId, shopifyVariants]);
 
   useEffect(() => {
     if (!isEmbedded && !isStorefront) return;
@@ -4748,7 +5869,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           document.body.scrollHeight,
           document.documentElement.offsetHeight
         );
-        if (Math.abs(h - lastSent) < 24) return; // ignore URL-bar-sized viewport jitter
+        if (Math.abs(h - lastSent) < 4) return;
         lastSent = h;
         window.parent.postMessage({ type: 'ai-art-studio:resize', height: h }, '*');
       }, 120);
@@ -4766,9 +5887,40 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // Radix dropdown, forward wheel events to the parent page so it can scroll normally.
   // In fixed-height mobile-native mode, first let the iframe try to scroll itself;
   // if the wheel delta is swallowed, hand it off to the Shopify page.
+  // Skip forwarding when the pointer is over a nested scrollable panel (e.g. placer
+  // controls column) so the inner panel can scroll with the mouse wheel.
   useEffect(() => {
     if (!isEmbedded && !isStorefront) return;
     let fallbackRaf = 0;
+
+    const findScrollableAncestor = (el: Element | null): Element | null => {
+      let node = el;
+      while (node && node !== document.documentElement) {
+        const style = window.getComputedStyle(node);
+        const oy = style.overflowY;
+        const ox = style.overflowX;
+        const scrollableY =
+          (oy === "auto" || oy === "scroll") && node.scrollHeight > node.clientHeight + 1;
+        const scrollableX =
+          (ox === "auto" || ox === "scroll") && node.scrollWidth > node.clientWidth + 1;
+        if (scrollableY || scrollableX) return node;
+        node = node.parentElement;
+      }
+      return null;
+    };
+
+    const canScrollInDirection = (el: Element, e: WheelEvent): boolean => {
+      const atTop = el.scrollTop <= 0;
+      const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+      const atLeft = el.scrollLeft <= 0;
+      const atRight = el.scrollLeft + el.clientWidth >= el.scrollWidth - 1;
+      if (e.deltaY < 0 && !atTop) return true;
+      if (e.deltaY > 0 && !atBottom) return true;
+      if (e.deltaX < 0 && !atLeft) return true;
+      if (e.deltaX > 0 && !atRight) return true;
+      return false;
+    };
+
     const postWheelToParent = (e: WheelEvent) => {
       window.parent.postMessage({
         type: 'ai-art-studio:wheel',
@@ -4779,6 +5931,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       }, '*');
     };
     const handleWheel = (e: WheelEvent) => {
+      const scrollParent = findScrollableAncestor(e.target as Element | null);
+      if (scrollParent && canScrollInDirection(scrollParent, e)) {
+        return;
+      }
+
       // Check if a Radix dropdown/popover is currently open
       const isRadixOpen = !!document.querySelector(
         '[data-radix-select-content],[data-radix-popper-content-wrapper],[data-radix-dropdown-menu-content],[data-radix-popover-content]'
@@ -5102,53 +6259,168 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     return () => clearTimeout(timer);
   }, [transform, generatedDesign?.id, isSharedDesign]);
 
-  const printSizes: PrintSize[] = (productTypeConfig?.sizes || []).map((s) => ({
-    id: s.id,
-    name: s.name,
-    width: s.width,
-    height: s.height,
-    aspectRatio: productTypeConfig?.aspectRatio || "3:4",
-  }));
-
-  const frameColorObjects: FrameColor[] = (productTypeConfig?.frameColors || []).map((c) => ({
-    id: c.id,
-    name: c.name,
-    hex: c.hex,
-  }));
-
   const selectedSizeConfig = printSizes.find((s) => s.id === selectedSize) || null;
   const selectedFrameColorConfig = frameColorObjects.find((f) => f.id === selectedFrameColor) || null;
+
+  const flatPlacerEligible = !!(
+    (productTypeConfig?.onTheFlyTier === "flat" ||
+      productTypeConfig?.onTheFlyTier === "mesh") &&
+    productTypeConfig?.flatCalibration &&
+    generatedDesign?.imageUrl &&
+    !flatRenderFailed
+  );
+  const flatPlacerActive = flatPlacerEligible && flatPlacerEditOpen;
+
+  const flatPlacerSaveBlocking = !!(
+    flatPlacerActive && flatApplyStatus === "saving"
+  );
+
+  const flatMockupBlankKey = `${flatBlankColorId}::${selectedSize ?? ""}::pc10`;
+
+  // Force mockup re-raster when the harvested blank key changes (shirt colour swap).
+  useEffect(() => {
+    if (!flatPlacerEligible) return;
+    currentMockupColorRef.current = "";
+  }, [flatPlacerEligible, flatBlankColorId]);
+
+  useEffect(() => {
+    if (!flatPlacerEligible) return;
+    if (!productTypeConfig?.flatCalibration || !generatedDesign?.imageUrl) return;
+    if (!flatBlankColorId) return;
+
+    let cancelled = false;
+    const t = window.setTimeout(() => {
+      void (async () => {
+        const manifest = productTypeConfig.flatCalibration!;
+        const artworkUrl = toAbsoluteImageUrl(generatedDesign.imageUrl);
+        const stateForRender: FlatProductPlacerState = {
+          ...(flatPlacerState ?? {}),
+          view: flatPlacerState?.view ?? "front",
+          placements: {
+            front: { scale: 1, offsetX: 0, offsetY: 0 },
+            back: { scale: 1, offsetX: 0, offsetY: 0 },
+            ...(flatPlacerState?.placements ?? {}),
+          },
+          enabled: {
+            front:
+              flatPlacerState?.enabled?.front ??
+              (printPlacement === "front" || printPlacement === "both"),
+            back:
+              flatPlacerState?.enabled?.back ??
+              (printPlacement === "back" || printPlacement === "both"),
+          },
+          artworkUrl,
+        };
+        const views = flatViewsForColor(manifest, flatBlankColorId);
+        if (
+          flatMockupBlankKey === currentMockupColorRef.current &&
+          printifyMockupImages.length >= views.length
+        ) {
+          return;
+        }
+        const images: { url: string; label: string }[] = [];
+        for (const view of views) {
+          const dataUrl = await renderFlatMockupDataUrl(
+            manifest,
+            flatBlankColorId,
+            stateForRender,
+            view,
+            artworkUrl,
+          );
+          if (cancelled || !dataUrl) continue;
+          let hostedUrl = dataUrl;
+          try {
+            hostedUrl = await ensureHostedUrl(dataUrl);
+          } catch (e) {
+            console.warn("[Mockups] Flat mockup upload failed for", view, e);
+            continue;
+          }
+          if (cancelled || !isHttpsMockupUrl(hostedUrl)) continue;
+          images.push({ url: hostedUrl, label: view });
+        }
+        if (cancelled) return;
+        if (images.length === 0) {
+          console.warn('[Mockups] Flat mockup raster failed for', flatBlankColorId);
+          setFlatRenderFailed(true);
+          setMockupsStale(true);
+          return;
+        }
+        setFlatRenderFailed(false);
+        setPrintifyMockupImages(images);
+        setPrintifyMockups(images.map((i) => i.url));
+        setSelectedMockupIndex((prev) => (prev === 0 ? 1 : prev));
+        setMockupsStale(false);
+        currentMockupColorRef.current = flatMockupBlankKey;
+        void persistFlatMockupsForGallery(
+          images.map((i) => i.url),
+          flatMockupBlankKey,
+        );
+      })();
+    }, 200);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
+  }, [
+    flatPlacerEligible,
+    flatPlacerState,
+    productTypeConfig?.flatCalibration,
+    generatedDesign?.imageUrl,
+    flatBlankColorId,
+    flatMockupBlankKey,
+    selectedSize,
+    printPlacement,
+    persistFlatMockupsForGallery,
+  ]);
+
+  // Flat tier: model/colour swap uses local canvas — never gate on Printify refresh.
+  useEffect(() => {
+    if (!flatPlacerEligible) return;
+    setMockupsStale(false);
+  }, [flatPlacerEligible, flatBlankColorId, selectedSize]);
 
   // Build a price map from shopifyVariants, keyed by size id
   const buildPriceMap = useCallback((): Record<string, number> => {
     const priceMap: Record<string, number> = {};
     if (!shopifyVariants || shopifyVariants.length === 0) return priceMap;
-    
-    console.log('[buildPriceMap] shopifyVariants:', shopifyVariants);
-    console.log('[buildPriceMap] printSizes:', printSizes);
-    
-    // For each size, find a matching variant and get its price
+
+    const hasColors = frameColorObjects.length > 0;
+    const frameName =
+      frameColorObjects.find((f) => f.id === selectedFrameColor)?.name ??
+      selectedFrameColor ??
+      "";
+
     for (const size of printSizes) {
-      const matchedVariant = shopifyVariants.find((v: any) => {
-        const options = [v.title].filter(Boolean);
-        return options.some(
-          (opt) =>
-            opt?.toLowerCase().includes(size.name.toLowerCase()) ||
-            size.name.toLowerCase().includes(opt?.toLowerCase())
-        );
-      });
-      
-      if (matchedVariant && matchedVariant.price) {
-        // Convert price string to cents (multiply by 100)
-        const priceInCents = Math.round(parseFloat(matchedVariant.price) * 100);
-        priceMap[size.id] = priceInCents;
-        console.log(`[buildPriceMap] Matched ${size.name} (${size.id}) to variant ${matchedVariant.title}: $${matchedVariant.price}`);
+      let matchedVariant: (typeof shopifyVariants)[number] | undefined;
+      const matchedId = matchVariantBySizeColor(
+        shopifyVariants,
+        size.name,
+        frameName,
+        hasColors,
+        selectedFrameColor || undefined,
+      );
+      if (matchedId) {
+        matchedVariant = shopifyVariants.find((v) => String(v.id) === matchedId);
+      }
+      if (!matchedVariant) {
+        matchedVariant = shopifyVariants.find((v) => {
+          const t = (v.title || "").toLowerCase();
+          const sn = size.name.toLowerCase();
+          return t === sn || t.startsWith(`${sn} /`) || t.startsWith(`${sn}/`);
+        });
+      }
+
+      if (matchedVariant?.price) {
+        const priceNum = parseFloat(matchedVariant.price);
+        if (priceNum > 0) {
+          priceMap[size.id] = Math.round(priceNum * 100);
+        }
       }
     }
-    
-    console.log('[buildPriceMap] Final priceMap:', priceMap);
+
     return priceMap;
-  }, [shopifyVariants, printSizes])
+  }, [shopifyVariants, printSizes, frameColorObjects, selectedFrameColor])
 
   // Auto-resolve the Shopify variant that matches the currently selected size + frame color.
   // Runs whenever size, frame color, or the variants list changes.
@@ -5156,31 +6428,20 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   useEffect(() => {
     if (!isStorefront || shopifyVariants.length === 0) return;
 
-    const sizeName = printSizes.find(s => s.id === selectedSize)?.name ?? selectedSize ?? '';
-    const frameName = frameColorObjects.find(f => f.id === selectedFrameColor)?.name ?? selectedFrameColor ?? '';
+    const sizeName = printSizes.find(s => s.id === selectedSize)?.name ?? selectedSize ?? "";
+    const frameName =
+      frameColorObjects.find(f => f.id === selectedFrameColor)?.name ?? selectedFrameColor ?? "";
+    const matchedId = matchVariantBySizeColor(
+      shopifyVariants,
+      sizeName,
+      frameName,
+      frameColorObjects.length > 0,
+      selectedFrameColor || undefined,
+    );
 
-    // 1. Try to match variant title containing both size name and frame name
-    let match = shopifyVariants.find(v => {
-      const t = v.title.toLowerCase();
-      const hasSize = !sizeName || t.includes(sizeName.toLowerCase());
-      const hasFrame = !frameName || frameColorObjects.length === 0
-        || t.includes(frameName.toLowerCase());
-      return hasSize && hasFrame;
-    });
-
-    // 2. Fallback: match size only (frame color may not be a variant axis in Shopify)
-    if (!match && sizeName) {
-      match = shopifyVariants.find(v =>
-        v.title.toLowerCase().includes(sizeName.toLowerCase())
-      );
-    }
-
-    // 3. Fallback: first variant
-    if (!match) match = shopifyVariants[0];
-
-    if (match) {
-      setShopifyVariantId(match.id);
-      setOverrideVariantId(match.id);
+    if (matchedId) {
+      setShopifyVariantId(matchedId);
+      setOverrideVariantId(matchedId);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSize, selectedFrameColor, shopifyVariants, isStorefront]);
@@ -5369,6 +6630,27 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     mockupLoading &&
     !atcMockupsReady
   );
+  const atcRefreshingMockups = !!(
+    atcHasMockups &&
+    generatedDesign?.imageUrl &&
+    mockupLoading &&
+    atcMockupsReady
+  );
+  const atcFlatOnTheFly = flatPlacerEligible;
+  const atcMockupsStaleBlocks = mockupsStale && !atcFlatOnTheFly;
+  const galleryMockupCount =
+    printifyMockupImages.length > 0 ? printifyMockupImages.length : printifyMockups.length;
+  const showingMockupAtArtworkSlot = !!(
+    isStorefront &&
+    selectedMockupIndex === 0 &&
+    galleryMockupCount === 0 &&
+    getPreferredMockupUrl()
+  );
+  const canShowDragHint = !!(
+    generatedDesign?.imageUrl &&
+    selectedMockupIndex === 0 &&
+    !showingMockupAtArtworkSlot
+  );
 
   const renderPrimaryAction = (className = "", testIdSuffix = "") => {
     const withSuffix = (id: string) => testIdSuffix ? `${id}-${testIdSuffix}` : id;
@@ -5388,8 +6670,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           ) : (
             <Button
               onClick={() => {
-                if (mockupsStale) {
-                  if (productTypeConfig?.isAllOverPrint && !lastAopPanelUrlsRef.current?.length) {
+                if (atcMockupsStaleBlocks) {
+                  if (useAopCustomizer && !lastAopPanelUrlsRef.current?.length) {
                     if (generatedDesign?.imageUrl) {
                       setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
                       setShowPatternStep(true);
@@ -5413,16 +6695,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       transform.scale,
                       transform.x,
                       transform.y,
-                      productTypeConfig.isAllOverPrint && aopPatternUrl ? aopPatternUrl : undefined,
+                      useAopCustomizer && aopPatternUrl ? aopPatternUrl : undefined,
                       aopPlacementSettings?.mirrorMode,
-                      productTypeConfig.isAllOverPrint ? (lastAopPanelUrlsRef.current ?? undefined) : undefined
+                      useAopCustomizer ? (lastAopPanelUrlsRef.current ?? undefined) : undefined
                     );
                   }
                 } else {
                   handleAddToCart();
                 }
               }}
-              disabled={isAddingToCart || atcWaitingForMockups || mockupLoading || (productTypeConfig?.isAllOverPrint && !aopPatternUrl)}
+              disabled={isAddingToCart || atcWaitingForMockups || mockupLoading || flatPlacerSaveBlocking || (useAopCustomizer && !aopPatternUrl)}
               className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black disabled:opacity-50 disabled:cursor-not-allowed"
               data-testid={withSuffix("button-add-to-cart")}
             >
@@ -5431,17 +6713,24 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   <Loader2 className="w-5 h-5 mr-2 animate-spin" />
                   <span className="shimmer-text-white">Adding to Cart...</span>
                 </>
-              ) : atcWaitingForMockups || (mockupsStale && mockupLoading) ? (
+              ) : flatPlacerSaveBlocking ? (
+                <>
+                  <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                  <span className="shimmer-text-white">
+                    Saving design…
+                  </span>
+                </>
+              ) : atcWaitingForMockups || atcRefreshingMockups ? (
                 <>
                   <Loader2 className="w-5 h-5 mr-2 animate-spin" />
                   <span className="shimmer-text-white">Refreshing Mockups…</span>
                 </>
-              ) : mockupsStale ? (
+              ) : atcMockupsStaleBlocks ? (
                 <>
                   <RefreshCcw className="w-5 h-5 mr-2" />
                   <span className="shimmer-text-white">Refresh Mockups to Continue</span>
                 </>
-              ) : productTypeConfig?.isAllOverPrint && !aopPatternUrl ? (
+              ) : useAopCustomizer && !aopPatternUrl ? (
                 <span className="shimmer-text-white">Apply Pattern to Continue</span>
               ) : (
                 <>
@@ -5455,7 +6744,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           <Button
             onClick={() => {
               if ((isShopify || isStorefront) && customer && credits <= 0) {
-                setCreditsPopoverOpen(true);
+                notifyInsufficientCredits();
                 return;
               }
               if (showPresetsParam && filteredStylePresets.length > 0 && selectedPreset === "") {
@@ -5504,6 +6793,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               onClick={() => {
                 setGeneratedDesign(null);
                 lastAopPanelUrlsRef.current = null;
+                setFlatPlacerState(null);
+                setFlatPlacerEditOpen(false);
+                setFlatApplyStatus("idle");
+                setFlatRenderFailed(false);
                 setDesignSource(null);
                 setAddedToCart(false);
                 loadDesignAppliedRef.current = false;
@@ -5611,7 +6904,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       `}</style>
       <div
         className={
-          showPatternStep && aopPendingMotifUrl
+          (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
             ? "w-full max-w-[min(100%,92rem)] mx-auto px-1 sm:px-3 space-y-3"
             : "max-w-6xl mx-auto space-y-3"
         }
@@ -5698,7 +6991,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
         <div
           className={`grid grid-cols-1 gap-4 sm:gap-6 ${
-            showPatternStep && aopPendingMotifUrl
+            (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
               ? "lg:grid-cols-[minmax(0,1fr)_minmax(220px,280px)_minmax(0,1fr)]"
               : "md:grid-cols-2"
           }`}
@@ -5706,7 +6999,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           {/* Generator/form panel — right on desktop, first on mobile */}
           <div
             className={`space-y-4 order-1 ${
-              showPatternStep && aopPendingMotifUrl
+              (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
                 ? "lg:order-3 lg:col-start-3"
                 : "md:order-2"
             }`}
@@ -6189,7 +7482,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                               })
                                 .then(r => r.json())
                                 .then(data => {
-                                  if (data.ok) {
+                                  if (data.ok && data.creditsAdded > 0) {
                                     setCouponSuccess(`${data.creditsAdded} credit${data.creditsAdded !== 1 ? 's' : ''} added!`);
                                     setCustomer(prev => prev ? { ...prev, credits: data.newBalance } : prev);
                                     setCouponCode('');
@@ -6250,8 +7543,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     ) : (
                       <Button
                         onClick={() => {
-                          if (mockupsStale) {
-                            if (productTypeConfig?.isAllOverPrint && !lastAopPanelUrlsRef.current?.length) {
+                          if (atcMockupsStaleBlocks) {
+                            if (useAopCustomizer && !lastAopPanelUrlsRef.current?.length) {
                               if (generatedDesign?.imageUrl) {
                                 setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
                                 setShowPatternStep(true);
@@ -6276,16 +7569,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                                 transform.scale,
                                 transform.x,
                                 transform.y,
-                                productTypeConfig.isAllOverPrint && aopPatternUrl ? aopPatternUrl : undefined,
+                                useAopCustomizer && aopPatternUrl ? aopPatternUrl : undefined,
                                 aopPlacementSettings?.mirrorMode,
-                                productTypeConfig.isAllOverPrint ? (lastAopPanelUrlsRef.current ?? undefined) : undefined
+                                useAopCustomizer ? (lastAopPanelUrlsRef.current ?? undefined) : undefined
                               );
                             }
                           } else {
                             handleAddToCart();
                           }
                         }}
-                        disabled={isAddingToCart || atcWaitingForMockups || mockupLoading || (productTypeConfig?.isAllOverPrint && !aopPatternUrl)}
+                        disabled={isAddingToCart || atcWaitingForMockups || mockupLoading || flatPlacerSaveBlocking || (useAopCustomizer && !aopPatternUrl)}
                         className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black disabled:opacity-50 disabled:cursor-not-allowed"
                         data-testid="button-add-to-cart"
                       >
@@ -6294,17 +7587,24 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             <Loader2 className="w-5 h-5 mr-2 animate-spin" />
                             <span className="shimmer-text-white">Adding to Cart...</span>
                           </>
-                        ) : atcWaitingForMockups || (mockupsStale && mockupLoading) ? (
+                        ) : flatPlacerSaveBlocking ? (
+                          <>
+                            <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                            <span className="shimmer-text-white">
+                              Saving design…
+                            </span>
+                          </>
+                        ) : atcWaitingForMockups || atcRefreshingMockups ? (
                           <>
                             <Loader2 className="w-5 h-5 mr-2 animate-spin" />
                             <span className="shimmer-text-white">Refreshing Mockups…</span>
                           </>
-                        ) : mockupsStale ? (
+                        ) : atcMockupsStaleBlocks ? (
                           <>
                             <RefreshCcw className="w-5 h-5 mr-2" />
                             <span className="shimmer-text-white">Refresh Mockups to Continue</span>
                           </>
-                        ) : productTypeConfig?.isAllOverPrint && !aopPatternUrl ? (
+                        ) : useAopCustomizer && !aopPatternUrl ? (
                           <>
                             <span className="shimmer-text-white">Apply Pattern to Continue</span>
                           </>
@@ -6321,7 +7621,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     <Button
                       onClick={() => {
                         if ((isShopify || isStorefront) && customer && credits <= 0) {
-                          setCreditsPopoverOpen(true);
+                          notifyInsufficientCredits();
                           return;
                         }
                         if (showPresetsParam && filteredStylePresets.length > 0 && selectedPreset === "") {
@@ -6540,7 +7840,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       selectedSize={selectedSize}
                       onSizeChange={(sizeId) => {
                         setSelectedSize(sizeId);
-                        setTransform({ scale: defaultZoom, x: 50, y: 50 });
+                        const flatOnTheFly = !!(
+                          (productTypeConfig?.onTheFlyTier === "flat" ||
+                            productTypeConfig?.onTheFlyTier === "mesh") &&
+                          productTypeConfig?.flatCalibration
+                        );
+                        if (!flatOnTheFly) {
+                          setTransform({ scale: defaultZoom, x: 50, y: 50 });
+                        }
                       }}
                       prices={buildPriceMap()}
                     />
@@ -6559,6 +7866,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                           selectedFrameColor={selectedFrameColor}
                           onFrameColorChange={setSelectedFrameColor}
                           colorLabel={productTypeConfig?.colorLabel || "Color"}
+                          variantMap={productTypeConfig?.variantMap}
+                          selectedSize={selectedSize}
                         />
                       )}
                       {supportsPrintPlacementSelection && (
@@ -6571,21 +7880,44 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             onValueChange={(value) => {
                               const nextPlacement = value as "front" | "back" | "both";
                               setPrintPlacement(nextPlacement);
-                              if (generatedDesign?.imageUrl && productTypeConfig && selectedSize && !productTypeConfig.isAllOverPrint) {
-                                fetchPrintifyMockups(
-                                  toAbsoluteImageUrl(generatedDesign.imageUrl),
-                                  productTypeConfig.id,
-                                  selectedSize,
-                                  selectedFrameColor || "default",
-                                  transform.scale,
-                                  transform.x,
-                                  transform.y,
-                                  undefined,
-                                  undefined,
-                                  undefined,
-                                  nextPlacement,
-                                );
+                              if (!generatedDesign?.imageUrl || !productTypeConfig || !selectedSize || useAopCustomizer) {
+                                return;
                               }
+                              const flatOnTheFly = !!(
+                                (productTypeConfig.onTheFlyTier === "flat" ||
+                                  productTypeConfig.onTheFlyTier === "mesh") &&
+                                productTypeConfig.flatCalibration
+                              );
+                              if (flatOnTheFly) {
+                                setFlatPlacerState((prev) => ({
+                                  view: prev?.view ?? "front",
+                                  placements: prev?.placements ?? {
+                                    front: { scale: 1, offsetX: 0, offsetY: 0 },
+                                    back: { scale: 1, offsetX: 0, offsetY: 0 },
+                                  },
+                                  artworkUrl: prev?.artworkUrl ?? (generatedDesign?.imageUrl ? toAbsoluteImageUrl(generatedDesign.imageUrl) : null),
+                                  enabled: {
+                                    front: nextPlacement === "front" || nextPlacement === "both",
+                                    back: nextPlacement === "back" || nextPlacement === "both",
+                                  },
+                                }));
+                                currentMockupColorRef.current = "";
+                                lastFlatGalleryMockupKeyRef.current = "";
+                                return;
+                              }
+                              fetchPrintifyMockups(
+                                toAbsoluteImageUrl(generatedDesign.imageUrl),
+                                productTypeConfig.id,
+                                selectedSize,
+                                selectedFrameColor || "default",
+                                transform.scale,
+                                transform.x,
+                                transform.y,
+                                undefined,
+                                undefined,
+                                undefined,
+                                nextPlacement,
+                              );
                             }}
                           >
                             <SelectTrigger id="print-placement-select" className="h-11">
@@ -6733,7 +8065,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           <div
             ref={artworkColumnRef}
             className={`order-2 min-w-0 w-full ${
-              showPatternStep && aopPendingMotifUrl
+              (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
                 ? "lg:order-1 lg:col-span-2 flex flex-col min-h-0"
                 : "space-y-3 md:order-1"
             }`}
@@ -6965,9 +8297,68 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 }
               />
               )
+            ) : flatPlacerActive && productTypeConfig?.flatCalibration ? (
+              // On-the-fly flat/mesh local mockup placer (replaces the Printify
+              // mockup flow for calibrated flat/mesh products). Falls back to
+              // the Printify flow automatically if the renderer/assets fail.
+              <div className="flex flex-col gap-2 min-h-0">
+                {(isStorefront || isShopify) && (
+                  <div className="flex w-full gap-2 justify-stretch">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="flex-1 min-w-0"
+                      onClick={() => {
+                        void flushFlatPlacer().finally(() => setFlatPlacerEditOpen(false));
+                      }}
+                      data-testid="button-back-flat-placer"
+                    >
+                      <ChevronLeft className="w-4 h-4 mr-1 shrink-0" />
+                      <span className="text-xs truncate">Back</span>
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="flex-1 min-w-0"
+                      onClick={handleShare}
+                      disabled={isSharing || !generatedDesign?.imageUrl}
+                      data-testid="button-share-flat-placer"
+                    >
+                      {isSharing ? (
+                        <Loader2 className="w-4 h-4 animate-spin mr-1 shrink-0" />
+                      ) : (
+                        <Share2 className="w-4 h-4 mr-1 shrink-0" />
+                      )}
+                      <span className="text-xs truncate">Share</span>
+                    </Button>
+                  </div>
+                )}
+                <FlatProductPlacer
+                  ref={flatPlacerRef}
+                  key={`flat-${productTypeConfig?.id ?? 0}-${flatPlacerGeometryKey}-${flatBlankColorId}-${generatedDesign?.id ?? generatedDesign?.imageUrl}`}
+                  manifest={productTypeConfig.flatCalibration}
+                  colorId={flatBlankColorId}
+                  placementGeometryKey={flatPlacerGeometryKey}
+                  artworkSourceUrl={toAbsoluteImageUrl(generatedDesign!.imageUrl)}
+                  initialState={{
+                    ...(flatPlacerState ?? {}),
+                    artworkUrl: toAbsoluteImageUrl(generatedDesign!.imageUrl),
+                  }}
+                  onChange={handleFlatPlacerChange}
+                  onApply={handleFlatApply}
+                  onApplyStatusChange={setFlatApplyStatus}
+                  onAssetsFailed={handleFlatAssetsFailed}
+                  edgeWrapMode={flatEdgeWrapMode}
+                  decorMode={flatDecorMode}
+                  skipInitialAutoApply={!!flatPlacerState}
+                />
+              </div>
             ) : (<>
             {/* Main interactive canvas - full size, always visible for editing */}
             <div
+              ref={previewLandingRef}
               className="w-full rounded-md overflow-hidden relative"
               style={{
                 aspectRatio: (() => {
@@ -6978,6 +8369,21 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   // For product types with dimensional sizes (width/height > 0), use those
                   if (selectedSizeConfig && selectedSizeConfig.width > 0 && selectedSizeConfig.height > 0) {
                     return `${selectedSizeConfig.width}/${selectedSizeConfig.height}`;
+                  }
+                  // Square / double-sided pillows: DB aspectRatio is often 2:1 (both faces)
+                  // but each printable face is 1:1 — keep the placeholder square before size pick.
+                  if (productTypeConfig?.designerType === "pillow") {
+                    const shape = productTypeConfig?.printShape;
+                    if (shape === "square" || shape === "circle") return "1/1";
+                    if (productTypeConfig?.doubleSidedPrint) {
+                      const ar = productTypeConfig?.aspectRatio || "1:1";
+                      if (ar.replace("/", ":") === "2:1") return "1/1";
+                    }
+                  }
+                  // Before a size is chosen, prefer the first size's dimensions over product AR
+                  const firstSize = printSizes[0];
+                  if (firstSize && firstSize.width > 0 && firstSize.height > 0) {
+                    return `${firstSize.width}/${firstSize.height}`;
                   }
                   // Otherwise use the product type's aspectRatio string (e.g., "4:3" for mugs/tumblers)
                   const ar = productTypeConfig?.aspectRatio || "3:4";
@@ -6995,7 +8401,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   const isGeneratingArtwork = generateMutation.isPending;
                   // mockupTriggered bridges the gap between isPending=false and mockupLoading=true
                   const isGeneratingMockups = isStorefront && (mockupLoading || mockupTriggered) && !getPreferredMockupUrl();
-                  const isAopProduct = !!(productTypeConfig?.isAllOverPrint);
+                  const isAopProduct = !!(useAopCustomizer);
                   // isAopReapplying: AOP product is regenerating mockups after a pattern re-apply.
                   // Unlike the first apply, getPreferredMockupUrl() returns the OLD mockup URL so
                   // isGeneratingMockups is false — but we still need to show the blue shimmer.
@@ -7050,16 +8456,45 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       printShape={productTypeConfig?.printShape || "rectangle"}
                       canvasConfig={productTypeConfig?.canvasConfig}
                       blankImageUrl={
-                        productTypeConfig?.baseMockupImages?.primary ||
-                        productTypeConfig?.baseMockupImages?.front ||
-                        productTypeConfig?.baseMockupImages?.gallery?.[0] ||
+                        colorAwareBlankUrl ||
+                        catalogPreviewImages[catalogPreviewIndex] ||
+                        catalogPreviewImages[0] ||
                         null
                       }
                       aspectRatio={productTypeConfig?.aspectRatio}
+                      mockupFit={flatEdgeWrapMode ? "contain" : "cover"}
                     />
                   );
                 })()}
               </div>
+
+              {/* Catalog placeholder carousel — before customer generates artwork */}
+              {isStorefront && !generatedDesign?.imageUrl && catalogPreviewImages.length > 1 && (
+                <>
+                  <button
+                    type="button"
+                    aria-label="Previous placeholder"
+                    onClick={() =>
+                      setCatalogPreviewIndex((i) =>
+                        (i - 1 + catalogPreviewImages.length) % catalogPreviewImages.length,
+                      )
+                    }
+                    className="absolute left-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white transition-colors"
+                  >
+                    <ChevronLeft className="w-5 h-5" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Next placeholder"
+                    onClick={() =>
+                      setCatalogPreviewIndex((i) => (i + 1) % catalogPreviewImages.length)
+                    }
+                    className="absolute right-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white transition-colors"
+                  >
+                    <ChevronRight className="w-5 h-5" />
+                  </button>
+                </>
+              )}
 
               {/* Left/right arrow navigation — only when mockups are available */}
               {isStorefront && generatedDesign?.imageUrl && (() => {
@@ -7091,7 +8526,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               })()}
 
               {/* Stale mockups overlay */}
-              {mockupsStale && !mockupLoading && generatedDesign?.imageUrl && (
+              {atcMockupsStaleBlocks && !mockupLoading && generatedDesign?.imageUrl && (
                 <div className="absolute inset-0 flex items-end justify-center pb-3 pointer-events-none z-20">
                   <span className="text-white text-sm font-semibold bg-black/60 rounded-full px-3 py-1 animate-pulse">
                     Refresh your Mockups
@@ -7099,6 +8534,38 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 </div>
               )}
             </div>
+
+            {/* Catalog placeholder indicators — before artwork exists */}
+            {isStorefront && !generatedDesign?.imageUrl && catalogPreviewImages.length > 1 && (
+              <div className="flex justify-center gap-3 mt-1">
+                {catalogPreviewImages.map((_, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => setCatalogPreviewIndex(idx)}
+                    aria-label={`Placeholder image ${idx + 1}`}
+                    className={`flex flex-col items-center gap-0.5 transition-all duration-200 ${
+                      catalogPreviewIndex === idx ? "opacity-100" : "opacity-40 hover:opacity-70"
+                    }`}
+                  >
+                    <span
+                      className={`rounded-full transition-all duration-200 ${
+                        catalogPreviewIndex === idx
+                          ? "w-4 h-2 bg-foreground"
+                          : "w-2 h-2 bg-foreground/60"
+                      }`}
+                    />
+                    <span
+                      className={`text-[10px] leading-tight font-medium ${
+                        catalogPreviewIndex === idx ? "text-foreground" : "text-muted-foreground"
+                      }`}
+                    >
+                      {idx === 0 ? "Primary" : `View ${idx + 1}`}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
 
             {/* Carousel indicators with labels — directly under image */}
             {(isShopify || isStorefront) && productTypeConfig?.hasPrintifyMockups && generatedDesign?.imageUrl && (() => {
@@ -7109,7 +8576,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               const hasMockups = galleryMockups.length > 0;
               if (!hasMockups) return null;
               const totalItems = 1 + galleryMockups.slice(0, 3).length;
-              const getLabel = (idx: number) => idx === 0 ? "Artwork" : (galleryMockups[idx - 1]?.label || `View ${idx}`);
+              const getLabel = (idx: number) => {
+                if (idx === 0) return "Artwork";
+                const raw = (galleryMockups[idx - 1]?.label || "").toLowerCase();
+                if (raw === "front" || raw === "mockup 1") return "Front";
+                if (raw === "back" || raw === "mockup 2") return "Back";
+                return galleryMockups[idx - 1]?.label || `View ${idx}`;
+              };
               return (
                 <div className="flex justify-center gap-3 mt-1">
                   {Array.from({ length: totalItems }).map((_, idx) => (
@@ -7136,11 +8609,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               );
             })()}
 
-            {generatedDesign?.imageUrl && !productTypeConfig?.isAllOverPrint && (
+            {generatedDesign?.imageUrl && !useAopCustomizer && !flatPlacerEligible && (
               <ZoomControls
                 transform={transform}
                 onTransformChange={setTransform}
                 disabled={!generatedDesign?.imageUrl}
+                showDragHint={canShowDragHint}
                 extraActions={
                   <div className="flex items-center gap-2">
                     {(isShopify || isStorefront) && productTypeConfig?.hasPrintifyMockups && (
@@ -7149,7 +8623,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         size="sm"
                         onClick={() => {
                           if (generatedDesign?.imageUrl && productTypeConfig) {
-                            if (productTypeConfig.isAllOverPrint && !lastAopPanelUrlsRef.current?.length) {
+                            if (useAopCustomizer && !lastAopPanelUrlsRef.current?.length) {
                               setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
                               setShowPatternStep(true);
                               return;
@@ -7171,9 +8645,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                               transform.scale,
                               transform.x,
                               transform.y,
-                              productTypeConfig.isAllOverPrint && aopPatternUrl ? aopPatternUrl : undefined,
+                              useAopCustomizer && aopPatternUrl ? aopPatternUrl : undefined,
                               aopPlacementSettings?.mirrorMode,
-                              productTypeConfig.isAllOverPrint ? (lastAopPanelUrlsRef.current ?? undefined) : undefined
+                              useAopCustomizer ? (lastAopPanelUrlsRef.current ?? undefined) : undefined
                             );
                           }
                         }}
@@ -7221,8 +8695,49 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               />
             )}
 
+            {generatedDesign?.imageUrl && flatPlacerEligible && !flatPlacerEditOpen && (
+              <div className="flex items-center justify-between pt-2 border-t gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setFlatPlacerEditOpen(true)}
+                  className="shrink-0"
+                  data-testid="button-edit-flat-placement"
+                >
+                  <RefreshCw className="w-4 h-4 mr-1" />
+                  <span className="text-xs">Edit Placement</span>
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void handleDownloadArtwork(generatedDesign?.imageUrl, `${productTitle || "appai"}-artwork.png`)}
+                  disabled={!generatedDesign?.imageUrl}
+                  data-testid="button-download-artwork-flat"
+                  className="shrink-0"
+                >
+                  <Download className="w-4 h-4 mr-1" />
+                  <span className="text-xs">Download Artwork</span>
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleShare}
+                  disabled={isSharing || !generatedDesign?.imageUrl}
+                  data-testid="button-share-flat"
+                  className="shrink-0"
+                >
+                  {isSharing ? (
+                    <Loader2 className="w-4 h-4 animate-spin mr-1" />
+                  ) : (
+                    <Share2 className="w-4 h-4 mr-1" />
+                  )}
+                  <span className="text-xs">Share</span>
+                </Button>
+              </div>
+            )}
+
             {/* AOP-only bottom bar: Edit Pattern + Share — hidden while pattern overlay is open (same actions live under Apply). */}
-            {generatedDesign?.imageUrl && productTypeConfig?.isAllOverPrint && !showPatternStep && (
+            {generatedDesign?.imageUrl && useAopCustomizer && !showPatternStep && (
               <div className="flex items-center justify-between pt-2 border-t gap-2">
                 <Button
                   variant="outline"
@@ -7282,7 +8797,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     className="text-xs text-destructive underline shrink-0"
                     onClick={() => {
                       if (generatedDesign?.imageUrl && productTypeConfig) {
-                        if (productTypeConfig.isAllOverPrint && !lastAopPanelUrlsRef.current?.length) {
+                        if (useAopCustomizer && !lastAopPanelUrlsRef.current?.length) {
                           setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
                           setShowPatternStep(true);
                           return;
@@ -7299,9 +8814,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                           transform.scale,
                           50,
                           50,
-                          productTypeConfig.isAllOverPrint && aopPatternUrl ? aopPatternUrl : undefined,
+                          useAopCustomizer && aopPatternUrl ? aopPatternUrl : undefined,
                           aopPlacementSettings?.mirrorMode,
-                          productTypeConfig.isAllOverPrint ? (lastAopPanelUrlsRef.current ?? undefined) : undefined
+                          useAopCustomizer ? (lastAopPanelUrlsRef.current ?? undefined) : undefined
                         );
                       }
                     }}
@@ -7312,7 +8827,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               </div>
             )}
 
-            {generateMutation.isError && generateMutation.error?.message !== 'GALLERY_FULL' && (
+            {generateMutation.isError &&
+              generateMutation.error?.message !== 'GALLERY_FULL' &&
+              !/credit/i.test(generateMutation.error?.message ?? '') && (
               <p className="text-destructive text-sm" data-testid="text-error">
                 {generateMutation.error?.message || "Failed to generate design. Please try again."}
               </p>

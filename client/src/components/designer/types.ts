@@ -10,6 +10,8 @@ export interface FrameColor {
   id: string;
   name: string;
   hex: string;
+  /** False when variantMap has no Printify variant for this color (any size). */
+  variantAvailable?: boolean;
 }
 
 export interface StylePresetOption {

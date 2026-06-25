@@ -60,12 +60,8 @@ function FramedPrintMockup({
   setTransform,
   printShape,
   canvasConfig,
-  selectedVariant,
-  variants,
   showSafeZone,
 }: MockupProps) {
-  const currentFrame = variants.find(f => f.id === selectedVariant) || variants[0] || { hex: "#1a1a1a" };
-
   if (!imageUrl) {
     return (
       <div className="flex items-center justify-center p-8 text-muted-foreground">
@@ -76,38 +72,30 @@ function FramedPrintMockup({
 
   return (
     <div className="flex flex-col gap-4 w-full p-4">
-      <div className="relative mx-auto">
+      <div className="relative mx-auto w-full max-w-sm">
         <div
-          className="relative shadow-xl"
+          className="relative overflow-hidden rounded-md bg-muted"
           style={{
-            padding: "16px",
-            backgroundColor: currentFrame.hex,
-            borderRadius: "2px",
+            aspectRatio: canvasConfig ? `${canvasConfig.width}/${canvasConfig.height}` : "4/5",
           }}
         >
-          <div className="relative overflow-hidden bg-white" style={{ aspectRatio: canvasConfig ? `${canvasConfig.width}/${canvasConfig.height}` : "4/5", width: "320px" }}>
-            <img
-              src={imageUrl}
-              alt="Generated artwork"
-              className="absolute select-none"
-              style={{
-                width: `${transform.scale}%`,
-                height: `${transform.scale}%`,
-                objectFit: "cover",
-                left: `${transform.x}%`,
-                top: `${transform.y}%`,
-                transform: "translate(-50%, -50%)",
-                pointerEvents: "none",
-              }}
-              draggable={false}
-            />
-            <SafeZoneMask
-              shape={printShape}
-              canvasConfig={canvasConfig}
-              showMask={showSafeZone}
-              className="absolute inset-0"
-            />
-          </div>
+          <img
+            src={imageUrl}
+            alt="Generated artwork"
+            className="absolute select-none inset-0 w-full h-full object-contain"
+            style={{
+              transform: `scale(${transform.scale / 100}) translate(${transform.x - 50}%, ${transform.y - 50}%)`,
+              transformOrigin: "center center",
+              pointerEvents: "none",
+            }}
+            draggable={false}
+          />
+          <SafeZoneMask
+            shape={printShape}
+            canvasConfig={canvasConfig}
+            showMask={showSafeZone}
+            className="absolute inset-0"
+          />
         </div>
       </div>
 

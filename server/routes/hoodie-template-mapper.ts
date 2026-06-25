@@ -319,6 +319,39 @@ export function registerHoodieTemplateMapperRoutes(app: Express) {
     }
   });
 
+  app.post("/api/dev/hoodie-mapper/templates/:name/publish", async (req: Request, res: Response) => {
+    const name = req.params.name;
+    if (!isSafeName(name)) return res.status(400).json({ error: "Invalid template name" });
+    const file = safeJoin(TEMPLATES_DIR, `${name}.json`);
+    if (!file) return res.status(400).json({ error: "Invalid path" });
+    if (!fs.existsSync(file)) {
+      return res.status(404).json({
+        error: `Local template not found — Save "${name}" in the mapper first.`,
+      });
+    }
+    try {
+      const publishResult = await Promise.race([
+        autoPublishHoodieTemplate(name),
+        new Promise<Awaited<ReturnType<typeof autoPublishHoodieTemplate>>>(
+          (resolve) =>
+            setTimeout(
+              () =>
+                resolve({
+                  ok: false,
+                  skipped: false,
+                  error: "publish timed out (30s)",
+                  elapsedMs: 30_000,
+                }),
+              30_000,
+            ),
+        ),
+      ]);
+      res.json({ ok: true, publish: publishResult });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "publish failed" });
+    }
+  });
+
   app.delete("/api/dev/hoodie-mapper/templates/:name", async (req: Request, res: Response) => {
     const name = req.params.name;
     if (!isSafeName(name)) return res.status(400).json({ error: "Invalid template name" });
