@@ -12,7 +12,13 @@ declare global {
             callback: (response: { credential: string }) => void;
             auto_select?: boolean;
             cancel_on_tap_outside?: boolean;
+            use_fedcm_for_prompt?: boolean;
           }) => void;
+          prompt: (momentListener?: (notification: {
+            isNotDisplayed: () => boolean;
+            isSkippedMoment: () => boolean;
+            isDismissedMoment: () => boolean;
+          }) => void) => void;
           renderButton: (parent: HTMLElement, options: Record<string, string | number | boolean>) => void;
         };
       };
@@ -31,6 +37,7 @@ export default function StorefrontGoogleAuthPage() {
   const googleBtnRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "working" | "done" | "error">("loading");
   const [error, setError] = useState<string | null>(null);
+  const [showFallbackButton, setShowFallbackButton] = useState(false);
 
   useEffect(() => {
     if (!shop || !openerOrigin || !nonce) {
@@ -118,17 +125,9 @@ export default function StorefrontGoogleAuthPage() {
           return;
         }
 
-        const renderButton = () => {
+        const renderFallbackButton = () => {
           const container = googleBtnRef.current;
           if (!container || !window.google?.accounts?.id) return;
-          window.google.accounts.id.initialize({
-            client_id: clientId,
-            callback: (response) => {
-              if (response?.credential) handleCredential(response.credential);
-            },
-            auto_select: false,
-            cancel_on_tap_outside: true,
-          });
           container.innerHTML = "";
           window.google.accounts.id.renderButton(container, {
             type: "standard",
@@ -137,14 +136,41 @@ export default function StorefrontGoogleAuthPage() {
             text: "signin_with",
             width: 320,
           });
+          setShowFallbackButton(true);
           setStatus("ready");
+        };
+
+        const startGoogleSignIn = () => {
+          if (!window.google?.accounts?.id) return;
+
+          window.google.accounts.id.initialize({
+            client_id: clientId,
+            callback: (response) => {
+              if (response?.credential) handleCredential(response.credential);
+            },
+            auto_select: true,
+            cancel_on_tap_outside: false,
+            use_fedcm_for_prompt: true,
+          });
+
+          // Open Google's account picker immediately (user already clicked Continue with Google).
+          window.google.accounts.id.prompt((notification) => {
+            if (cancelled) return;
+            if (
+              notification.isNotDisplayed()
+              || notification.isSkippedMoment()
+              || notification.isDismissedMoment()
+            ) {
+              renderFallbackButton();
+            }
+          });
         };
 
         const scriptId = "google-gsi-client-popup";
         const existing = document.getElementById(scriptId) as HTMLScriptElement | null;
         if (existing) {
-          if (window.google?.accounts?.id) renderButton();
-          else existing.addEventListener("load", renderButton);
+          if (window.google?.accounts?.id) startGoogleSignIn();
+          else existing.addEventListener("load", startGoogleSignIn);
           return;
         }
 
@@ -153,7 +179,7 @@ export default function StorefrontGoogleAuthPage() {
         script.src = "https://accounts.google.com/gsi/client";
         script.async = true;
         script.defer = true;
-        script.onload = renderButton;
+        script.onload = startGoogleSignIn;
         script.onerror = () => {
           if (!cancelled) {
             setStatus("error");
@@ -177,28 +203,25 @@ export default function StorefrontGoogleAuthPage() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-background p-6">
       <div className="w-full max-w-sm space-y-4 text-center">
-        <h1 className="text-lg font-semibold">Sign in with Google</h1>
-        <p className="text-sm text-muted-foreground">
-          Continue to save designs and track your artwork credits.
-        </p>
-
-        {status === "loading" && (
+        {(status === "loading" || status === "working") && !showFallbackButton && (
           <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground py-6">
             <Loader2 className="w-4 h-4 animate-spin" />
-            Loading…
+            {status === "working" ? "Signing you in…" : "Opening Google sign-in…"}
           </div>
         )}
 
-        {status === "working" && (
-          <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground py-6">
-            <Loader2 className="w-4 h-4 animate-spin" />
-            Signing you in…
-          </div>
+        {showFallbackButton && (
+          <>
+            <h1 className="text-lg font-semibold">Sign in with Google</h1>
+            <p className="text-sm text-muted-foreground">Choose your account to continue.</p>
+          </>
         )}
 
-        {(status === "ready" || status === "loading") && (
-          <div ref={googleBtnRef} className="flex justify-center min-h-[44px]" />
-        )}
+        <div
+          ref={googleBtnRef}
+          className={showFallbackButton ? "flex justify-center min-h-[44px]" : "sr-only"}
+          aria-hidden={!showFallbackButton}
+        />
 
         {status === "done" && (
           <p className="text-sm text-muted-foreground py-4">Success! You can close this window.</p>
