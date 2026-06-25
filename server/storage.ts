@@ -38,6 +38,7 @@ export interface IStorage {
   getCreditBalance(customerId: string): Promise<CreditBalance | undefined>;
   getCustomerAliases(customerId: string): Promise<CustomerAlias[]>;
   resolveOrCreateCustomerAlias(alias: InsertCustomerAlias & { legacyUserId?: string }): Promise<Customer>;
+  findCustomerByAlias(aliasType: string, aliasValue: string, shop?: string | null): Promise<Customer | undefined>;
   addCustomerAlias(customerId: string, alias: Omit<InsertCustomerAlias, "customerId">): Promise<CustomerAlias | undefined>;
   applyCreditLedgerEntry(entry: InsertCreditLedger): Promise<{ inserted: boolean; balance: CreditBalance | undefined }>;
   consumePaidCredit(customerId: string, idempotencyKey: string, externalRef?: string): Promise<{ consumed: boolean; balance: CreditBalance | undefined }>;
@@ -260,6 +261,21 @@ export class DatabaseStorage implements IStorage {
 
   async getCustomerAliases(customerId: string): Promise<CustomerAlias[]> {
     return db.select().from(customerAliases).where(eq(customerAliases.customerId, customerId));
+  }
+
+  async findCustomerByAlias(aliasType: string, aliasValue: string, shop?: string | null): Promise<Customer | undefined> {
+    const [existingAlias] = await db
+      .select()
+      .from(customerAliases)
+      .where(and(
+        eq(customerAliases.aliasType, aliasType),
+        eq(customerAliases.aliasValue, aliasValue),
+        shop === null || shop === undefined
+          ? isNull(customerAliases.shop)
+          : eq(customerAliases.shop, shop),
+      ));
+    if (!existingAlias) return undefined;
+    return this.getCustomer(existingAlias.customerId);
   }
 
   async resolveOrCreateCustomerAlias(alias: InsertCustomerAlias & { legacyUserId?: string }): Promise<Customer> {

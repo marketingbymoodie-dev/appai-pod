@@ -10,7 +10,7 @@ import { Switch } from "@/components/ui/switch";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, Share2, Upload, ExternalLink, CheckCircle, ChevronLeft, ChevronRight, ChevronDown, Info, Plus, Download } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
@@ -48,6 +48,12 @@ import {
   renderFlatMockupDataUrl,
 } from "@/components/designer/FlatProductPlacer/lib/flatMockupPreview";
 import { resolveFlatBlankColorId, resolveFlatPlacementGeometryKey } from "@/components/designer/FlatProductPlacer/lib/flatAssets";
+import { STOREFRONT_FREE_GENERATION_LIMIT, storefrontArtworksRemaining } from "@shared/storefront-credits";
+import {
+  isAllowedCentralAuthOrigin,
+  isStorefrontGoogleAuthMessage,
+} from "@shared/storefront-auth";
+import { buildCentralAppUrl } from "@/lib/storefrontAuth";
 import { hasExactVariantMapping, hasVariantMappingForColor } from "@shared/variantMapResolve";
 
 /** Printify mockup cache key — size affects variant resolution for apparel. */
@@ -1329,6 +1335,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [otpStep, setOtpStep] = useState<"email" | "code">("email");
   const [otpLoading, setOtpLoading] = useState(false);
   const [otpError, setOtpError] = useState<string | null>(null);
+  const [googleAuthEnabled, setGoogleAuthEnabled] = useState(false);
+  const [centralAppUrl, setCentralAppUrl] = useState<string | null>(null);
+  const [googleAuthLoading, setGoogleAuthLoading] = useState(false);
+  const googleAuthNonceRef = useRef<string | null>(null);
+  const googleAuthPopupRef = useRef<Window | null>(null);
   const [storefrontCustomerId, setStorefrontCustomerId] = useState<string | null>(() => {
     try { return localStorage.getItem('appai_customer_id') || null; } catch { return null; }
   });
@@ -1380,6 +1391,148 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       .catch((err) => console.warn('[EmbedDesign] identity bootstrap failed', err));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isStorefront, shopDomain, anonSessionId]);
+
+  const completeStorefrontLogin = useCallback((data: {
+    customerId: string;
+    identityToken?: string;
+    credits?: number;
+    freeGenerationsUsed?: number;
+    email?: string;
+    galleryLimit?: number;
+  }) => {
+    const newCustomerId = data.customerId;
+    const loginEmail = data.email || otpEmail.trim() || undefined;
+    setStorefrontCustomerId(newCustomerId);
+    if (data.identityToken) setStorefrontIdentityToken(data.identityToken);
+    setCustomer({
+      email: loginEmail,
+      id: newCustomerId,
+      credits: data.credits ?? 0,
+      freeGenerationsUsed: data.freeGenerationsUsed ?? 0,
+      isLoggedIn: true,
+    });
+    setGalleryLimit(data.galleryLimit || 10);
+    try {
+      localStorage.setItem('appai_customer_id', newCustomerId);
+      if (data.identityToken) localStorage.setItem('appai_identity_token', data.identityToken);
+      if (loginEmail) localStorage.setItem('appai_otp_email', loginEmail);
+      localStorage.setItem('appai_customer', JSON.stringify({
+        email: loginEmail,
+        id: newCustomerId,
+        credits: data.credits ?? 0,
+        freeGenerationsUsed: data.freeGenerationsUsed ?? 0,
+        isLoggedIn: true,
+      }));
+    } catch {}
+    setShowOtpLogin(false);
+    setOtpStep('email');
+    setOtpCode('');
+    setOtpError(null);
+    if (anonSessionId && shopDomain) {
+      safeFetch(`${API_BASE}/api/storefront/merge-session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: anonSessionId, customerId: newCustomerId, shop: shopDomain }),
+      }).catch(() => {});
+    }
+    if (shopDomain) {
+      setSavedDesignsLoading(true);
+      safeFetch(`${API_BASE}/api/storefront/customizer/my-designs?shop=${encodeURIComponent(shopDomain)}&customerId=${encodeURIComponent(newCustomerId)}`)
+        .then(r => r.json()).then(d => { if (d.designs) setSavedDesigns(d.designs); })
+        .catch(() => {}).finally(() => setSavedDesignsLoading(false));
+    }
+  }, [anonSessionId, shopDomain, otpEmail]);
+
+  useEffect(() => {
+    if (!isStorefront || !shopDomain) return;
+    safeFetch(`${API_BASE}/api/storefront/auth/config?shop=${encodeURIComponent(shopDomain)}`)
+      .then(r => r.json())
+      .then(data => {
+        setGoogleAuthEnabled(!!data.googleClientId);
+        setCentralAppUrl(typeof data.appUrl === "string" ? data.appUrl.replace(/\/$/, "") : buildCentralAppUrl(""));
+      })
+      .catch(() => {
+        setGoogleAuthEnabled(false);
+        setCentralAppUrl(buildCentralAppUrl(""));
+      });
+  }, [isStorefront, shopDomain]);
+
+  useEffect(() => {
+    if (!isStorefront) return;
+
+    const onMessage = (event: MessageEvent) => {
+      let trustedOrigin = false;
+      if (centralAppUrl) {
+        try {
+          trustedOrigin = event.origin === new URL(centralAppUrl).origin;
+        } catch {}
+      }
+      if (!trustedOrigin) trustedOrigin = isAllowedCentralAuthOrigin(event.origin);
+      if (!trustedOrigin) return;
+      if (!isStorefrontGoogleAuthMessage(event.data)) return;
+      if (!googleAuthNonceRef.current || event.data.nonce !== googleAuthNonceRef.current) return;
+
+      googleAuthNonceRef.current = null;
+      setGoogleAuthLoading(false);
+
+      if (event.data.ok && event.data.customerId) {
+        completeStorefrontLogin({
+          customerId: event.data.customerId,
+          identityToken: event.data.identityToken,
+          credits: event.data.credits,
+          freeGenerationsUsed: event.data.freeGenerationsUsed,
+          email: event.data.email,
+        });
+      } else {
+        setOtpError(event.data.error || "Google sign-in failed");
+      }
+    };
+
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [isStorefront, completeStorefrontLogin, centralAppUrl]);
+
+  const openGoogleAuthPopup = useCallback(() => {
+    if (!shopDomain) return;
+    const appUrl = (centralAppUrl || buildCentralAppUrl("")).replace(/\/$/, "");
+    if (!appUrl || !googleAuthEnabled) {
+      setOtpError("Google sign-in is not available right now.");
+      return;
+    }
+
+    const nonce = crypto.randomUUID();
+    googleAuthNonceRef.current = nonce;
+    setGoogleAuthLoading(true);
+    setOtpError(null);
+
+    const popupUrl = new URL(`${appUrl}/storefront/google-auth`);
+    popupUrl.searchParams.set("shop", shopDomain);
+    popupUrl.searchParams.set("openerOrigin", window.location.origin);
+    popupUrl.searchParams.set("nonce", nonce);
+
+    const popup = window.open(
+      popupUrl.toString(),
+      "appaiGoogleAuth",
+      "popup=yes,width=520,height=640",
+    );
+    googleAuthPopupRef.current = popup;
+
+    if (!popup) {
+      googleAuthNonceRef.current = null;
+      setGoogleAuthLoading(false);
+      setOtpError("Popup blocked. Allow popups for this site and try again.");
+      return;
+    }
+
+    const poll = window.setInterval(() => {
+      if (!googleAuthPopupRef.current?.closed) return;
+      window.clearInterval(poll);
+      if (googleAuthNonceRef.current) {
+        googleAuthNonceRef.current = null;
+        setGoogleAuthLoading(false);
+      }
+    }, 500);
+  }, [shopDomain, centralAppUrl, googleAuthEnabled]);
   const [savedDesigns, setSavedDesigns] = useState<Array<{id: string; artworkUrl: string; mockupUrls?: string[]; designState?: Record<string, any> | null; prompt: string; stylePreset?: string | null; size?: string | null; frameColor?: string | null; baseTitle: string | null; pageHandle: string | null; productTypeId: string | null; customerId?: string | null; createdAt: string}>>([]);
   const [showGalleryFullModal, setShowGalleryFullModal] = useState(false);
   const [savedDesignsLoading, setSavedDesignsLoading] = useState(false);
@@ -1392,6 +1545,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [couponSuccess, setCouponSuccess] = useState<string | null>(null);
   const [creditsPopoverOpen, setCreditsPopoverOpen] = useState(false);
   const [creditsPurchaseLoading, setCreditsPurchaseLoading] = useState(false);
+  const paidCredits = customer?.credits ?? 0;
+  const freeGenerationsUsedCount = customer?.freeGenerationsUsed ?? 0;
+  const artworksRemaining = storefrontArtworksRemaining({
+    freeGenerationsUsed: freeGenerationsUsedCount,
+    paidCredits,
+  });
+  const hasGenerationCapacity = artworksRemaining > 0;
+  const storefrontLoggedIn = customer?.isLoggedIn ?? !!storefrontCustomerId;
   const [activeTab, setActiveTab] = useState<"generate" | "import">("generate");
   const [isImporting, setIsImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
@@ -4217,7 +4378,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     const activePresetForCheck = filteredStylePresets.find(p => p.id === selectedPreset);
     if (!prompt.trim() && !activePresetForCheck?.descriptionOptional) return;
 
-    if ((isShopify || isStorefront) && customer && credits <= 0) {
+    if ((isShopify || isStorefront) && customer && !hasGenerationCapacity) {
       notifyInsufficientCredits();
       return;
     }
@@ -6447,8 +6608,18 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   }, [selectedSize, selectedFrameColor, shopifyVariants, isStorefront]);
 
   // Fetch saved designs when logged in
-  const isLoggedIn = customer?.isLoggedIn ?? !!storefrontCustomerId;
-  const credits = customer?.credits ?? 0;
+  const isLoggedIn = storefrontLoggedIn;
+  const credits = paidCredits;
+  const artworksRemainingLabel = (() => {
+    if (sessionLoading && !customer) {
+      return `${STOREFRONT_FREE_GENERATION_LIMIT} free artworks`;
+    }
+    if (artworksRemaining > 0) {
+      const noun = isLoggedIn ? 'artwork' : 'free artwork';
+      return `${artworksRemaining} ${noun}${artworksRemaining !== 1 ? 's' : ''} remaining`;
+    }
+    return '0 artworks remaining';
+  })();
   useEffect(() => {
     if (!isStorefront || creditsReturnHandledRef.current || !shopDomain) return;
     const params = new URLSearchParams(window.location.search);
@@ -6743,7 +6914,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         ) : (
           <Button
             onClick={() => {
-              if ((isShopify || isStorefront) && customer && credits <= 0) {
+              if ((isShopify || isStorefront) && customer && !hasGenerationCapacity) {
                 notifyInsufficientCredits();
                 return;
               }
@@ -6828,43 +6999,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           </div>
         ) : (
           (isShopify || isStorefront) && (
-            <p className="text-xs text-muted-foreground mt-1 flex items-center justify-center gap-1">
-              {(() => {
-                if (storefrontCustomerId && credits > 0) return `${credits} artwork${credits !== 1 ? 's' : ''} remaining`;
-                if (credits > 0) return `${credits} free artwork${credits !== 1 ? 's' : ''}`;
-                if (customer) return '0 artworks remaining';
-                return '10 free artworks';
-              })()}
-              <Popover open={creditsPopoverOpen} onOpenChange={setCreditsPopoverOpen}>
-                <PopoverTrigger asChild>
-                  <button type="button" className="inline-flex items-center" aria-label="Pricing info">
-                    <Info className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground transition-colors" />
-                  </button>
-                </PopoverTrigger>
-                <PopoverContent className="text-sm space-y-2 w-72" side="bottom" align="start">
-                  <p className="font-medium">Artwork Credits</p>
-                  <p className="text-muted-foreground">You get 10 free AI-generated artworks to try.</p>
-                  <p className="text-muted-foreground">After that, it&apos;s just $1 for 10 more credits.</p>
-                  <p className="text-muted-foreground">Credits are fully refunded when you complete a physical product purchase!</p>
-                  <Button
-                    type="button"
-                    size="sm"
-                    className="w-full"
-                    onClick={handleBuyMoreCredits}
-                    disabled={creditsPurchaseLoading}
-                  >
-                    {creditsPurchaseLoading ? (
-                      <>
-                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                        Opening Checkout...
-                      </>
-                    ) : (
-                      "More Credits"
-                    )}
-                  </Button>
-                </PopoverContent>
-              </Popover>
-            </p>
+            <div className="text-xs text-muted-foreground mt-1 flex items-center justify-center gap-1">
+              {artworksRemainingLabel}
+              <button
+                type="button"
+                className="inline-flex items-center"
+                aria-label="Pricing info"
+                onClick={() => setCreditsPopoverOpen(true)}
+              >
+                <Info className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground transition-colors" />
+              </button>
+            </div>
           )
         )}
       </div>
@@ -6873,6 +7018,32 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   return (
     <div className={`p-3 sm:p-4 ${isEmbedded || isStorefront ? "bg-transparent" : "bg-background min-h-screen"}`}>
+      <Dialog open={creditsPopoverOpen} onOpenChange={setCreditsPopoverOpen}>
+        <DialogContent className="text-sm space-y-3 sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Artwork Credits</DialogTitle>
+          </DialogHeader>
+          <p className="text-muted-foreground">You get {STOREFRONT_FREE_GENERATION_LIMIT} free AI-generated artworks to try.</p>
+          <p className="text-muted-foreground">After that, it&apos;s just $1 for 10 more credits.</p>
+          <p className="text-muted-foreground">Credits are fully refunded when you complete a physical product purchase!</p>
+          <Button
+            type="button"
+            size="sm"
+            className="w-full"
+            onClick={handleBuyMoreCredits}
+            disabled={creditsPurchaseLoading}
+          >
+            {creditsPurchaseLoading ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                Opening Checkout...
+              </>
+            ) : (
+              "More Credits"
+            )}
+          </Button>
+        </DialogContent>
+      </Dialog>
       {/* Guide box shimmer + title shimmer animations */}
       <style>{`
         /* Single graceful left-to-right shimmer sweep on guide boxes */
@@ -7055,17 +7226,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     data-testid="text-login-prompt"
                   >
                     <LogIn className="w-4 h-4" />
-                    Sign in to save designs
+                    Sign in or Create an Account to save designs
                   </button>
                 )}
 
-                {/* OTP Login — absolute overlay, doesn't push content */}
+                {/* Auth panel — absolute overlay, doesn't push content */}
                 {showOtpLogin && (
                   <div className="absolute left-0 top-full mt-2 z-50" style={{ maxWidth: '400px', width: '100%' }}>
                     <Card className="border-primary bg-background shadow-lg">
                       <CardContent className="py-4">
                         <div className="flex items-center justify-between mb-3">
-                          <h3 className="text-sm font-semibold">Sign in with Email</h3>
+                          <h3 className="text-sm font-semibold">Sign in or create account</h3>
                           <button
                             onClick={() => { setShowOtpLogin(false); setOtpStep('email'); setOtpError(null); setOtpCode(''); }}
                             className="text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-1"
@@ -7073,11 +7244,41 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             <X className="w-4 h-4" />
                           </button>
                         </div>
+                        <p className="text-xs text-muted-foreground mb-3">
+                          Save designs, track credits, and pick up where you left off. New here? We&apos;ll create your account automatically.
+                        </p>
                         {otpError && (
                           <p className="text-destructive text-xs mb-2">{otpError}</p>
                         )}
+                        {googleAuthEnabled && (
+                          <div className="space-y-3 mb-3">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="w-full"
+                              disabled={googleAuthLoading}
+                              onClick={openGoogleAuthPopup}
+                            >
+                              {googleAuthLoading ? (
+                                <>
+                                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                  Signing in with Google…
+                                </>
+                              ) : (
+                                "Continue with Google"
+                              )}
+                            </Button>
+                            <div className="flex items-center gap-2">
+                              <div className="h-px flex-1 bg-border" />
+                              <span className="text-xs text-muted-foreground">or</span>
+                              <div className="h-px flex-1 bg-border" />
+                            </div>
+                          </div>
+                        )}
                         {otpStep === 'email' ? (
-                          <div className="flex gap-2">
+                          <div className="space-y-2">
+                            <p className="text-xs text-muted-foreground">Continue with email</p>
+                            <div className="flex gap-2">
                             <input
                               type="email"
                               placeholder="Enter your email"
@@ -7128,6 +7329,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                               {otpLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Send Code'}
                             </Button>
                           </div>
+                          </div>
                         ) : (
                           <div className="space-y-2">
                             <p className="text-xs text-muted-foreground">Enter the 6-digit code sent to {otpEmail}</p>
@@ -7153,33 +7355,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                                       .then(r => r.json())
                                       .then(data => {
                                         if (data.ok) {
-                                          const newCustomerId = data.customerId;
-                                          setStorefrontCustomerId(newCustomerId);
-                                          if (data.identityToken) setStorefrontIdentityToken(data.identityToken);
-                                          setCustomer({ email: otpEmail.trim(), id: newCustomerId, credits: data.credits || 0, freeGenerationsUsed: data.freeGenerationsUsed ?? 0, isLoggedIn: true });
-                                          setGalleryLimit(data.galleryLimit || 10);
-                                          try {
-                                            localStorage.setItem('appai_customer_id', newCustomerId);
-                                            if (data.identityToken) localStorage.setItem('appai_identity_token', data.identityToken);
-                                            localStorage.setItem('appai_otp_email', otpEmail.trim());
-                                            localStorage.setItem('appai_customer', JSON.stringify({ email: otpEmail.trim(), id: newCustomerId, credits: data.credits || 0, freeGenerationsUsed: data.freeGenerationsUsed ?? 0, isLoggedIn: true }));
-                                          } catch {}
-                                          setShowOtpLogin(false);
-                                          setOtpStep('email');
-                                          setOtpCode('');
-                                          if (anonSessionId && shopDomain) {
-                                            safeFetch(`${API_BASE}/api/storefront/merge-session`, {
-                                              method: 'POST',
-                                              headers: { 'Content-Type': 'application/json' },
-                                              body: JSON.stringify({ sessionId: anonSessionId, customerId: newCustomerId, shop: shopDomain }),
-                                            }).catch(() => {});
-                                          }
-                                          if (shopDomain) {
-                                            setSavedDesignsLoading(true);
-                                            safeFetch(`${API_BASE}/api/storefront/customizer/my-designs?shop=${encodeURIComponent(shopDomain)}&customerId=${encodeURIComponent(newCustomerId)}`)
-                                              .then(r => r.json()).then(d => { if (d.designs) setSavedDesigns(d.designs); })
-                                              .catch(() => {}).finally(() => setSavedDesignsLoading(false));
-                                          }
+                                          completeStorefrontLogin({ ...data, email: otpEmail.trim() });
                                         } else {
                                           setOtpError(data.error || 'Invalid code');
                                         }
@@ -7203,33 +7379,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                                     .then(r => r.json())
                                     .then(data => {
                                       if (data.ok) {
-                                        const newCustomerId = data.customerId;
-                                        setStorefrontCustomerId(newCustomerId);
-                                        if (data.identityToken) setStorefrontIdentityToken(data.identityToken);
-                                        setCustomer({ email: otpEmail.trim(), id: newCustomerId, credits: data.credits || 0, freeGenerationsUsed: data.freeGenerationsUsed ?? 0, isLoggedIn: true });
-                                        setGalleryLimit(data.galleryLimit || 10);
-                                        try {
-                                          localStorage.setItem('appai_customer_id', newCustomerId);
-                                          if (data.identityToken) localStorage.setItem('appai_identity_token', data.identityToken);
-                                          localStorage.setItem('appai_otp_email', otpEmail.trim());
-                                          localStorage.setItem('appai_customer', JSON.stringify({ email: otpEmail.trim(), id: newCustomerId, credits: data.credits || 0, freeGenerationsUsed: data.freeGenerationsUsed ?? 0, isLoggedIn: true }));
-                                        } catch {}
-                                        setShowOtpLogin(false);
-                                        setOtpStep('email');
-                                        setOtpCode('');
-                                        if (anonSessionId && shopDomain) {
-                                          safeFetch(`${API_BASE}/api/storefront/merge-session`, {
-                                            method: 'POST',
-                                            headers: { 'Content-Type': 'application/json' },
-                                            body: JSON.stringify({ sessionId: anonSessionId, customerId: newCustomerId, shop: shopDomain }),
-                                          }).catch(() => {});
-                                        }
-                                        if (shopDomain) {
-                                          setSavedDesignsLoading(true);
-                                          safeFetch(`${API_BASE}/api/storefront/customizer/my-designs?shop=${encodeURIComponent(shopDomain)}&customerId=${encodeURIComponent(newCustomerId)}`)
-                                            .then(r => r.json()).then(d => { if (d.designs) setSavedDesigns(d.designs); })
-                                            .catch(() => {}).finally(() => setSavedDesignsLoading(false));
-                                        }
+                                        completeStorefrontLogin({ ...data, email: otpEmail.trim() });
                                       } else {
                                         setOtpError(data.error || 'Invalid code');
                                       }
@@ -7620,7 +7770,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     /* ── Generate state ── */
                     <Button
                       onClick={() => {
-                        if ((isShopify || isStorefront) && customer && credits <= 0) {
+                        if ((isShopify || isStorefront) && customer && !hasGenerationCapacity) {
                           notifyInsufficientCredits();
                           return;
                         }
@@ -7702,43 +7852,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     </div>
                   ) : (
                     (isShopify || isStorefront) && (
-                      <p className="text-xs text-muted-foreground mt-1 flex items-center justify-center gap-1">
-                        {(() => {
-                          if (storefrontCustomerId && credits > 0) return `${credits} artwork${credits !== 1 ? 's' : ''} remaining`;
-                          if (credits > 0) return `${credits} free artwork${credits !== 1 ? 's' : ''}`;
-                          if (customer) return '0 artworks remaining';
-                          return '10 free artworks';
-                        })()}
-                        <Popover open={creditsPopoverOpen} onOpenChange={setCreditsPopoverOpen}>
-                          <PopoverTrigger asChild>
-                            <button type="button" className="inline-flex items-center" aria-label="Pricing info">
-                              <Info className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground transition-colors" />
-                            </button>
-                          </PopoverTrigger>
-                          <PopoverContent className="text-sm space-y-2 w-72" side="bottom" align="start">
-                            <p className="font-medium">Artwork Credits</p>
-                            <p className="text-muted-foreground">You get 10 free AI-generated artworks to try.</p>
-                            <p className="text-muted-foreground">After that, it&apos;s just $1 for 10 more credits.</p>
-                            <p className="text-muted-foreground">Credits are fully refunded when you complete a physical product purchase!</p>
-                            <Button
-                              type="button"
-                              size="sm"
-                              className="w-full"
-                              onClick={handleBuyMoreCredits}
-                              disabled={creditsPurchaseLoading}
-                            >
-                              {creditsPurchaseLoading ? (
-                                <>
-                                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                                  Opening Checkout...
-                                </>
-                              ) : (
-                                "More Credits"
-                              )}
-                            </Button>
-                          </PopoverContent>
-                        </Popover>
-                      </p>
+                      <div className="text-xs text-muted-foreground mt-1 flex items-center justify-center gap-1">
+                        {artworksRemainingLabel}
+                        <button
+                          type="button"
+                          className="inline-flex items-center"
+                          aria-label="Pricing info"
+                          onClick={() => setCreditsPopoverOpen(true)}
+                        >
+                          <Info className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground transition-colors" />
+                        </button>
+                      </div>
                     )
                   )}
                 </div>

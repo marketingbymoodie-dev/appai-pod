@@ -11,6 +11,7 @@ import DesignPage from "@/pages/design";
 import DesignsPage from "@/pages/designs";
 import OrdersPage from "@/pages/orders";
 import EmbedDesign from "@/pages/embed-design";
+import StorefrontGoogleAuthPage from "@/pages/storefront-google-auth";
 import TestSizeChart from "@/pages/test-size-chart";
 import ZipHoodieAopCalibrationPage from "@/pages/mockup-calibration/zip-hoodie-aop";
 import AopCalibrationMapperPage from "@/pages/aop-calibration-mapper";
@@ -57,6 +58,7 @@ function AppRouter() {
 
       {/* Storefront designer — dedicated path, never initializes App Bridge */}
       <Route path="/s/designer" component={EmbedDesign} />
+      <Route path="/storefront/google-auth" component={StorefrontGoogleAuthPage} />
 
       {/* Admin */}
       <Route path="/admin/settings" component={AdminSettings} />

@@ -45,6 +45,8 @@ import {
   serializePrintifyCostsCache,
 } from "@shared/printifyProductionCosts";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
+import { getGoogleOAuthClientId, verifyGoogleIdToken } from "./storefront-google-auth";
+import { STOREFRONT_FREE_GENERATION_LIMIT } from "@shared/storefront-credits";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
 import { detectPrintifyAllOverPrint } from "./printify-aop-detection";
 import {
@@ -9005,7 +9007,105 @@ ${textEdgeRestrictions}
     }
   });
 
-  // ==================== STOREFRONT OTP AUTH ====================
+  // ==================== STOREFRONT AUTH (Google + OTP) ====================
+
+  app.get("/api/storefront/auth/config", async (req: Request, res: Response) => {
+    try {
+      const { shop } = req.query;
+      if (!shop || typeof shop !== "string") {
+        return res.status(400).json({ error: "Shop domain required" });
+      }
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
+        return res.status(400).json({ error: "Invalid shop domain" });
+      }
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+      return res.json({
+        googleClientId: getGoogleOAuthClientId(),
+        freeGenerationLimit: STOREFRONT_FREE_GENERATION_LIMIT,
+        appUrl: (process.env.PUBLIC_APP_URL || process.env.APP_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/, ""),
+      });
+    } catch (error: any) {
+      console.error("[Auth Config] error:", error);
+      return res.status(500).json({ error: "Failed to load auth config" });
+    }
+  });
+
+  app.post("/api/storefront/auth/google", async (req: Request, res: Response) => {
+    try {
+      const { credential, shop } = req.body;
+      if (!credential || !shop) {
+        return res.status(400).json({ error: "Google credential and shop are required" });
+      }
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
+        return res.status(400).json({ error: "Invalid shop domain" });
+      }
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+      if (!getGoogleOAuthClientId()) {
+        return res.status(503).json({ error: "Google sign-in is not configured" });
+      }
+
+      const payload = await verifyGoogleIdToken(String(credential));
+      if (!payload) {
+        return res.status(401).json({ error: "Invalid Google sign-in. Please try again." });
+      }
+
+      const googleSub = payload.sub;
+      const emailNorm = payload.email?.toLowerCase().trim();
+
+      let customer = await storage.findCustomerByAlias("google", googleSub, shop);
+      if (!customer && emailNorm) {
+        customer = await storage.findCustomerByAlias("otp_email", emailNorm, shop);
+      }
+      if (!customer) {
+        customer = await storage.resolveOrCreateCustomerAlias({
+          aliasType: "google",
+          aliasValue: googleSub,
+          shop,
+          legacyUserId: `google:${shop}:${googleSub}`,
+        });
+      } else {
+        await storage.addCustomerAlias(customer.id, {
+          aliasType: "google",
+          aliasValue: googleSub,
+          shop,
+        });
+      }
+
+      if (emailNorm) {
+        await storage.addCustomerAlias(customer.id, {
+          aliasType: "otp_email",
+          aliasValue: emailNorm,
+          shop,
+        });
+        await pool.query(`UPDATE customers SET email = $1 WHERE id = $2`, [emailNorm, customer.id]);
+      }
+
+      await storage.ensureCustomerBalance(customer.id);
+      const balance = await storage.getCreditBalance(customer.id);
+      console.log(`[Google Auth] Signed in ${emailNorm || googleSub} for shop ${shop}, customer ${customer.id}`);
+
+      return res.json({
+        ok: true,
+        customerId: customer.id,
+        identityToken: signStorefrontIdentityToken(customer.id, shop),
+        credits: balance?.credits ?? customer.credits,
+        freeGenerationsUsed: balance?.freeGenerationsUsed ?? customer.freeGenerationsUsed,
+        discountEntitlementCents: balance?.discountEntitlementCents ?? 0,
+        email: emailNorm || undefined,
+        name: payload.name,
+      });
+    } catch (error: any) {
+      console.error("[Google Auth] error:", error);
+      return res.status(500).json({ error: "Google sign-in failed" });
+    }
+  });
+
   // Email-based OTP login for storefront customers.
   // Uses Resend to send 6-digit codes; codes expire after 10 minutes.
 
@@ -9032,7 +9132,7 @@ ${textEdgeRestrictions}
       if (!customer) {
         customer = await storage.createCustomer({
           userId,
-          credits: 5,
+          credits: 0,
           freeGenerationsUsed: 0,
           totalGenerations: 0,
           totalSpent: "0.00",
