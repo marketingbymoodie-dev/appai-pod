@@ -17284,7 +17284,7 @@ ${textEdgeRestrictions}
       baseVariantTitle: page.baseVariantTitle ?? null,
       baseProductPrice: page.baseProductPrice ?? null,
       productTypeId: page.productTypeId ?? null,
-      appUrl: process.env.APP_URL || "https://appai-pod-production.up.railway.app",
+      appUrl: (process.env.PUBLIC_APP_URL || process.env.APP_URL || "https://appai-pod-production.up.railway.app").replace(/\/$/, ""),
       designerConfig,
       variants,
       stylePresets,

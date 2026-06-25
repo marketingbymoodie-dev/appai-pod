@@ -690,11 +690,22 @@
       try { return event.source === iframe.contentWindow; } catch(e) { return false; }
     }
 
+    function isCentralAuthOrigin(origin) {
+      if (!origin || origin === 'null') return false;
+      try {
+        var host = new URL(origin).hostname;
+        if (host.endsWith('.railway.app')) return true;
+        if (host === 'aiartstudio.app' || host.endsWith('.aiartstudio.app')) return true;
+        if (appOrigin && origin === appOrigin) return true;
+        return false;
+      } catch (e) { return false; }
+    }
+
     function isAllowedOrigin(origin) {
       if (!origin || origin === 'null') return false;
       if (ALLOWED_ORIGINS.indexOf(origin) !== -1) return true;
-      // Also allow any *.railway.app as staging fallback
-      try { return new URL(origin).hostname.endsWith('.railway.app'); } catch(e) { return false; }
+      if (isCentralAuthOrigin(origin)) return true;
+      return false;
     }
 
     function isTrustedMessage(event) {
