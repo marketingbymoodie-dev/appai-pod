@@ -1,4 +1,13 @@
-/** postMessage type for central Google auth popup → customizer iframe. */
+/** Iframe → theme parent: open Google auth popup from top-level window. */
+export const STOREFRONT_OPEN_GOOGLE_AUTH_MESSAGE = "APPAI_OPEN_GOOGLE_AUTH";
+
+/** Parent → iframe: popup was blocked or failed to open. */
+export const STOREFRONT_GOOGLE_AUTH_FAILED_MESSAGE = "APPAI_OPEN_GOOGLE_AUTH_FAILED";
+
+/** Parent → iframe: user closed popup without completing sign-in. */
+export const STOREFRONT_GOOGLE_AUTH_POPUP_CLOSED_MESSAGE = "APPAI_GOOGLE_AUTH_POPUP_CLOSED";
+
+/** postMessage type for central Google auth popup → store page → iframe. */
 export const STOREFRONT_GOOGLE_AUTH_MESSAGE = "APPAI_STOREFRONT_GOOGLE_AUTH";
 
 export type StorefrontGoogleAuthMessage = {

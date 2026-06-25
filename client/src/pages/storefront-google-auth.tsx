@@ -43,12 +43,6 @@ export default function StorefrontGoogleAuthPage() {
       setError("Invalid return origin.");
       return;
     }
-    if (!window.opener) {
-      setStatus("error");
-      setError("This page must be opened from the design customizer.");
-      return;
-    }
-
     let cancelled = false;
 
     const finish = (payload: {
@@ -60,8 +54,13 @@ export default function StorefrontGoogleAuthPage() {
       email?: string;
       error?: string;
     }) => {
+      if (!window.opener) {
+        setStatus("error");
+        setError("Sign-in could not return to the customizer. Close this window and try again.");
+        return;
+      }
       try {
-        window.opener?.postMessage(
+        window.opener.postMessage(
           {
             type: STOREFRONT_GOOGLE_AUTH_MESSAGE,
             nonce,
@@ -71,6 +70,9 @@ export default function StorefrontGoogleAuthPage() {
         );
       } catch (err) {
         console.warn("[Google Auth Popup] postMessage failed", err);
+        setStatus("error");
+        setError("Sign-in succeeded but could not return to the customizer.");
+        return;
       }
       setStatus(payload.ok ? "done" : "error");
       if (!payload.ok) setError(payload.error || "Google sign-in failed");

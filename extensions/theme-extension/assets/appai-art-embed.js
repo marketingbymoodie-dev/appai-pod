@@ -556,7 +556,7 @@
     // Use App Proxy path so the iframe loads on the Shopify domain (first-party, no cross-origin fetch issues).
     // Shopify proxies /apps/appai/* → Railway /api/proxy/*, so the iframe and its API calls are same-origin.
     iframe.src = `${window.location.origin}/apps/appai/s/designer?${params.toString()}`;
-    iframe.allow = 'clipboard-write';
+    iframe.allow = 'clipboard-write; popups';
     iframe.title = 'AI Art Design Studio';
     iframe.style.cssText = 'width: 100%; height: 100%; border: none; overflow: hidden; display: block;';
     iframe.setAttribute('scrolling', mobileNativeScroll ? 'yes' : 'no');
@@ -664,6 +664,8 @@
 
     // Fling canceller: replaced each time a new fling starts so old ones self-stop.
     var stopFling = function() {};
+    var googleAuthPopupRef = null;
+    var googleAuthPopupPoll = null;
 
     // --- Compute iframe's effective origin ---
     // In App Proxy mode iframe.src is relative (/apps/appai/s/designer?...),
@@ -1024,6 +1026,57 @@
       // Trust gate
       if (!isTrustedMessage(event)) {
         if (isOurs) console.warn(B, 'BLOCKED untrusted:', data.type, 'origin:', event.origin);
+        return;
+      }
+
+      // ===== GOOGLE AUTH POPUP (iframe → parent opens popup; popup → parent → iframe) =====
+      if (data.type === 'APPAI_OPEN_GOOGLE_AUTH' && isFromOurIframe(event)) {
+        var authUrl = data.url;
+        if (!authUrl) return;
+        try {
+          if (googleAuthPopupPoll) { clearInterval(googleAuthPopupPoll); googleAuthPopupPoll = null; }
+          googleAuthPopupRef = window.open(authUrl, 'appaiGoogleAuth', 'popup=yes,width=520,height=640');
+          if (!googleAuthPopupRef) {
+            replyToIframe(event, {
+              type: 'APPAI_OPEN_GOOGLE_AUTH_FAILED',
+              nonce: data.nonce,
+              error: 'Popup blocked. Allow popups for this site and try again.',
+            });
+            return;
+          }
+          googleAuthPopupPoll = setInterval(function() {
+            if (!googleAuthPopupRef || !googleAuthPopupRef.closed) return;
+            clearInterval(googleAuthPopupPoll);
+            googleAuthPopupPoll = null;
+            googleAuthPopupRef = null;
+            replyToIframe(event, {
+              type: 'APPAI_GOOGLE_AUTH_POPUP_CLOSED',
+              nonce: data.nonce,
+            });
+          }, 500);
+        } catch (e) {
+          replyToIframe(event, {
+            type: 'APPAI_OPEN_GOOGLE_AUTH_FAILED',
+            nonce: data.nonce,
+            error: 'Could not open Google sign-in window.',
+          });
+        }
+        return;
+      }
+
+      if (data.type === 'APPAI_STOREFRONT_GOOGLE_AUTH') {
+        if (!isAllowedOrigin(event.origin)) {
+          console.warn(B, 'BLOCKED GOOGLE_AUTH forward from origin:', event.origin);
+          return;
+        }
+        try {
+          iframe.contentWindow.postMessage(data, iframeOrigin || '*');
+          console.log(B, 'Forwarded GOOGLE_AUTH result to iframe');
+          if (googleAuthPopupPoll) { clearInterval(googleAuthPopupPoll); googleAuthPopupPoll = null; }
+          googleAuthPopupRef = null;
+        } catch (e) {
+          console.warn(B, 'Failed to forward GOOGLE_AUTH to iframe:', e.message);
+        }
         return;
       }
 

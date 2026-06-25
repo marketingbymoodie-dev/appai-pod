@@ -52,6 +52,9 @@ import { STOREFRONT_FREE_GENERATION_LIMIT, storefrontArtworksRemaining } from "@
 import {
   isAllowedCentralAuthOrigin,
   isStorefrontGoogleAuthMessage,
+  STOREFRONT_GOOGLE_AUTH_FAILED_MESSAGE,
+  STOREFRONT_GOOGLE_AUTH_POPUP_CLOSED_MESSAGE,
+  STOREFRONT_OPEN_GOOGLE_AUTH_MESSAGE,
 } from "@shared/storefront-auth";
 import { buildCentralAppUrl } from "@/lib/storefrontAuth";
 import { hasExactVariantMapping, hasVariantMappingForColor } from "@shared/variantMapResolve";
@@ -1461,6 +1464,22 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (!isStorefront) return;
 
     const onMessage = (event: MessageEvent) => {
+      if (event.data?.type === STOREFRONT_GOOGLE_AUTH_FAILED_MESSAGE) {
+        if (event.origin !== window.location.origin) return;
+        if (event.data.nonce && event.data.nonce !== googleAuthNonceRef.current) return;
+        googleAuthNonceRef.current = null;
+        setGoogleAuthLoading(false);
+        setOtpError(event.data.error || "Popup blocked. Allow popups for this site and try again.");
+        return;
+      }
+      if (event.data?.type === STOREFRONT_GOOGLE_AUTH_POPUP_CLOSED_MESSAGE) {
+        if (event.origin !== window.location.origin) return;
+        if (event.data.nonce && event.data.nonce !== googleAuthNonceRef.current) return;
+        googleAuthNonceRef.current = null;
+        setGoogleAuthLoading(false);
+        return;
+      }
+
       let trustedOrigin = false;
       if (centralAppUrl) {
         try {
@@ -1468,6 +1487,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         } catch {}
       }
       if (!trustedOrigin) trustedOrigin = isAllowedCentralAuthOrigin(event.origin);
+      if (!trustedOrigin && event.origin === window.location.origin) trustedOrigin = true;
       if (!trustedOrigin) return;
       if (!isStorefrontGoogleAuthMessage(event.data)) return;
       if (!googleAuthNonceRef.current || event.data.nonce !== googleAuthNonceRef.current) return;
@@ -1507,14 +1527,38 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
     const popupUrl = new URL(`${appUrl}/storefront/google-auth`);
     popupUrl.searchParams.set("shop", shopDomain);
-    popupUrl.searchParams.set("openerOrigin", window.location.origin);
+    // Popup posts back to the storefront page (parent), which forwards into the iframe.
+    const returnOrigin = (() => {
+      try {
+        if (window.parent !== window) return window.location.origin;
+      } catch {}
+      return window.location.origin;
+    })();
+    popupUrl.searchParams.set("openerOrigin", returnOrigin);
     popupUrl.searchParams.set("nonce", nonce);
 
-    const popup = window.open(
-      popupUrl.toString(),
-      "appaiGoogleAuth",
-      "popup=yes,width=520,height=640",
-    );
+    const url = popupUrl.toString();
+    const inIframe = (() => {
+      try {
+        return window.parent !== window;
+      } catch {
+        return true;
+      }
+    })();
+
+    if (inIframe) {
+      try {
+        window.parent.postMessage(
+          { type: STOREFRONT_OPEN_GOOGLE_AUTH_MESSAGE, url, nonce },
+          returnOrigin,
+        );
+        return;
+      } catch {
+        // Fall through to direct open when parent bridge is unavailable.
+      }
+    }
+
+    const popup = window.open(url, "appaiGoogleAuth", "popup=yes,width=520,height=640");
     googleAuthPopupRef.current = popup;
 
     if (!popup) {
