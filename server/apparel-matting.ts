@@ -88,6 +88,18 @@ const WHITE_BG_PATTERNS: RegExp[] = [
   /\bwhite\s+mat\b/gi,
 ];
 
+/** True when generation should use apparel chroma matting (includes AOP / all-over-print). */
+export function resolveIsApparelGeneration(
+  productType?: { designerType?: string | null; isAllOverPrint?: boolean | null } | null,
+  styleCategory?: string | null,
+): boolean {
+  const designerType = (productType?.designerType || "").toLowerCase();
+  if (designerType === "apparel" || designerType === "all-over-print") return true;
+  if (productType?.isAllOverPrint) return true;
+  if ((styleCategory || "").toLowerCase() === "apparel") return true;
+  return false;
+}
+
 /** Canonical hot-pink chroma prefixes keyed by lowercased style name. */
 export const APPAREL_CHROMA_STYLE_BY_NAME: Record<string, string> = {
   "free 4 all": "",

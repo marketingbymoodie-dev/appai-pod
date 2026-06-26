@@ -4,6 +4,7 @@ import {
   processApparelMotif,
   trimTransparentBounds,
   resolveApparelStylePrefix,
+  resolveIsApparelGeneration,
   APPAREL_CHROMA_STYLE_BY_NAME,
   processApparelMotifToDataUrl,
 } from "./apparel-matting";
@@ -2304,12 +2305,8 @@ export async function registerRoutes(
       
       // Check if this is an apparel product - either from productType or from style preset category
       // This covers both hardcoded and merchant-created styles via styleCategory
-      let isApparel = productType?.designerType === "apparel";
-      
-      // Also detect apparel from style category (works for both DB and hardcoded styles)
-      if (!isApparel && styleCategory === "apparel") {
-        isApparel = true;
-      }
+      // AOP zip hoodies use designerType "all-over-print" — still need chroma matting.
+      let isApparel = resolveIsApparelGeneration(productType, styleCategory);
 
       if (isApparel) {
         stylePromptPrefix = resolveApparelStylePrefix(styleName, stylePromptPrefix);
@@ -3103,8 +3100,7 @@ console.log("[shopify/session] installation ok", {
         productType = await storage.getProductType(parseInt(productTypeId));
       }
 
-      const embedIsApparelEarly =
-        productType?.designerType === "apparel" || embedStyleCategory === "apparel";
+      const embedIsApparelEarly = resolveIsApparelGeneration(productType, embedStyleCategory);
       if (embedIsApparelEarly) {
         stylePromptPrefix = resolveApparelStylePrefix(styleName, stylePromptPrefix);
       }
@@ -3273,10 +3269,7 @@ ${textEdgeRestrictions}
       const embedCustomerImageUrl: string | null = embedCustomerImageUrls[0] || null;
 
       // Check if this is an apparel product (covers both DB and hardcoded styles)
-      let isApparel = productType?.designerType === "apparel";
-      if (!isApparel && embedStyleCategory === "apparel") {
-        isApparel = true;
-      }
+      let isApparel = resolveIsApparelGeneration(productType, embedStyleCategory);
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);
       const embedImageInputUrls: string[] = [];
@@ -7122,16 +7115,18 @@ ${textEdgeRestrictions}
       }
 
       // Determine apparel status early — affects both prompt and dimensions
-      let isApparel = productType?.designerType === "apparel";
-      if (!isApparel && sfStyleCategory === "apparel") {
-        isApparel = true;
-      }
+      let isApparel = resolveIsApparelGeneration(productType, sfStyleCategory);
 
       if (isApparel) {
         stylePromptPrefix = resolveApparelStylePrefix(styleName, stylePromptPrefix);
       }
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);
+      console.log(
+        P,
+        reqId,
+        `matting flags isApparel=${isApparel} designerType=${productType?.designerType ?? "none"} isAOP=${isAllOverPrint} styleCat=${sfStyleCategory}`,
+      );
       if (sizeConfig && isApparel && !isAllOverPrint) {
         const normalized = resolveGenerationAspectRatio(sizeConfig.aspectRatio, { isApparel, isAllOverPrint });
         if (normalized !== sizeConfig.aspectRatio) {

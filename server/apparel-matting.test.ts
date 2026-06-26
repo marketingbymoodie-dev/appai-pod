@@ -7,6 +7,7 @@ import {
   cleanupFlatGraphicAlpha,
   removeChromaKeyBackground,
   resolveApparelStylePrefix,
+  resolveIsApparelGeneration,
   sanitizeApparelStylePrefix,
 } from "./apparel-matting";
 
@@ -37,6 +38,27 @@ async function alphaAt(buffer: Buffer, x: number, y: number): Promise<number> {
   const idx = (y * info.width + x) * info.channels;
   return data[idx + 3];
 }
+
+describe("resolveIsApparelGeneration", () => {
+  it("treats all-over-print designerType as apparel for matting", () => {
+    expect(
+      resolveIsApparelGeneration(
+        { designerType: "all-over-print", isAllOverPrint: true },
+        "all",
+      ),
+    ).toBe(true);
+  });
+
+  it("treats isAllOverPrint flag as apparel even without designerType", () => {
+    expect(resolveIsApparelGeneration({ designerType: "generic", isAllOverPrint: true }, "all")).toBe(
+      true,
+    );
+  });
+
+  it("falls back to style category apparel", () => {
+    expect(resolveIsApparelGeneration({ designerType: "generic" }, "apparel")).toBe(true);
+  });
+});
 
 describe("sanitizeApparelStylePrefix", () => {
   it("replaces white background language with hot pink chroma", () => {
