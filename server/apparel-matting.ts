@@ -110,11 +110,11 @@ export const APPAREL_CHROMA_STYLE_BY_NAME: Record<string, string> = {
   quotes:
     "T-shirt graphic, stylish quote typography, expressive lettering, flat vibrant colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, creative typographic layout. Create a quote design of",
   "pet portraits":
-    "T-shirt graphic, illustrated pet portrait, detailed character illustration, flat vibrant colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, clean illustrated style. Create a pet portrait of",
+    "T-shirt graphic, illustrated pet portrait, detailed character illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (avoid hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, clean illustrated style. Create a pet portrait of",
   "centered graphic":
-    "T-shirt graphic, centered flat vector illustration, bold clean shapes, flat vibrant colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of",
+    "T-shirt graphic, centered flat vector illustration, bold clean shapes, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (avoid hot pink/magenta in the design), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of",
   "illustrated motif":
-    "T-shirt graphic, illustrated character motif, detailed illustration, flat vibrant colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of",
+    "T-shirt graphic, illustrated character motif, detailed illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (avoid hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of",
 };
 
 /**
@@ -242,10 +242,10 @@ export function isChromaBackgroundColor(
 }
 
 /**
- * Flood-fill near-white/grey mat pixels connected to any image border.
- * Uses source RGB so interior subject whites disconnected from edges are kept.
+ * Flood-fill near-white/grey mat pixels reachable from image borders or keyed background.
+ * Interior subject whites (teeth, sclera) surrounded by colored pixels are preserved.
  */
-function applyBorderFloodFillLightMat(
+function applyFloodFillLightMatFromBackground(
   pixels: Uint8Array,
   source: Uint8Array,
   width: number,
@@ -258,12 +258,12 @@ function applyBorderFloodFillLightMat(
   const queue: number[] = [];
   let removed = 0;
 
-  const trySeed = (x: number, y: number) => {
-    const p = y * width + x;
+  const seedTransparentOrBorderMat = (p: number) => {
     if (visited[p]) return;
     const idx = p * channels;
     if (pixels[idx + 3] === 0) {
       visited[p] = 1;
+      queue.push(p);
       return;
     }
     if (!isMatColor(source[idx], source[idx + 1], source[idx + 2], thresholds)) return;
@@ -274,12 +274,20 @@ function applyBorderFloodFillLightMat(
   };
 
   for (let x = 0; x < width; x++) {
-    trySeed(x, 0);
-    trySeed(x, height - 1);
+    seedTransparentOrBorderMat(x);
+    seedTransparentOrBorderMat((height - 1) * width + x);
   }
   for (let y = 0; y < height; y++) {
-    trySeed(0, y);
-    trySeed(width - 1, y);
+    seedTransparentOrBorderMat(y * width);
+    seedTransparentOrBorderMat(y * width + width - 1);
+  }
+
+  for (let p = 0; p < total; p++) {
+    if (visited[p]) continue;
+    const idx = p * channels;
+    if (pixels[idx + 3] !== 0) continue;
+    visited[p] = 1;
+    queue.push(p);
   }
 
   while (queue.length > 0) {
@@ -298,9 +306,13 @@ function applyBorderFloodFillLightMat(
       const np = ny * width + nx;
       if (visited[np]) continue;
       const idx = np * channels;
-      visited[np] = 1;
-      if (pixels[idx + 3] === 0) continue;
+      if (pixels[idx + 3] === 0) {
+        visited[np] = 1;
+        queue.push(np);
+        continue;
+      }
       if (!isMatColor(source[idx], source[idx + 1], source[idx + 2], thresholds)) continue;
+      visited[np] = 1;
       pixels[idx + 3] = 0;
       removed++;
       queue.push(np);
@@ -388,7 +400,7 @@ export async function parseRemoveBgResult(removeBgResult: RemoveBgResult): Promi
 }
 
 /**
- * Enhanced connectivity-independent chroma keying (pink → corner → white/grey mat → border flood).
+ * Chroma keying (pink → corner → connected white/grey mat → chroma sweep).
  */
 export async function removeChromaKeyBackground(
   buffer: Buffer,
@@ -464,26 +476,11 @@ export async function removeChromaKeyBackground(
   const cornerRemovedPct = (cornerRemoved / total) * 100;
   console.log(`[Chroma Key] Corner pass (rgb ${avgR},${avgG},${avgB}): ${cornerRemovedPct.toFixed(1)}%`);
 
-  // Pass C/D: global near-white and light-grey mat removal
+  // Pass C: connectivity-only white/grey mat removal (border + keyed background)
   let whiteKeyRemoved = 0;
-  if (allowWhiteKey) {
-    for (let i = 0; i < pixels.length; i += channels) {
-      if (pixels[i + 3] === 0) continue;
-      const r = pixels[i];
-      const g = pixels[i + 1];
-      const b = pixels[i + 2];
-      if (isMatColor(r, g, b, whiteThresholds)) {
-        pixels[i + 3] = 0;
-        whiteKeyRemoved++;
-      }
-    }
-    console.log(`[Chroma Key] White/grey mat pass: ${((whiteKeyRemoved / total) * 100).toFixed(1)}%`);
-  }
-
-  // Pass E: border-connected flood fill for white/grey mats
   let borderFloodRemoved = 0;
   if (borderFloodFill && allowWhiteKey) {
-    borderFloodRemoved = applyBorderFloodFillLightMat(
+    borderFloodRemoved = applyFloodFillLightMatFromBackground(
       pixels,
       source,
       width,
@@ -491,8 +488,9 @@ export async function removeChromaKeyBackground(
       channels,
       whiteThresholds,
     );
+    whiteKeyRemoved = borderFloodRemoved;
     console.log(
-      `[Chroma Key] Border flood mat pass: ${((borderFloodRemoved / total) * 100).toFixed(1)}%`,
+      `[Chroma Key] Connected white/grey mat pass: ${((whiteKeyRemoved / total) * 100).toFixed(1)}%`,
     );
   }
 

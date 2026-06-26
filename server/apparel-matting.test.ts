@@ -102,7 +102,7 @@ describe("removeChromaKeyBackground", () => {
     expect(await alphaAt(buffer, 32, 32)).toBeGreaterThan(200);
   });
 
-  it("removes white mat on pink canvas (pass C)", async () => {
+  it("removes white mat on pink canvas via connected flood", async () => {
     const src = await rgbaBuffer(80, 80, (x, y, row, o) => {
       const inWhiteMat = x >= 20 && x <= 60 && y >= 20 && y <= 60;
       const inArt = (x - 40) ** 2 + (y - 40) ** 2 <= 8 ** 2;
@@ -125,6 +125,58 @@ describe("removeChromaKeyBackground", () => {
     expect(await alphaAt(buffer, 25, 25)).toBe(0);
     expect(await alphaAt(buffer, 40, 40)).toBeGreaterThan(200);
     expect(await alphaAt(buffer, 2, 2)).toBe(0);
+  });
+
+  it("preserves internal white teeth and eyes on magenta canvas", async () => {
+    const src = await rgbaBuffer(100, 100, (x, y, row, o) => {
+      const inFace = (x - 50) ** 2 + (y - 50) ** 2 <= 22 ** 2;
+      const inTeeth = y >= 58 && y <= 62 && x >= 42 && x <= 58;
+      const inLeftEyeWhite = (x - 42) ** 2 + (y - 42) ** 2 <= 3 ** 2;
+      const inRightEyeWhite = (x - 58) ** 2 + (y - 42) ** 2 <= 3 ** 2;
+      if (inTeeth || inLeftEyeWhite || inRightEyeWhite) {
+        row[o] = 255;
+        row[o + 1] = 255;
+        row[o + 2] = 255;
+      } else if (inFace) {
+        row[o] = 200;
+        row[o + 1] = 40;
+        row[o + 2] = 30;
+      } else {
+        row[o] = CHROMA_KEY.r;
+        row[o + 1] = CHROMA_KEY.g;
+        row[o + 2] = CHROMA_KEY.b;
+      }
+    });
+
+    const { buffer } = await removeChromaKeyBackground(src, { allowWhiteKey: true });
+    expect(await alphaAt(buffer, 5, 5)).toBe(0);
+    expect(await alphaAt(buffer, 50, 60)).toBeGreaterThan(200);
+    expect(await alphaAt(buffer, 42, 42)).toBeGreaterThan(200);
+    expect(await alphaAt(buffer, 58, 42)).toBeGreaterThan(200);
+  });
+
+  it("processApparelMotif preserves internal whites after cleanup", async () => {
+    const src = await rgbaBuffer(100, 100, (x, y, row, o) => {
+      const inFace = (x - 50) ** 2 + (y - 50) ** 2 <= 22 ** 2;
+      const inTeeth = y >= 58 && y <= 62 && x >= 42 && x <= 58;
+      if (inTeeth) {
+        row[o] = 255;
+        row[o + 1] = 255;
+        row[o + 2] = 255;
+      } else if (inFace) {
+        row[o] = 180;
+        row[o + 1] = 30;
+        row[o + 2] = 40;
+      } else {
+        row[o] = CHROMA_KEY.r;
+        row[o + 1] = CHROMA_KEY.g;
+        row[o + 2] = CHROMA_KEY.b;
+      }
+    });
+
+    const result = await processApparelMotif(src, { useMlFallback: false, allowWhiteKey: true });
+    expect(await alphaAt(result.buffer, 50, 60)).toBeGreaterThan(200);
+    expect(await alphaAt(result.buffer, 10, 10)).toBe(0);
   });
 
   it("keys enclosed pink pocket inside subject", async () => {

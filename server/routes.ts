@@ -574,7 +574,7 @@ function buildApparelChromaSizingRequirements(designColors: string): string {
 MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
 1. ISOLATED DESIGN: Create a SINGLE, centered graphic design that is ISOLATED from any background scenery.
 2. SOLID HOT PINK (#FF00FF) BACKGROUND: The ENTIRE background MUST be a flat, uniform hot pink (#FF00FF) color. Every pixel that is not part of the design must be exactly #FF00FF. DO NOT create scenic backgrounds, landscapes, or detailed environments.
-3. DESIGN COLORS: Use ${designColors} The design MUST NOT contain any hot pink or magenta (#FF00FF) pixels — this color is reserved exclusively for the background.
+3. DESIGN COLORS: Use ${designColors} White may appear inside the subject (teeth, eyes, highlights) but must NOT be used as a background mat. The design MUST NOT contain hot pink or magenta (#FF00FF) pixels — this color is reserved exclusively for the background.
 4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean #FF00FF space around it.
 5. CLEAN EDGES: The design must have crisp, clean edges against the hot pink background. No fuzzy, gradient, or semi-transparent edges.
 6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid hot pink background.
@@ -2375,7 +2375,7 @@ export async function registerRoutes(
       
       if (isApparel) {
         sizingRequirements = buildApparelChromaSizingRequirements(
-          "VIBRANT colors. AVOID white, light colors, and hot pink/magenta in the design.",
+          "VIBRANT colors. White may be used inside the subject (teeth, eyes, highlights) but NOT as a background mat. AVOID hot pink/magenta in the design.",
         );
       } else {
         // Wall art needs full-bleed edge-to-edge designs
@@ -2705,7 +2705,7 @@ console.log("[api/shopify/generate] saved image", result);
       const isDarkTier = newColorTier === "dark";
       const designColors = isDarkTier 
         ? "BRIGHT, VIBRANT colors including white and light tones. AVOID dark, black, and hot pink/magenta colors in the design."
-        : "VIBRANT colors. AVOID white, light colors, and hot pink/magenta in the design.";
+        : "VIBRANT colors. White may be used inside the subject (teeth, eyes, highlights) but NOT as a background mat. AVOID hot pink/magenta in the design.";
       
       fullPrompt += buildApparelChromaSizingRequirements(designColors);
 
@@ -7184,7 +7184,7 @@ MANDATORY IMAGE REQUIREMENTS FOR ALL-OVER PRINT (AOP) - FOLLOW EXACTLY:
         const isDarkTier = colorTier === "dark";
         const designColors = isDarkTier
           ? "BRIGHT, VIBRANT colors including white and light tones. AVOID dark, black, and hot pink/magenta colors in the design."
-          : "VIBRANT colors. AVOID white, light colors, and hot pink/magenta in the design.";
+          : "VIBRANT colors. White may be used inside the subject (teeth, eyes, highlights) but NOT as a background mat. AVOID hot pink/magenta in the design.";
 
         // Use dark tier prompt variant if available
         if (isDarkTier && stylePreset && APPAREL_DARK_TIER_PROMPTS[stylePreset]) {

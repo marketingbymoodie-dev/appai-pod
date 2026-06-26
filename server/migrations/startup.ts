@@ -165,6 +165,20 @@ const DATA_MIGRATIONS: string[] = [
        category = 'apparel'
    WHERE lower(name) = 'illustrated motif'
      AND (prompt_prefix ILIKE '%white%' OR prompt_prefix NOT ILIKE '%#FF00FF%')`,
+  // Allow white inside subject (teeth, eyes) — matting now preserves connected-only removal.
+  `UPDATE style_presets
+   SET prompt_prefix = 'T-shirt graphic, centered flat vector illustration, bold clean shapes, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (avoid hot pink/magenta in the design), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of'
+   WHERE lower(name) = 'centered graphic'
+     AND prompt_prefix ILIKE '%avoid white, light colors%'`,
+  `UPDATE style_presets
+   SET prompt_prefix = 'T-shirt graphic, illustrated character motif, detailed illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (avoid hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of'
+   WHERE lower(name) = 'illustrated motif'
+     AND prompt_prefix ILIKE '%avoid white, light colors%'`,
+  `UPDATE style_presets
+   SET prompt_prefix = 'T-shirt graphic, illustrated pet portrait, detailed character illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (avoid hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, clean illustrated style. Create a pet portrait of'
+   WHERE lower(name) = 'pet portraits'
+     AND category = 'apparel'
+     AND prompt_prefix ILIKE '%avoid white, light colors%'`,
 ];
 
 // ── Table creation ─────────────────────────────────────────────────────────────
