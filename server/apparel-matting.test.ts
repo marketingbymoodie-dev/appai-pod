@@ -153,20 +153,36 @@ describe("removeChromaKeyBackground", () => {
     expect(await alphaAt(buffer, 40, 40)).toBeGreaterThan(200);
   });
 
-  it("removes white center plate on pink canvas via border flood", async () => {
+  it("removes off-pink magenta canvas (AI compression drift)", async () => {
+    const src = await rgbaBuffer(80, 80, (x, y, row, o) => {
+      const inDragon = (x - 40) ** 2 + (y - 40) ** 2 <= 12 ** 2;
+      if (inDragon) {
+        row[o] = 100;
+        row[o + 1] = 40;
+        row[o + 2] = 180;
+      } else {
+        // Slightly off #FF00FF — common from AI / JPEG
+        row[o] = 255;
+        row[o + 1] = 55;
+        row[o + 2] = 255;
+      }
+    });
+
+    const { buffer, cornerIsMagentaCanvas } = await removeChromaKeyBackground(src);
+    expect(cornerIsMagentaCanvas).toBe(true);
+    expect(await alphaAt(buffer, 5, 5)).toBe(0);
+    expect(await alphaAt(buffer, 40, 40)).toBeGreaterThan(200);
+  });
+
+  it("processApparelMotif removes full hot pink plate for Illustrated Motif case", async () => {
     const src = await rgbaBuffer(100, 100, (x, y, row, o) => {
-      const pinkMargin = x < 8 || x > 91 || y < 8 || y > 91;
-      const whitePlate = x >= 20 && x <= 80 && y >= 20 && y <= 80;
-      const inArt = (x - 50) ** 2 + (y - 50) ** 2 <= 10 ** 2;
-      if (inArt) {
-        row[o] = 40;
-        row[o + 1] = 80;
-        row[o + 2] = 200;
-      } else if (whitePlate) {
-        row[o] = 248;
-        row[o + 1] = 248;
-        row[o + 2] = 248;
-      } else if (pinkMargin) {
+      const inPlate = x >= 15 && x <= 85 && y >= 15 && y <= 85;
+      const inDragon = (x - 50) ** 2 + (y - 50) ** 2 <= 14 ** 2;
+      if (inDragon) {
+        row[o] = 80;
+        row[o + 1] = 200;
+        row[o + 2] = 60;
+      } else if (inPlate) {
         row[o] = CHROMA_KEY.r;
         row[o + 1] = CHROMA_KEY.g;
         row[o + 2] = CHROMA_KEY.b;
@@ -177,12 +193,10 @@ describe("removeChromaKeyBackground", () => {
       }
     });
 
-    const { buffer } = await removeChromaKeyBackground(src, {
-      allowWhiteKey: true,
-      borderFloodFill: true,
-    });
-    expect(await alphaAt(buffer, 30, 30)).toBe(0);
-    expect(await alphaAt(buffer, 50, 50)).toBeGreaterThan(200);
+    const result = await processApparelMotif(src, { useMlFallback: true, allowWhiteKey: true });
+    expect(result.usedMlFallback).toBe(false);
+    expect(await alphaAt(result.buffer, 20, 20)).toBe(0);
+    expect(await alphaAt(result.buffer, 50, 50)).toBeGreaterThan(200);
   });
 });
 

@@ -27,7 +27,9 @@ export type ChromaKeyResult = {
   cornerRemovedPct: number;
   whiteKeyRemovedPct: number;
   borderFloodRemovedPct: number;
+  magentaFloodRemovedPct: number;
   cornerIsLightCanvas: boolean;
+  cornerIsMagentaCanvas: boolean;
 };
 
 export type CornerColorSample = {
@@ -203,6 +205,30 @@ export function isLightCanvasCorner(sample: CornerColorSample): boolean {
   return lum >= 220 && chroma <= 18;
 }
 
+/** True when corners are hot pink / magenta chroma key background. */
+export function isMagentaCanvasCorner(sample: CornerColorSample): boolean {
+  const { avgR, avgG, avgB } = sample;
+  const magenta = Math.min(avgR, avgB) - avgG;
+  return avgR >= 140 && avgB >= 140 && avgG <= 140 && magenta >= 40;
+}
+
+/** Whether an RGB pixel looks like chroma-key background (incl. off-pink AI output). */
+export function isChromaBackgroundColor(
+  r: number,
+  g: number,
+  b: number,
+  tolerance: number = 85,
+): boolean {
+  if (colorDistance(r, g, b, CHROMA_KEY.r, CHROMA_KEY.g, CHROMA_KEY.b) <= tolerance) {
+    return true;
+  }
+  const magenta = Math.min(r, b) - g;
+  if (r >= 130 && b >= 130 && g <= 150 && magenta >= 35) {
+    return colorDistance(r, g, b, CHROMA_KEY.r, CHROMA_KEY.g, CHROMA_KEY.b) <= tolerance + 40;
+  }
+  return false;
+}
+
 /**
  * Flood-fill near-white/grey mat pixels connected to any image border.
  * Uses source RGB so interior subject whites disconnected from edges are kept.
@@ -272,6 +298,78 @@ function applyBorderFloodFillLightMat(
   return removed;
 }
 
+/**
+ * Flood-fill chroma/magenta mat pixels connected to any image border.
+ */
+function applyBorderFloodFillChromaMat(
+  pixels: Uint8Array,
+  source: Uint8Array,
+  width: number,
+  height: number,
+  channels: number,
+  tolerance: number,
+): number {
+  const total = width * height;
+  const visited = new Uint8Array(total);
+  const queue: number[] = [];
+  let removed = 0;
+
+  const trySeed = (x: number, y: number) => {
+    const p = y * width + x;
+    if (visited[p]) return;
+    const idx = p * channels;
+    if (pixels[idx + 3] === 0) {
+      visited[p] = 1;
+      return;
+    }
+    if (!isChromaBackgroundColor(source[idx], source[idx + 1], source[idx + 2], tolerance)) {
+      return;
+    }
+    visited[p] = 1;
+    pixels[idx + 3] =  0;
+    removed++;
+    queue.push(p);
+  };
+
+  for (let x = 0; x < width; x++) {
+    trySeed(x, 0);
+    trySeed(x, height - 1);
+  }
+  for (let y = 0; y < height; y++) {
+    trySeed(0, y);
+    trySeed(width - 1, y);
+  }
+
+  while (queue.length > 0) {
+    const p = queue.pop()!;
+    const x = p % width;
+    const y = Math.floor(p / width);
+    for (const [dx, dy] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ] as const) {
+      const nx = x + dx;
+      const ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+      const np = ny * width + nx;
+      if (visited[np]) continue;
+      const idx = np * channels;
+      visited[np] = 1;
+      if (pixels[idx + 3] === 0) continue;
+      if (!isChromaBackgroundColor(source[idx], source[idx + 1], source[idx + 2], tolerance)) {
+        continue;
+      }
+      pixels[idx + 3] = 0;
+      removed++;
+      queue.push(np);
+    }
+  }
+
+  return removed;
+}
+
 /** Parse Replicate remove-bg data URL / HTTP result into a buffer. */
 export async function parseRemoveBgResult(removeBgResult: RemoveBgResult): Promise<Buffer> {
   return bufferFromRemoveBgResult(removeBgResult);
@@ -284,20 +382,22 @@ export async function removeChromaKeyBackground(
   buffer: Buffer,
   opts?: {
     tolerance?: number;
+    cornerTolerance?: number;
     allowWhiteKey?: boolean;
     aggressiveWhiteKey?: boolean;
     borderFloodFill?: boolean;
+    chromaFloodFill?: boolean;
   },
 ): Promise<ChromaKeyResult> {
-  const tolerance = opts?.tolerance ?? 60;
   const allowWhiteKey = opts?.allowWhiteKey !== false;
   const aggressiveWhiteKey = opts?.aggressiveWhiteKey === true;
   const borderFloodFill = opts?.borderFloodFill !== false;
+  const chromaFloodFill = opts?.chromaFloodFill !== false;
   const whiteThresholds = aggressiveWhiteKey
     ? AGGRESSIVE_WHITE_MAT_THRESHOLDS
     : DEFAULT_WHITE_MAT_THRESHOLDS;
   console.log(
-    `[Chroma Key] Starting (tolerance=${tolerance}, whiteKey=${allowWhiteKey}, aggressive=${aggressiveWhiteKey})...`,
+    `[Chroma Key] Starting (tolerance=${opts?.tolerance ?? "auto"}, whiteKey=${allowWhiteKey}, aggressive=${aggressiveWhiteKey})...`,
   );
   const startTime = Date.now();
 
@@ -310,17 +410,23 @@ export async function removeChromaKeyBackground(
   const source = new Uint8Array(data);
   const pixels = new Uint8Array(source);
   const total = width * height;
-  const cornerSample = sampleCornerColorFromRaw(source, width, height, channels);
-  const cornerIsLightCanvas = isLightCanvasCorner(cornerSample);
+  const corners = sampleCornerColorFromRaw(source, width, height, channels);
+  const cornerIsLightCanvas = isLightCanvasCorner(corners);
+  const cornerIsMagentaCanvas = isMagentaCanvasCorner(corners);
 
-  // Pass A: #FF00FF chroma key
+  const chromaTolerance =
+    opts?.tolerance ??
+    (cornerIsMagentaCanvas ? 110 : cornerIsLightCanvas ? 85 : 85);
+  const cornerTolerance = opts?.cornerTolerance ?? (cornerIsMagentaCanvas ? 75 : 55);
+  const chromaFloodTolerance = cornerIsMagentaCanvas ? 120 : 95;
+
+  // Pass A: #FF00FF chroma key (+ off-pink magenta variants)
   let pinkRemoved = 0;
   for (let i = 0; i < pixels.length; i += channels) {
     const r = pixels[i];
     const g = pixels[i + 1];
     const b = pixels[i + 2];
-    const dist = colorDistance(r, g, b, CHROMA_KEY.r, CHROMA_KEY.g, CHROMA_KEY.b);
-    if (dist <= tolerance) {
+    if (isChromaBackgroundColor(r, g, b, chromaTolerance)) {
       pixels[i + 3] = 0;
       pinkRemoved++;
     }
@@ -329,17 +435,16 @@ export async function removeChromaKeyBackground(
   console.log(`[Chroma Key] Pink pass: ${chromaRemovedPct.toFixed(1)}%`);
 
   // Pass B: corner-detected background (on original RGB, apply to current alpha)
-  const { avgR, avgG, avgB } = cornerSample;
+  const { avgR, avgG, avgB } = corners;
 
   let cornerRemoved = 0;
-  const bgTolerance = 45;
   for (let i = 0; i < pixels.length; i += channels) {
     const r = pixels[i];
     const g = pixels[i + 1];
     const b = pixels[i + 2];
     if (pixels[i + 3] === 0) continue;
     const dist = colorDistance(r, g, b, avgR, avgG, avgB);
-    if (dist <= bgTolerance) {
+    if (dist <= cornerTolerance) {
       pixels[i + 3] = 0;
       cornerRemoved++;
     }
@@ -363,7 +468,7 @@ export async function removeChromaKeyBackground(
     console.log(`[Chroma Key] White/grey mat pass: ${((whiteKeyRemoved / total) * 100).toFixed(1)}%`);
   }
 
-  // Pass E: border-connected flood fill for mats that survive global keying
+  // Pass E: border-connected flood fill for white/grey mats
   let borderFloodRemoved = 0;
   if (borderFloodFill && allowWhiteKey) {
     borderFloodRemoved = applyBorderFloodFillLightMat(
@@ -379,6 +484,32 @@ export async function removeChromaKeyBackground(
     );
   }
 
+  // Pass F: global + border flood for remaining chroma/magenta background
+  let magentaFloodRemoved = 0;
+  if (chromaFloodFill) {
+    for (let i = 0; i < pixels.length; i += channels) {
+      if (pixels[i + 3] === 0) continue;
+      const r = pixels[i];
+      const g = pixels[i + 1];
+      const b = pixels[i + 2];
+      if (isChromaBackgroundColor(r, g, b, chromaFloodTolerance)) {
+        pixels[i + 3] = 0;
+        magentaFloodRemoved++;
+      }
+    }
+    magentaFloodRemoved += applyBorderFloodFillChromaMat(
+      pixels,
+      source,
+      width,
+      height,
+      channels,
+      chromaFloodTolerance,
+    );
+    console.log(
+      `[Chroma Key] Magenta/chroma sweep: ${((magentaFloodRemoved / total) * 100).toFixed(1)}%`,
+    );
+  }
+
   const elapsed = Date.now() - startTime;
   console.log(`[Chroma Key] Complete in ${elapsed}ms`);
 
@@ -389,7 +520,9 @@ export async function removeChromaKeyBackground(
     cornerRemovedPct,
     whiteKeyRemovedPct: (whiteKeyRemoved / total) * 100,
     borderFloodRemovedPct: (borderFloodRemoved / total) * 100,
+    magentaFloodRemovedPct: (magentaFloodRemoved / total) * 100,
     cornerIsLightCanvas,
+    cornerIsMagentaCanvas,
   };
 }
 
@@ -404,9 +537,13 @@ async function despillEdgeColors(data: Uint8Array, ch: number): Promise<void> {
     const magenta = Math.min(r, b) - g;
     if (magenta > 10) {
       if (a < 255) {
-        data[i] = g;
-        data[i + 2] = g;
-      } else if (r > 180 && b > 180 && g < 120 && magenta > 80) {
+        if (magenta > 40 && g <= 140) {
+          data[i + 3] = 0;
+        } else {
+          data[i] = g;
+          data[i + 2] = g;
+        }
+      } else if (r > 130 && b > 130 && g <= 150 && magenta > 35) {
         data[i + 3] = 0;
       }
       continue;
@@ -786,13 +923,29 @@ export async function processApparelMotif(
     rawInfo.channels,
   );
   const cornerIsLightCanvas = isLightCanvasCorner(sourceCorner);
+  const cornerIsMagentaCanvas = isMagentaCanvasCorner(sourceCorner);
   const useAggressiveWhiteKey = cornerIsLightCanvas;
 
-  const chroma = await removeChromaKeyBackground(sourceBuffer, {
+  let chroma = await removeChromaKeyBackground(sourceBuffer, {
     allowWhiteKey,
     aggressiveWhiteKey: useAggressiveWhiteKey,
     borderFloodFill: true,
+    chromaFloodFill: true,
   });
+
+  // Retry with higher tolerance when AI used magenta canvas but pass A removed little
+  if (cornerIsMagentaCanvas && chroma.chromaRemovedPct < 20) {
+    console.log("[Apparel Matting] Magenta canvas — retrying chroma with expanded tolerance");
+    chroma = await removeChromaKeyBackground(sourceBuffer, {
+      allowWhiteKey,
+      tolerance: 130,
+      cornerTolerance: 90,
+      aggressiveWhiteKey: useAggressiveWhiteKey,
+      borderFloodFill: true,
+      chromaFloodFill: true,
+    });
+  }
+
   let buffer = chroma.buffer;
   let usedMlFallback = false;
 
@@ -804,7 +957,9 @@ export async function processApparelMotif(
     chroma.chromaRemovedPct < 5 &&
     qa.cornerBgOpaqueRatio > 0.4 &&
     !cornerIsLightCanvas &&
-    !chroma.cornerIsLightCanvas;
+    !cornerIsMagentaCanvas &&
+    !chroma.cornerIsLightCanvas &&
+    !chroma.cornerIsMagentaCanvas;
 
   if (needsMlFallback) {
     console.log("[Apparel Matting] Chroma key weak — trying Replicate fallback...");
@@ -814,8 +969,11 @@ export async function processApparelMotif(
       );
       const rechroma = await removeChromaKeyBackground(mlBuffer, {
         allowWhiteKey,
+        tolerance: 120,
+        cornerTolerance: 85,
         aggressiveWhiteKey: useAggressiveWhiteKey,
         borderFloodFill: true,
+        chromaFloodFill: true,
       });
       buffer = rechroma.buffer;
       usedMlFallback = true;
@@ -826,12 +984,35 @@ export async function processApparelMotif(
     console.log(
       "[Apparel Matting] Light/white canvas detected — skipping ML fallback, using chroma + border flood",
     );
+  } else if (cornerIsMagentaCanvas) {
+    console.log(
+      "[Apparel Matting] Magenta chroma canvas detected — skipping ML fallback, using expanded chroma key",
+    );
   }
 
   buffer = await cleanupFlatGraphicAlpha(buffer, {
     bgRemovalSensitivity: opts.bgRemovalSensitivity,
     erodeAfterCleanup: !usedMlFallback,
   });
+
+  // Safety net: if corners still opaque after cleanup, run one more chroma sweep
+  const postQa = await analyzeAlphaQuality(buffer);
+  if (postQa.cornerBgOpaqueRatio > 0.35) {
+    console.warn(
+      `[Apparel Matting] Post-cleanup corners still ${(postQa.cornerBgOpaqueRatio * 100).toFixed(0)}% opaque — final chroma sweep`,
+    );
+    const finalChroma = await removeChromaKeyBackground(buffer, {
+      allowWhiteKey,
+      tolerance: 130,
+      cornerTolerance: 90,
+      borderFloodFill: true,
+      chromaFloodFill: true,
+    });
+    buffer = await cleanupFlatGraphicAlpha(finalChroma.buffer, {
+      bgRemovalSensitivity: opts.bgRemovalSensitivity,
+      erodeAfterCleanup: false,
+    });
+  }
 
   if (opts.vectorize || process.env.APPAREL_VECTORIZE === "true") {
     buffer = await maybeVectorizeFlatGraphic(buffer);
