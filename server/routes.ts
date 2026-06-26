@@ -1,5 +1,5 @@
 import { generateImageBase64 } from "./replit_integrations/image/client";
-import { generatePattern, removeBackground, despillMagenta, type PatternType } from "./picsart-client";
+import { generatePattern, removeBackground, despillMagenta, hardenAlphaEdges, type PatternType, type RemoveBgResult } from "./picsart-client";
 import { tileImage, type TileMode } from "./sharp-tiler";
 import pg from "pg";
 import express, { type Express, Request, Response, NextFunction } from "express";
@@ -46,7 +46,7 @@ import {
 } from "@shared/printifyProductionCosts";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { getGoogleOAuthClientId, verifyGoogleIdToken } from "./storefront-google-auth";
-import { STOREFRONT_FREE_GENERATION_LIMIT } from "@shared/storefront-credits";
+import { STOREFRONT_FREE_GENERATION_LIMIT, storefrontArtworksRemaining } from "@shared/storefront-credits";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
 import { detectPrintifyAllOverPrint } from "./printify-aop-detection";
 import {
@@ -964,6 +964,17 @@ function resolveAlphaErosionRadius(opts: {
   return opts.removeBgUsedApi ? 0 : 1;
 }
 
+async function bufferFromRemoveBgResult(removeBgResult: RemoveBgResult): Promise<Buffer> {
+  if (removeBgResult.url.startsWith("data:")) {
+    return Buffer.from(removeBgResult.url.split(",")[1], "base64");
+  }
+  const response = await fetch(removeBgResult.url);
+  if (!response.ok) {
+    throw new Error(`Failed to download background removal result: ${response.statusText}`);
+  }
+  return Buffer.from(await response.arrayBuffer());
+}
+
 async function saveImageToStorage(base64Data: string, mimeType: string, options?: SaveImageOptions): Promise<SaveImageResult> {
   const { isApparel = false, isAllOverPrint = false, targetDims, bgRemovalSensitivity } = options || {};
   const imageId = crypto.randomUUID();
@@ -973,61 +984,64 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
   let buffer: Buffer = Buffer.from(base64Data, "base64");
   let removeBgUsedApi = false;
 
-  // For apparel, remove background using Picsart — including AOP
+  // For apparel, remove background using Replicate — including AOP
   // This ensures the motif is clean before tiling or placement
   if (isApparel) {
     console.log(`[saveImageToStorage] Removing background for apparel (AOP=${isAllOverPrint})...`);
+    const sourceBuffer = buffer;
     try {
-      // 1. Upload temporary file to Supabase to get a public URL for Picsart
+      let apiBuffer: Buffer | null = null;
+
       const tempImageId = `temp_${crypto.randomUUID()}`;
       const tempFilename = `${tempImageId}.${extension}`;
       const tempUrl = await uploadDesignFileToSupabase({
-        buffer,
+        buffer: sourceBuffer,
         filename: tempFilename,
         contentType: actualMimeType,
       });
 
       if (tempUrl) {
-        // 2. Call remove.bg
-        const removeBgResult = await removeBackground({ imageUrl: tempUrl });
-        
-        // 3. Handle result — remove.bg returns a data URL directly
-        if (removeBgResult.url.startsWith("data:")) {
-          const base64Data = removeBgResult.url.split(",")[1];
-          buffer = Buffer.from(base64Data, "base64");
-          extension = "png";
-          actualMimeType = "image/png";
-          removeBgUsedApi = true;
-          console.log("[saveImageToStorage] remove.bg background removal successful");
-        } else {
-          // Legacy URL format fallback
-          const response = await fetch(removeBgResult.url);
-          if (response.ok) {
-            buffer = Buffer.from(await response.arrayBuffer());
-            extension = "png";
-            actualMimeType = "image/png";
-            removeBgUsedApi = true;
-            console.log("[saveImageToStorage] remove.bg background removal successful (URL)");
-          } else {
-            throw new Error(`Failed to download remove.bg result: ${response.statusText}`);
-          }
+        try {
+          apiBuffer = await bufferFromRemoveBgResult(
+            await removeBackground({ imageUrl: tempUrl }),
+          );
+        } catch (urlErr) {
+          console.warn(
+            "[saveImageToStorage] URL-based removal failed, trying buffer:",
+            (urlErr as Error).message,
+          );
         }
       }
+
+      if (!apiBuffer) {
+        apiBuffer = await bufferFromRemoveBgResult(
+          await removeBackground({ imageBuffer: sourceBuffer }),
+        );
+      }
+
+      buffer = apiBuffer;
+      extension = "png";
+      actualMimeType = "image/png";
+      removeBgUsedApi = true;
+      console.log("[saveImageToStorage] Replicate background removal successful");
     } catch (err) {
-      console.error("[saveImageToStorage] remove.bg failed, falling back to chroma key:", (err as Error).message);
-      // Fallback to chroma key if remove.bg fails
-      // We now enable this for AOP too, as it helps remove the white background AI often generates
-      buffer = await removeChromaKeyBackground(buffer);
+      console.error("[saveImageToStorage] Replicate failed, falling back to chroma key:", (err as Error).message);
+      buffer = await removeChromaKeyBackground(sourceBuffer);
       extension = "png";
       actualMimeType = "image/png";
     }
 
     // Decontaminate the #FF00FF chroma-key spill left on anti-aliased edges
-    // (the "hot pink fringe"). Runs for whichever removal path succeeded above.
     try {
       buffer = await despillMagenta(buffer);
     } catch (despillErr) {
       console.warn("[saveImageToStorage] magenta despill skipped:", (despillErr as Error).message);
+    }
+
+    try {
+      buffer = await hardenAlphaEdges(buffer);
+    } catch (hardenErr) {
+      console.warn("[saveImageToStorage] alpha edge hardening skipped:", (hardenErr as Error).message);
     }
 
     const erosionRadius = resolveAlphaErosionRadius({ removeBgUsedApi, bgRemovalSensitivity });
@@ -7379,15 +7393,15 @@ ${textEdgeRestrictions}
       let sizingRequirements: string;
 
       if (isApparel && isAllOverPrint) {
-        // AOP: solid white background so Picsart removebg can cleanly strip it
+        // AOP: hot pink chroma key — stripped server-side after generation
         sizingRequirements = `
 MANDATORY IMAGE REQUIREMENTS FOR ALL-OVER PRINT (AOP) - FOLLOW EXACTLY:
 1. ISOLATED MOTIF: Create a SINGLE, centered graphic design that is ISOLATED from any background scenery. This motif will be tiled into a repeating pattern.
-2. SOLID FLAT WHITE BACKGROUND: The ENTIRE background MUST be a flat, solid, uniform pure white (#FFFFFF) color. Every pixel that is not part of the design must be exactly #FFFFFF. DO NOT create scenic backgrounds, gradients, or detailed environments.
-3. DESIGN COLORS: Use VIBRANT, BOLD colors. The design MUST NOT contain any pure white pixels in the main subject — white is reserved exclusively for the background.
-4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean white space around it.
-5. CLEAN EDGES: The design must have crisp, clean edges against the white background. No fuzzy, gradient, or semi-transparent edges.
-6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid white background.
+2. SOLID HOT PINK CHROMA KEY BACKGROUND: The ENTIRE background MUST be a flat, solid, uniform hot pink (#FF00FF) color. Every pixel that is not part of the design must be exactly #FF00FF. DO NOT create scenic backgrounds, gradients, or detailed environments.
+3. DESIGN COLORS: Use VIBRANT, BOLD colors. The design MUST NOT contain any hot pink/magenta pixels in the main subject — #FF00FF is reserved exclusively for the background.
+4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean hot pink space around it.
+5. CLEAN EDGES: The design must have crisp, hard vector-like edges against the hot pink background. No fuzzy, gradient, or semi-transparent edges.
+6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid hot pink background.
 7. PRINT-READY: This is for all-over print fabric — create an isolated motif graphic.
 8. COMPOSITION FORMAT: Fill the canvas matching the requested aspect ratio with the design centered.
 9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
@@ -7698,12 +7712,21 @@ ${textEdgeRestrictions}
 
       if (job.status === "complete") {
         let creditsRemaining = 0;
+        let freeGenerationsUsed = 0;
+        let artworksRemaining = 0;
         if (job.customerId) {
           const balance = await storage.ensureCustomerBalance(job.customerId);
           creditsRemaining = balance.credits;
+          freeGenerationsUsed = balance.freeGenerationsUsed || 0;
+          artworksRemaining = storefrontArtworksRemaining({
+            freeGenerationsUsed,
+            paidCredits: balance.credits,
+          });
         } else if (job.sessionId) {
           const count = await storage.countSessionGenerations(shop, job.sessionId);
-          creditsRemaining = Math.max(0, 10 - count);
+          freeGenerationsUsed = count;
+          creditsRemaining = Math.max(0, STOREFRONT_FREE_GENERATION_LIMIT - count);
+          artworksRemaining = creditsRemaining;
         }
 
         return res.json({
@@ -7712,6 +7735,8 @@ ${textEdgeRestrictions}
           thumbnailUrl: job.thumbnailUrl,
           designId: job.designId,
           creditsRemaining,
+          freeGenerationsUsed,
+          artworksRemaining,
           mockupUrls: (job as any).mockupUrls || null,
           designState: (job as any).designState || null,
           prompt: (job as any).userPrompt || job.prompt || null,

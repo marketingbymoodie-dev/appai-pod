@@ -4140,27 +4140,47 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         imageUrl: imageUrl,
         prompt: prompt,
       });
-      // Update credits from the response
-      if (data.creditsRemaining !== undefined) {
-        console.log('[EmbedDesign] Updating credits from', customer?.credits, 'to', data.creditsRemaining);
-        if (customer) {
-          const updatedCust = { ...customer, credits: data.creditsRemaining };
-          setCustomer(updatedCust);
-          try { localStorage.setItem('appai_customer', JSON.stringify(updatedCust)); } catch {}
-        } else {
-          // If no customer object yet, create one with the credits
-          setCustomer({
-            id: 'anonymous',
-            credits: data.creditsRemaining,
-            isLoggedIn: false,
-          });
-        }
-        // Show remaining credits notification
-        if (data.creditsRemaining > 0) {
+      // Update credit balance from the async status response
+      if (
+        data.creditsRemaining !== undefined ||
+        data.freeGenerationsUsed !== undefined ||
+        data.artworksRemaining !== undefined
+      ) {
+        const nextPaidCredits = storefrontCustomerId
+          ? (typeof data.creditsRemaining === 'number'
+              ? data.creditsRemaining
+              : customer?.credits ?? 0)
+          : 0;
+        const nextFreeUsed =
+          typeof data.freeGenerationsUsed === 'number'
+            ? data.freeGenerationsUsed
+            : customer?.freeGenerationsUsed ?? 0;
+        const remaining =
+          typeof data.artworksRemaining === 'number'
+            ? data.artworksRemaining
+            : storefrontArtworksRemaining({
+                freeGenerationsUsed: nextFreeUsed,
+                paidCredits: nextPaidCredits,
+              });
+
+        console.log('[EmbedDesign] Updating balance — paid:', nextPaidCredits, 'freeUsed:', nextFreeUsed, 'remaining:', remaining);
+
+        const updatedCust = {
+          ...(customer || {
+            id: storefrontCustomerId || 'anonymous',
+            isLoggedIn: !!storefrontCustomerId,
+          }),
+          credits: nextPaidCredits,
+          freeGenerationsUsed: nextFreeUsed,
+          isLoggedIn: customer?.isLoggedIn ?? !!storefrontCustomerId,
+        };
+        setCustomer(updatedCust);
+        try { localStorage.setItem('appai_customer', JSON.stringify(updatedCust)); } catch {}
+
+        if (remaining > 0) {
+          const noun = storefrontCustomerId && nextPaidCredits > 0 ? 'Artwork' : 'Free Artwork';
           toast({
-            title: storefrontCustomerId
-              ? `${data.creditsRemaining} Artwork${data.creditsRemaining === 1 ? '' : 's'} Remaining`
-              : `${data.creditsRemaining} Free Artwork${data.creditsRemaining === 1 ? '' : 's'} Remaining`,
+            title: `${remaining} ${noun}${remaining === 1 ? '' : 's'} Remaining`,
             description: storefrontCustomerId
               ? 'Credits are refunded when you complete a purchase.'
               : "Tap \u24D8 next to 'Free artworks' for details on getting more.",
@@ -7040,6 +7060,19 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               <Plus className="w-3 h-3" />
               Start Fresh Design
             </button>
+            {isStorefront && (
+              <div className="text-xs text-muted-foreground flex items-center justify-center gap-1">
+                {artworksRemainingLabel}
+                <button
+                  type="button"
+                  className="inline-flex items-center"
+                  aria-label="Pricing info"
+                  onClick={() => setCreditsPopoverOpen(true)}
+                >
+                  <Info className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground transition-colors" />
+                </button>
+              </div>
+            )}
           </div>
         ) : (
           (isShopify || isStorefront) && (
@@ -7893,6 +7926,19 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         <Plus className="w-3 h-3" />
                         Start Fresh Design
                       </button>
+                      {isStorefront && (
+                        <div className="text-xs text-muted-foreground flex items-center justify-center gap-1">
+                          {artworksRemainingLabel}
+                          <button
+                            type="button"
+                            className="inline-flex items-center"
+                            aria-label="Pricing info"
+                            onClick={() => setCreditsPopoverOpen(true)}
+                          >
+                            <Info className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground transition-colors" />
+                          </button>
+                        </div>
+                      )}
                     </div>
                   ) : (
                     (isShopify || isStorefront) && (

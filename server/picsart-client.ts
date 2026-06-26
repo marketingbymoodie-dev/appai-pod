@@ -132,7 +132,7 @@ export async function despillMagenta(buffer: Buffer): Promise<Buffer> {
 
     // How magenta the pixel is: both red and blue sitting above green.
     const magenta = Math.min(r, b) - g;
-    if (magenta <= 12) continue; // a genuine red/blue/green/etc. — leave it
+    if (magenta <= 10) continue; // a genuine red/blue/green/etc. — leave it
 
     if (a < 255) {
       // Feathered halo pixel — neutralise the pink cast toward the green level.
@@ -141,6 +141,48 @@ export async function despillMagenta(buffer: Buffer): Promise<Buffer> {
     } else if (r > 180 && b > 180 && g < 120 && magenta > 80) {
       // Solid residual chroma key the matte left behind — cut it out.
       data[i + 3] = 0;
+    }
+  }
+
+  return sharp(data, {
+    raw: { width: info.width, height: info.height, channels: ch },
+  })
+    .png()
+    .toBuffer();
+}
+
+/**
+ * Snap semi-transparent fringe pixels to fully opaque or fully transparent
+ * for cleaner vector-like edges after matting / chroma-key removal.
+ */
+export async function hardenAlphaEdges(
+  buffer: Buffer,
+  opaqueThreshold = 200,
+): Promise<Buffer> {
+  const { data, info } = await sharp(buffer)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const ch = info.channels;
+  if (ch < 4) return buffer;
+
+  for (let i = 0; i < data.length; i += ch) {
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    const a = data[i + 3];
+    if (a === 0 || a === 255) continue;
+
+    const magenta = Math.min(r, b) - g;
+    const isSpill =
+      magenta > 8 || (r > 180 && b > 180 && g < 120 && magenta > 40);
+
+    if (isSpill || a < 32) {
+      data[i + 3] = 0;
+    } else if (a >= opaqueThreshold) {
+      data[i + 3] = 255;
+    } else {
+      data[i + 3] = a >= opaqueThreshold / 2 ? 255 : 0;
     }
   }
 

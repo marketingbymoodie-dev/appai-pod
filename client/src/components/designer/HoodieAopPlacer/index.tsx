@@ -276,23 +276,39 @@ function customerGroupEnabledByDefault(
   return groupId === "back-body" ? false : group.enabled !== false;
 }
 
-/** Sleeves are one customer control — keep L/R placement identical at load. */
+/** Mirror left-sleeve placement onto the right sleeve (bilateral symmetry). */
+function mirrorSleevePlacement(left: ArtworkPlacement): ArtworkPlacement {
+  return {
+    scale: left.scale,
+    offsetX: -left.offsetX,
+    offsetY: left.offsetY,
+  };
+}
+
+/**
+ * Sleeves are one customer control — canonical placement lives on
+ * left-sleeve.front; front/back share it (back renders via flat-panel
+ * bridge); right-sleeve mirrors offsetX.
+ */
 function syncSleevePlacements(
   placements: Record<string, Record<HoodieView, ArtworkPlacement>>,
 ): Record<string, Record<HoodieView, ArtworkPlacement>> {
   const left = placements["left-sleeve"];
   if (!left) return placements;
-  const pair: Record<HoodieView, ArtworkPlacement> = {
-    front: { ...(left.front ?? DEFAULT_ARTWORK_PLACEMENT) },
-    back: { ...(left.back ?? DEFAULT_ARTWORK_PLACEMENT) },
+  const canonical = { ...(left.front ?? DEFAULT_ARTWORK_PLACEMENT) };
+  const leftPair: Record<HoodieView, ArtworkPlacement> = {
+    front: { ...canonical },
+    back: { ...canonical },
+  };
+  const rightMirrored = mirrorSleevePlacement(canonical);
+  const rightPair: Record<HoodieView, ArtworkPlacement> = {
+    front: { ...rightMirrored },
+    back: { ...rightMirrored },
   };
   return {
     ...placements,
-    "left-sleeve": pair,
-    "right-sleeve": {
-      front: { ...pair.front },
-      back: { ...pair.back },
-    },
+    "left-sleeve": leftPair,
+    "right-sleeve": rightPair,
   };
 }
 
@@ -903,28 +919,35 @@ export default function HoodieAopPlacer({
     (view: HoodieView, next: ArtworkPlacement) => {
       setState((prev) => {
         if (!prev) return prev;
-        const ids = resolveEditGroupIds(prev.activeGroupId, data?.template, prev.hoodLinked);
         const primaryId = overlayGroupId(prev.activeGroupId, data?.template, prev.hoodLinked);
-        const views = viewsForPlacementEdit(prev.activeGroupId, view);
         const prevPrimary =
           prev.placements[primaryId]?.[view] ?? DEFAULT_ARTWORK_PLACEMENT;
         let placements = { ...prev.placements };
-        for (const id of ids) {
-          const perView: Partial<Record<HoodieView, ArtworkPlacement>> = {
-            ...(placements[id] ?? {}),
-          };
-          for (const v of views) {
-            if (v === view) {
-              perView[v] = { ...next };
-            } else if (isSleevesPart(prev.activeGroupId)) {
-              const curV = prev.placements[id]?.[v] ?? DEFAULT_ARTWORK_PLACEMENT;
-              perView[v] = { ...curV, scale: next.scale };
-            }
-          }
-          placements = {
+        if (isSleevesPart(prev.activeGroupId)) {
+          placements = syncSleevePlacements({
             ...placements,
-            [id]: perView as Record<HoodieView, ArtworkPlacement>,
-          };
+            "left-sleeve": {
+              ...(placements["left-sleeve"] ?? {}),
+              front: { ...next },
+            },
+          });
+        } else {
+          const ids = resolveEditGroupIds(prev.activeGroupId, data?.template, prev.hoodLinked);
+          const views = viewsForPlacementEdit(prev.activeGroupId, view);
+          for (const id of ids) {
+            const perView: Partial<Record<HoodieView, ArtworkPlacement>> = {
+              ...(placements[id] ?? {}),
+            };
+            for (const v of views) {
+              if (v === view) {
+                perView[v] = { ...next };
+              }
+            }
+            placements = {
+              ...placements,
+              [id]: perView as Record<HoodieView, ArtworkPlacement>,
+            };
+          }
         }
         placements = applyLinkedPlacements(
           prev,
@@ -950,19 +973,13 @@ export default function HoodieAopPlacer({
       const next: ArtworkPlacement = { ...cur, scale };
       let placements = { ...prev.placements };
       if (isSleevesPart(prev.activeGroupId)) {
-        const synced: Record<HoodieView, ArtworkPlacement> = {
-          front: { ...next },
-          back: {
-            ...(prev.placements[primaryId]?.back ?? DEFAULT_ARTWORK_PLACEMENT),
-            scale: next.scale,
+        placements = syncSleevePlacements({
+          ...placements,
+          "left-sleeve": {
+            ...(placements["left-sleeve"] ?? {}),
+            front: { ...next },
           },
-        };
-        for (const id of ids) {
-          placements[id] = {
-            front: { ...synced.front },
-            back: { ...synced.back },
-          };
-        }
+        });
       } else {
         for (const id of ids) {
           const perView: Partial<Record<HoodieView, ArtworkPlacement>> = {
@@ -1191,9 +1208,12 @@ export default function HoodieAopPlacer({
     !!artworkImg &&
     state.mode === "place" &&
     activePartEnabled &&
-    // Hood handles only render on front view (back hood inherits via the
-    // flat-panel bridge, no draggable equivalent).
-    !(state.view === "back" && state.activeGroupId === "hood");
+    // Hood/sleeve handles only render on front view (back panels inherit via
+    // the flat-panel bridge, no draggable equivalent).
+    !(
+      state.view === "back" &&
+      (state.activeGroupId === "hood" || isSleevesPart(state.activeGroupId))
+    );
   const snapMode: "seam" | "x" | "y" | "both" | "none" =
     state.activeGroupId === "back-body" || state.activeGroupId === "collar"
       ? "both"
