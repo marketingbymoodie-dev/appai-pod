@@ -3,7 +3,8 @@ import { generatePattern, type PatternType } from "./replicate-bg-remover";
 import {
   processApparelMotif,
   trimTransparentBounds,
-  sanitizeApparelStylePrefix,
+  resolveApparelStylePrefix,
+  APPAREL_CHROMA_STYLE_BY_NAME,
   processApparelMotifToDataUrl,
 } from "./apparel-matting";
 import { tileImage, type TileMode } from "./sharp-tiler";
@@ -2199,6 +2200,7 @@ export async function registerRoutes(
 
       // Look up style preset and get its promptSuffix
       let stylePromptPrefix = "";
+      let styleName = "";
       let styleCategory = "all"; // Track category for base prompt enforcement
       let styleBaseImageUrl: string | undefined; // Style-level base reference image
       if (stylePreset) {
@@ -2206,10 +2208,13 @@ export async function registerRoutes(
         const merchantId = productType?.merchantId;
         if (merchantId) {
           const dbStyles = await storage.getStylePresetsByMerchant(merchantId);
-          const selectedStyle = dbStyles.find((s: { id: number; promptPrefix: string | null; category?: string | null; baseImageUrl?: string | null }) => s.id.toString() === stylePreset);
-          if (selectedStyle && selectedStyle.promptPrefix) {
-            stylePromptPrefix = selectedStyle.promptPrefix;
+          const selectedStyle = dbStyles.find((s: { id: number; name?: string; promptPrefix: string | null; category?: string | null; baseImageUrl?: string | null }) => s.id.toString() === stylePreset);
+          if (selectedStyle) {
+            styleName = selectedStyle.name || "";
             styleCategory = selectedStyle.category || "all";
+            if (selectedStyle.promptPrefix) {
+              stylePromptPrefix = selectedStyle.promptPrefix;
+            }
             // Prefer baseImageUrls array, fall back to single baseImageUrl
             const dbBaseUrls: string[] = (selectedStyle as any).baseImageUrls ||
               (selectedStyle.baseImageUrl ? [selectedStyle.baseImageUrl] : []);
@@ -2219,11 +2224,14 @@ export async function registerRoutes(
           }
         }
         // Fall back to hardcoded STYLE_PRESETS only if no merchant context or no match
-        if (!stylePromptPrefix) {
+        if (!stylePromptPrefix && !styleName) {
           const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
-          if (hardcodedStyle && hardcodedStyle.promptPrefix) {
-            stylePromptPrefix = hardcodedStyle.promptPrefix;
+          if (hardcodedStyle) {
+            styleName = hardcodedStyle.name;
             styleCategory = hardcodedStyle.category || "all";
+            if (hardcodedStyle.promptPrefix) {
+              stylePromptPrefix = hardcodedStyle.promptPrefix;
+            }
           }
         }
       }
@@ -2303,8 +2311,8 @@ export async function registerRoutes(
         isApparel = true;
       }
 
-      if (isApparel && stylePromptPrefix) {
-        stylePromptPrefix = sanitizeApparelStylePrefix(stylePromptPrefix);
+      if (isApparel) {
+        stylePromptPrefix = resolveApparelStylePrefix(styleName, stylePromptPrefix);
       }
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);      // Determine color tier for apparel products
@@ -3055,25 +3063,32 @@ console.log("[shopify/session] installation ok", {
 
       // Look up style preset and get its promptSuffix
       let stylePromptPrefix = "";
+      let styleName = "";
       let embedStyleCategory = "all";
       let embedStyleBaseImageUrl: string | undefined;
       let embedStyleBaseImageUrls: string[] = [];
       if (stylePreset && installation.merchantId) {
         const dbStyles = await storage.getStylePresetsByMerchant(installation.merchantId);
-        const selectedStyle = dbStyles.find((s: { id: number; promptPrefix: string | null; category?: string | null; baseImageUrl?: string | null }) => s.id.toString() === stylePreset);
-        if (selectedStyle && selectedStyle.promptPrefix) {
-          stylePromptPrefix = selectedStyle.promptPrefix;
+        const selectedStyle = dbStyles.find((s: { id: number; name?: string; promptPrefix: string | null; category?: string | null; baseImageUrl?: string | null }) => s.id.toString() === stylePreset);
+        if (selectedStyle) {
+          styleName = selectedStyle.name || "";
           embedStyleCategory = selectedStyle.category || "all";
+          if (selectedStyle.promptPrefix) {
+            stylePromptPrefix = selectedStyle.promptPrefix;
+          }
           const dbBaseUrls: string[] = (selectedStyle as any).baseImageUrls ||
             (selectedStyle.baseImageUrl ? [selectedStyle.baseImageUrl] : []);
           embedStyleBaseImageUrls = dbBaseUrls;
           if (dbBaseUrls.length > 0) embedStyleBaseImageUrl = dbBaseUrls[0];
         }
-        if (!stylePromptPrefix) {
+        if (!stylePromptPrefix && !styleName) {
           const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
-          if (hardcodedStyle && hardcodedStyle.promptPrefix) {
-            stylePromptPrefix = hardcodedStyle.promptPrefix;
+          if (hardcodedStyle) {
+            styleName = hardcodedStyle.name;
             embedStyleCategory = hardcodedStyle.category || "all";
+            if (hardcodedStyle.promptPrefix) {
+              stylePromptPrefix = hardcodedStyle.promptPrefix;
+            }
           }
         }
       }
@@ -3090,8 +3105,8 @@ console.log("[shopify/session] installation ok", {
 
       const embedIsApparelEarly =
         productType?.designerType === "apparel" || embedStyleCategory === "apparel";
-      if (embedIsApparelEarly && stylePromptPrefix) {
-        stylePromptPrefix = sanitizeApparelStylePrefix(stylePromptPrefix);
+      if (embedIsApparelEarly) {
+        stylePromptPrefix = resolveApparelStylePrefix(styleName, stylePromptPrefix);
       }
 
 
@@ -6987,6 +7002,7 @@ ${textEdgeRestrictions}
 
       // Look up style preset
       let stylePromptPrefix = "";
+      let styleName = "";
       let sfStyleCategory = "all";
       let sfStyleBaseImageUrl: string | undefined;
       let sfStyleBaseImageUrls: string[] = [];
@@ -6996,20 +7012,26 @@ ${textEdgeRestrictions}
           storage.getStylePresetsByMerchant(installation.merchantId), 5000, "getStylePresetsByMerchant"
         );
         console.log(P, reqId, `style presets lookup ok in ${Date.now() - t1}ms`);
-        const selectedStyle = dbStyles.find((s: { id: number; promptPrefix: string | null; category?: string | null; baseImageUrl?: string | null }) => s.id.toString() === stylePreset);
-        if (selectedStyle && selectedStyle.promptPrefix) {
-          stylePromptPrefix = selectedStyle.promptPrefix;
+        const selectedStyle = dbStyles.find((s: { id: number; name?: string; promptPrefix: string | null; category?: string | null; baseImageUrl?: string | null }) => s.id.toString() === stylePreset);
+        if (selectedStyle) {
+          styleName = selectedStyle.name || "";
           sfStyleCategory = selectedStyle.category || "all";
+          if (selectedStyle.promptPrefix) {
+            stylePromptPrefix = selectedStyle.promptPrefix;
+          }
           const dbBaseUrls: string[] = (selectedStyle as any).baseImageUrls ||
             (selectedStyle.baseImageUrl ? [selectedStyle.baseImageUrl] : []);
           sfStyleBaseImageUrls = dbBaseUrls;
           if (dbBaseUrls.length > 0) sfStyleBaseImageUrl = dbBaseUrls[0];
         }
-        if (!stylePromptPrefix) {
+        if (!stylePromptPrefix && !styleName) {
           const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
-          if (hardcodedStyle && hardcodedStyle.promptPrefix) {
-            stylePromptPrefix = hardcodedStyle.promptPrefix;
+          if (hardcodedStyle) {
+            styleName = hardcodedStyle.name;
             sfStyleCategory = hardcodedStyle.category || "all";
+            if (hardcodedStyle.promptPrefix) {
+              stylePromptPrefix = hardcodedStyle.promptPrefix;
+            }
           }
         }
       }
@@ -7105,8 +7127,8 @@ ${textEdgeRestrictions}
         isApparel = true;
       }
 
-      if (isApparel && stylePromptPrefix) {
-        stylePromptPrefix = sanitizeApparelStylePrefix(stylePromptPrefix);
+      if (isApparel) {
+        stylePromptPrefix = resolveApparelStylePrefix(styleName, stylePromptPrefix);
       }
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);
@@ -7386,7 +7408,19 @@ ${textEdgeRestrictions}
               console.log(`${W} storage save OK on retry ${Date.now() - saveStart}ms`);
             } catch (retryError) {
               console.error(`${W} Storage save failed on retry, using data URL:`, retryError);
-              imageUrl = `data:${mimeType};base64,${base64Data}`;
+              if (isApparel) {
+                const matted = await processApparelMotif(Buffer.from(base64Data, "base64"), {
+                  isAllOverPrint,
+                  bgRemovalSensitivity:
+                    typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
+                  allowWhiteKey: true,
+                  useMlFallback: process.env.APPAREL_ML_BG_FALLBACK !== "false",
+                  vectorize: process.env.APPAREL_VECTORIZE === "true",
+                });
+                imageUrl = `data:image/png;base64,${matted.buffer.toString("base64")}`;
+              } else {
+                imageUrl = `data:${mimeType};base64,${base64Data}`;
+              }
             }
           }
 
@@ -11393,7 +11427,20 @@ ${textEdgeRestrictions}
         }
       }
 
-      res.json({ 
+      // Sync canonical apparel chroma prefixes for merchant styles matched by name
+      for (const existing of existingStyles) {
+        const key = existing.name.trim().toLowerCase();
+        const canonicalPrefix = APPAREL_CHROMA_STYLE_BY_NAME[key];
+        if (canonicalPrefix === undefined) continue;
+        if (existing.promptPrefix === canonicalPrefix && existing.category === "apparel") continue;
+        const updated = await storage.updateStylePreset(existing.id, {
+          category: "apparel",
+          promptPrefix: canonicalPrefix,
+        });
+        if (updated) updatedStyles.push(updated);
+      }
+
+      res.json({
         message: "Styles reseeded successfully",
         updated: updatedStyles.length,
         created: createdStyles.length,

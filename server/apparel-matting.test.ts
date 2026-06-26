@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import sharp from "sharp";
 import {
+  processApparelMotif,
   analyzeAlphaQuality,
   CHROMA_KEY,
   cleanupFlatGraphicAlpha,
   removeChromaKeyBackground,
+  resolveApparelStylePrefix,
   sanitizeApparelStylePrefix,
 } from "./apparel-matting";
 
@@ -41,6 +43,17 @@ describe("sanitizeApparelStylePrefix", () => {
     const out = sanitizeApparelStylePrefix("Centered graphic on white background, bold colors");
     expect(out.toLowerCase()).toContain("#ff00ff");
     expect(out.toLowerCase()).not.toContain("white background");
+  });
+});
+
+describe("resolveApparelStylePrefix", () => {
+  it("replaces Illustrated Motif DB prefix with canonical chroma copy", () => {
+    const out = resolveApparelStylePrefix(
+      "Illustrated Motif",
+      "Illustrated character on white card background",
+    );
+    expect(out.toLowerCase()).toContain("#ff00ff");
+    expect(out.toLowerCase()).not.toContain("white card");
   });
 });
 
@@ -115,6 +128,62 @@ describe("removeChromaKeyBackground", () => {
     expect(await alphaAt(buffer, 30, 30)).toBe(0);
     expect(await alphaAt(buffer, 30, 18)).toBeGreaterThan(200);
   });
+
+  it("removes full white canvas while keeping colored subject", async () => {
+    const src = await rgbaBuffer(80, 80, (x, y, row, o) => {
+      const inBear = (x - 40) ** 2 + (y - 40) ** 2 <= 14 ** 2;
+      if (inBear) {
+        row[o] = 120;
+        row[o + 1] = 70;
+        row[o + 2] = 20;
+      } else {
+        row[o] = 252;
+        row[o + 1] = 252;
+        row[o + 2] = 250;
+      }
+    });
+
+    const { buffer, cornerIsLightCanvas } = await removeChromaKeyBackground(src, {
+      allowWhiteKey: true,
+      aggressiveWhiteKey: true,
+      borderFloodFill: true,
+    });
+    expect(cornerIsLightCanvas).toBe(true);
+    expect(await alphaAt(buffer, 2, 2)).toBe(0);
+    expect(await alphaAt(buffer, 40, 40)).toBeGreaterThan(200);
+  });
+
+  it("removes white center plate on pink canvas via border flood", async () => {
+    const src = await rgbaBuffer(100, 100, (x, y, row, o) => {
+      const pinkMargin = x < 8 || x > 91 || y < 8 || y > 91;
+      const whitePlate = x >= 20 && x <= 80 && y >= 20 && y <= 80;
+      const inArt = (x - 50) ** 2 + (y - 50) ** 2 <= 10 ** 2;
+      if (inArt) {
+        row[o] = 40;
+        row[o + 1] = 80;
+        row[o + 2] = 200;
+      } else if (whitePlate) {
+        row[o] = 248;
+        row[o + 1] = 248;
+        row[o + 2] = 248;
+      } else if (pinkMargin) {
+        row[o] = CHROMA_KEY.r;
+        row[o + 1] = CHROMA_KEY.g;
+        row[o + 2] = CHROMA_KEY.b;
+      } else {
+        row[o] = CHROMA_KEY.r;
+        row[o + 1] = CHROMA_KEY.g;
+        row[o + 2] = CHROMA_KEY.b;
+      }
+    });
+
+    const { buffer } = await removeChromaKeyBackground(src, {
+      allowWhiteKey: true,
+      borderFloodFill: true,
+    });
+    expect(await alphaAt(buffer, 30, 30)).toBe(0);
+    expect(await alphaAt(buffer, 50, 50)).toBeGreaterThan(200);
+  });
 });
 
 describe("cleanupFlatGraphicAlpha", () => {
@@ -133,6 +202,28 @@ describe("cleanupFlatGraphicAlpha", () => {
     const cleaned = await cleanupFlatGraphicAlpha(src);
     const qa = await analyzeAlphaQuality(cleaned);
     expect(qa.softAlphaRatio).toBe(0);
+  });
+});
+
+describe("processApparelMotif", () => {
+  it("does not use ML fallback on full white canvas", async () => {
+    const src = await rgbaBuffer(64, 64, (x, y, row, o) => {
+      const inSubject = (x - 32) ** 2 + (y - 32) ** 2 <= 10 ** 2;
+      if (inSubject) {
+        row[o] = 200;
+        row[o + 1] = 50;
+        row[o + 2] = 30;
+      } else {
+        row[o] = 255;
+        row[o + 1] = 255;
+        row[o + 2] = 255;
+      }
+    });
+
+    const result = await processApparelMotif(src, { useMlFallback: true, allowWhiteKey: true });
+    expect(result.usedMlFallback).toBe(false);
+    expect(await alphaAt(result.buffer, 4, 4)).toBe(0);
+    expect(await alphaAt(result.buffer, 32, 32)).toBeGreaterThan(200);
   });
 });
 

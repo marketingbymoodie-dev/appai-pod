@@ -749,6 +749,20 @@ export const STYLE_PRESETS = [
       ],
     },
   },
+  {
+    id: "centered-graphic",
+    name: "Centered Graphic",
+    promptPrefix: "T-shirt graphic, centered flat vector illustration, bold clean shapes, flat vibrant colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of",
+    category: "apparel",
+    promptPlaceholder: "Describe your centered graphic (e.g. scary bear standing up, vintage skull, geometric wolf)",
+  },
+  {
+    id: "illustrated-motif",
+    name: "Illustrated Motif",
+    promptPrefix: "T-shirt graphic, illustrated character motif, detailed illustration, flat vibrant colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of",
+    category: "apparel",
+    promptPlaceholder: "Describe your illustrated motif (e.g. scary grizzly bear standing up, retro robot, floral skull)",
+  },
 
   // Decor Pet Portraits - Full-bleed scenic versions (no chroma key needed)
   {
@@ -779,6 +793,8 @@ export const APPAREL_DARK_TIER_PROMPTS: Record<string, string> = {
   "opinionated": "T-shirt graphic, bold stacked text typography, strong opinion statement, up to 6 words maximum, bright vibrant colors including white and light tones (avoid dark, black, and hot pink/magenta colors in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, clean typographic layout. Create a bold text stack design of",
   "quotes": "T-shirt graphic, stylish quote typography, expressive lettering, bright vibrant colors including white and light tones (avoid dark, black, and hot pink/magenta colors in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, creative typographic layout. Create a quote design of",
   "pet-portraits": "T-shirt graphic, illustrated pet portrait, detailed character illustration, bright vibrant colors including white and light tones (avoid dark, black, and hot pink/magenta colors in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, clean illustrated style. Create a pet portrait of",
+  "centered-graphic": "T-shirt graphic, centered flat vector illustration, bold clean shapes, bright vibrant colors including white and light tones (avoid dark, black, and hot pink/magenta colors in the design), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of",
+  "illustrated-motif": "T-shirt graphic, illustrated character motif, detailed illustration, bright vibrant colors including white and light tones (avoid dark, black, and hot pink/magenta colors in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of",
   "none": "",
 };
 

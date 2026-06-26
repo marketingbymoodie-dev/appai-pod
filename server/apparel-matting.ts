@@ -26,6 +26,35 @@ export type ChromaKeyResult = {
   chromaRemovedPct: number;
   cornerRemovedPct: number;
   whiteKeyRemovedPct: number;
+  borderFloodRemovedPct: number;
+  cornerIsLightCanvas: boolean;
+};
+
+export type CornerColorSample = {
+  avgR: number;
+  avgG: number;
+  avgB: number;
+};
+
+export type WhiteMatThresholds = {
+  nearWhiteLum: number;
+  nearWhiteChroma: number;
+  greyLum: number;
+  greyChroma: number;
+};
+
+const DEFAULT_WHITE_MAT_THRESHOLDS: WhiteMatThresholds = {
+  nearWhiteLum: 240,
+  nearWhiteChroma: 12,
+  greyLum: 220,
+  greyChroma: 18,
+};
+
+const AGGRESSIVE_WHITE_MAT_THRESHOLDS: WhiteMatThresholds = {
+  nearWhiteLum: 235,
+  nearWhiteChroma: 14,
+  greyLum: 210,
+  greyChroma: 20,
 };
 
 export type ProcessApparelMotifOptions = {
@@ -56,6 +85,34 @@ const WHITE_BG_PATTERNS: RegExp[] = [
   /\brectangular\s+frame\b/gi,
   /\bwhite\s+mat\b/gi,
 ];
+
+/** Canonical hot-pink chroma prefixes keyed by lowercased style name. */
+export const APPAREL_CHROMA_STYLE_BY_NAME: Record<string, string> = {
+  "free 4 all": "",
+  "pattern maker":
+    "Seamless repeating pattern design, tileable motif, clean vector shapes, flat colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, isolated on a solid hot pink (#FF00FF) background, no white mat, no rectangular frame. Create a repeating pattern of",
+  opinionated:
+    "T-shirt graphic, bold stacked text typography, strong opinion statement, up to 6 words maximum, flat vibrant colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, clean typographic layout. Create a bold text stack design of",
+  quotes:
+    "T-shirt graphic, stylish quote typography, expressive lettering, flat vibrant colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, creative typographic layout. Create a quote design of",
+  "pet portraits":
+    "T-shirt graphic, illustrated pet portrait, detailed character illustration, flat vibrant colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, clean illustrated style. Create a pet portrait of",
+  "centered graphic":
+    "T-shirt graphic, centered flat vector illustration, bold clean shapes, flat vibrant colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of",
+  "illustrated motif":
+    "T-shirt graphic, illustrated character motif, detailed illustration, flat vibrant colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of",
+};
+
+/**
+ * Replace DB prefix with repo canonical copy for known apparel chroma styles,
+ * then sanitize conflicting background language.
+ */
+export function resolveApparelStylePrefix(styleName: string, dbPrefix: string): string {
+  const key = styleName.trim().toLowerCase();
+  const canonical = APPAREL_CHROMA_STYLE_BY_NAME[key];
+  const base = canonical !== undefined ? canonical : dbPrefix;
+  return sanitizeApparelStylePrefix(base);
+}
 
 /** Strip conflicting background language from merchant apparel style prefixes. */
 export function sanitizeApparelStylePrefix(prefix: string): string {
@@ -91,49 +148,27 @@ function colorDistance(
   return Math.abs(r - tr) + Math.abs(g - tg) + Math.abs(b - tb);
 }
 
-/** Parse Replicate remove-bg data URL / HTTP result into a buffer. */
-export async function parseRemoveBgResult(removeBgResult: RemoveBgResult): Promise<Buffer> {
-  return bufferFromRemoveBgResult(removeBgResult);
+function isMatColor(
+  r: number,
+  g: number,
+  b: number,
+  thresholds: WhiteMatThresholds = DEFAULT_WHITE_MAT_THRESHOLDS,
+): boolean {
+  const lum = pixelLuminance(r, g, b);
+  const chroma = pixelChroma(r, g, b);
+  return (
+    (lum >= thresholds.nearWhiteLum && chroma <= thresholds.nearWhiteChroma) ||
+    (lum >= thresholds.greyLum && chroma <= thresholds.greyChroma)
+  );
 }
 
-/**
- * Enhanced connectivity-independent chroma keying (pink → corner → white/grey mat).
- */
-export async function removeChromaKeyBackground(
-  buffer: Buffer,
-  opts?: { tolerance?: number; allowWhiteKey?: boolean },
-): Promise<ChromaKeyResult> {
-  const tolerance = opts?.tolerance ?? 60;
-  const allowWhiteKey = opts?.allowWhiteKey !== false;
-  console.log(`[Chroma Key] Starting (tolerance=${tolerance}, whiteKey=${allowWhiteKey})...`);
-  const startTime = Date.now();
-
-  const { data, info } = await sharp(buffer)
-    .ensureAlpha()
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-
-  const { width, height, channels } = info;
-  const source = new Uint8Array(data);
-  const pixels = new Uint8Array(source);
-  const total = width * height;
-
-  // Pass A: #FF00FF chroma key
-  let pinkRemoved = 0;
-  for (let i = 0; i < pixels.length; i += channels) {
-    const r = pixels[i];
-    const g = pixels[i + 1];
-    const b = pixels[i + 2];
-    const dist = colorDistance(r, g, b, CHROMA_KEY.r, CHROMA_KEY.g, CHROMA_KEY.b);
-    if (dist <= tolerance) {
-      pixels[i + 3] = 0;
-      pinkRemoved++;
-    }
-  }
-  const chromaRemovedPct = (pinkRemoved / total) * 100;
-  console.log(`[Chroma Key] Pink pass: ${chromaRemovedPct.toFixed(1)}%`);
-
-  // Pass B: corner-detected background (on original RGB, apply to current alpha)
+/** Sample average RGB from the four image corners (uses raw source buffer). */
+export function sampleCornerColorFromRaw(
+  source: Uint8Array,
+  width: number,
+  height: number,
+  channels: number,
+): CornerColorSample {
   const cornerSamples: { r: number; g: number; b: number }[] = [];
   const sampleSize = 5;
   const corners = [
@@ -158,6 +193,143 @@ export async function removeChromaKeyBackground(
     avgG = 255;
     avgB = 255;
   }
+  return { avgR, avgG, avgB };
+}
+
+/** True when AI used a white/grey canvas instead of hot pink chroma. */
+export function isLightCanvasCorner(sample: CornerColorSample): boolean {
+  const lum = pixelLuminance(sample.avgR, sample.avgG, sample.avgB);
+  const chroma = pixelChroma(sample.avgR, sample.avgG, sample.avgB);
+  return lum >= 220 && chroma <= 18;
+}
+
+/**
+ * Flood-fill near-white/grey mat pixels connected to any image border.
+ * Uses source RGB so interior subject whites disconnected from edges are kept.
+ */
+function applyBorderFloodFillLightMat(
+  pixels: Uint8Array,
+  source: Uint8Array,
+  width: number,
+  height: number,
+  channels: number,
+  thresholds: WhiteMatThresholds,
+): number {
+  const total = width * height;
+  const visited = new Uint8Array(total);
+  const queue: number[] = [];
+  let removed = 0;
+
+  const trySeed = (x: number, y: number) => {
+    const p = y * width + x;
+    if (visited[p]) return;
+    const idx = p * channels;
+    if (pixels[idx + 3] === 0) {
+      visited[p] = 1;
+      return;
+    }
+    if (!isMatColor(source[idx], source[idx + 1], source[idx + 2], thresholds)) return;
+    visited[p] = 1;
+    pixels[idx + 3] = 0;
+    removed++;
+    queue.push(p);
+  };
+
+  for (let x = 0; x < width; x++) {
+    trySeed(x, 0);
+    trySeed(x, height - 1);
+  }
+  for (let y = 0; y < height; y++) {
+    trySeed(0, y);
+    trySeed(width - 1, y);
+  }
+
+  while (queue.length > 0) {
+    const p = queue.pop()!;
+    const x = p % width;
+    const y = Math.floor(p / width);
+    for (const [dx, dy] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ] as const) {
+      const nx = x + dx;
+      const ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+      const np = ny * width + nx;
+      if (visited[np]) continue;
+      const idx = np * channels;
+      visited[np] = 1;
+      if (pixels[idx + 3] === 0) continue;
+      if (!isMatColor(source[idx], source[idx + 1], source[idx + 2], thresholds)) continue;
+      pixels[idx + 3] = 0;
+      removed++;
+      queue.push(np);
+    }
+  }
+
+  return removed;
+}
+
+/** Parse Replicate remove-bg data URL / HTTP result into a buffer. */
+export async function parseRemoveBgResult(removeBgResult: RemoveBgResult): Promise<Buffer> {
+  return bufferFromRemoveBgResult(removeBgResult);
+}
+
+/**
+ * Enhanced connectivity-independent chroma keying (pink → corner → white/grey mat → border flood).
+ */
+export async function removeChromaKeyBackground(
+  buffer: Buffer,
+  opts?: {
+    tolerance?: number;
+    allowWhiteKey?: boolean;
+    aggressiveWhiteKey?: boolean;
+    borderFloodFill?: boolean;
+  },
+): Promise<ChromaKeyResult> {
+  const tolerance = opts?.tolerance ?? 60;
+  const allowWhiteKey = opts?.allowWhiteKey !== false;
+  const aggressiveWhiteKey = opts?.aggressiveWhiteKey === true;
+  const borderFloodFill = opts?.borderFloodFill !== false;
+  const whiteThresholds = aggressiveWhiteKey
+    ? AGGRESSIVE_WHITE_MAT_THRESHOLDS
+    : DEFAULT_WHITE_MAT_THRESHOLDS;
+  console.log(
+    `[Chroma Key] Starting (tolerance=${tolerance}, whiteKey=${allowWhiteKey}, aggressive=${aggressiveWhiteKey})...`,
+  );
+  const startTime = Date.now();
+
+  const { data, info } = await sharp(buffer)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const { width, height, channels } = info;
+  const source = new Uint8Array(data);
+  const pixels = new Uint8Array(source);
+  const total = width * height;
+  const cornerSample = sampleCornerColorFromRaw(source, width, height, channels);
+  const cornerIsLightCanvas = isLightCanvasCorner(cornerSample);
+
+  // Pass A: #FF00FF chroma key
+  let pinkRemoved = 0;
+  for (let i = 0; i < pixels.length; i += channels) {
+    const r = pixels[i];
+    const g = pixels[i + 1];
+    const b = pixels[i + 2];
+    const dist = colorDistance(r, g, b, CHROMA_KEY.r, CHROMA_KEY.g, CHROMA_KEY.b);
+    if (dist <= tolerance) {
+      pixels[i + 3] = 0;
+      pinkRemoved++;
+    }
+  }
+  const chromaRemovedPct = (pinkRemoved / total) * 100;
+  console.log(`[Chroma Key] Pink pass: ${chromaRemovedPct.toFixed(1)}%`);
+
+  // Pass B: corner-detected background (on original RGB, apply to current alpha)
+  const { avgR, avgG, avgB } = cornerSample;
 
   let cornerRemoved = 0;
   const bgTolerance = 45;
@@ -183,16 +355,28 @@ export async function removeChromaKeyBackground(
       const r = pixels[i];
       const g = pixels[i + 1];
       const b = pixels[i + 2];
-      const lum = pixelLuminance(r, g, b);
-      const chroma = pixelChroma(r, g, b);
-      const isNearWhite = lum >= 240 && chroma <= 12;
-      const isLightGreyMat = lum >= 220 && chroma <= 18;
-      if (isNearWhite || isLightGreyMat) {
+      if (isMatColor(r, g, b, whiteThresholds)) {
         pixels[i + 3] = 0;
         whiteKeyRemoved++;
       }
     }
     console.log(`[Chroma Key] White/grey mat pass: ${((whiteKeyRemoved / total) * 100).toFixed(1)}%`);
+  }
+
+  // Pass E: border-connected flood fill for mats that survive global keying
+  let borderFloodRemoved = 0;
+  if (borderFloodFill && allowWhiteKey) {
+    borderFloodRemoved = applyBorderFloodFillLightMat(
+      pixels,
+      source,
+      width,
+      height,
+      channels,
+      whiteThresholds,
+    );
+    console.log(
+      `[Chroma Key] Border flood mat pass: ${((borderFloodRemoved / total) * 100).toFixed(1)}%`,
+    );
   }
 
   const elapsed = Date.now() - startTime;
@@ -204,6 +388,8 @@ export async function removeChromaKeyBackground(
     chromaRemovedPct,
     cornerRemovedPct,
     whiteKeyRemovedPct: (whiteKeyRemoved / total) * 100,
+    borderFloodRemovedPct: (borderFloodRemoved / total) * 100,
+    cornerIsLightCanvas,
   };
 }
 
@@ -589,7 +775,24 @@ export async function processApparelMotif(
   const allowWhiteKey = opts.allowWhiteKey !== false;
   const useMlFallback = opts.useMlFallback !== false;
 
-  const chroma = await removeChromaKeyBackground(sourceBuffer, { allowWhiteKey });
+  const { data: rawData, info: rawInfo } = await sharp(sourceBuffer)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const sourceCorner = sampleCornerColorFromRaw(
+    new Uint8Array(rawData),
+    rawInfo.width,
+    rawInfo.height,
+    rawInfo.channels,
+  );
+  const cornerIsLightCanvas = isLightCanvasCorner(sourceCorner);
+  const useAggressiveWhiteKey = cornerIsLightCanvas;
+
+  const chroma = await removeChromaKeyBackground(sourceBuffer, {
+    allowWhiteKey,
+    aggressiveWhiteKey: useAggressiveWhiteKey,
+    borderFloodFill: true,
+  });
   let buffer = chroma.buffer;
   let usedMlFallback = false;
 
@@ -599,7 +802,9 @@ export async function processApparelMotif(
   const needsMlFallback =
     useMlFallback &&
     chroma.chromaRemovedPct < 5 &&
-    qa.cornerBgOpaqueRatio > 0.4;
+    qa.cornerBgOpaqueRatio > 0.4 &&
+    !cornerIsLightCanvas &&
+    !chroma.cornerIsLightCanvas;
 
   if (needsMlFallback) {
     console.log("[Apparel Matting] Chroma key weak — trying Replicate fallback...");
@@ -607,11 +812,20 @@ export async function processApparelMotif(
       const mlBuffer = await parseRemoveBgResult(
         await removeBackground({ imageBuffer: sourceBuffer }),
       );
-      buffer = mlBuffer;
+      const rechroma = await removeChromaKeyBackground(mlBuffer, {
+        allowWhiteKey,
+        aggressiveWhiteKey: useAggressiveWhiteKey,
+        borderFloodFill: true,
+      });
+      buffer = rechroma.buffer;
       usedMlFallback = true;
     } catch (err) {
       console.warn("[Apparel Matting] Replicate fallback failed:", (err as Error).message);
     }
+  } else if (cornerIsLightCanvas) {
+    console.log(
+      "[Apparel Matting] Light/white canvas detected — skipping ML fallback, using chroma + border flood",
+    );
   }
 
   buffer = await cleanupFlatGraphicAlpha(buffer, {

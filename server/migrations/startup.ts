@@ -154,6 +154,17 @@ const DATA_MIGRATIONS: string[] = [
     FROM customers c
     WHERE cb.customer_id = c.id
       AND c.credits < cb.credits`,
+  // Canonical hot-pink chroma prefixes for merchant apparel styles (matting-critical).
+  `UPDATE style_presets
+   SET prompt_prefix = 'T-shirt graphic, centered flat vector illustration, bold clean shapes, flat vibrant colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of',
+       category = 'apparel'
+   WHERE lower(name) = 'centered graphic'
+     AND (prompt_prefix ILIKE '%white%' OR prompt_prefix NOT ILIKE '%#FF00FF%')`,
+  `UPDATE style_presets
+   SET prompt_prefix = 'T-shirt graphic, illustrated character motif, detailed illustration, flat vibrant colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of',
+       category = 'apparel'
+   WHERE lower(name) = 'illustrated motif'
+     AND (prompt_prefix ILIKE '%white%' OR prompt_prefix NOT ILIKE '%#FF00FF%')`,
 ];
 
 // ── Table creation ─────────────────────────────────────────────────────────────
