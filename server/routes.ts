@@ -1,5 +1,11 @@
 import { generateImageBase64 } from "./replit_integrations/image/client";
-import { generatePattern, removeBackground, despillMagenta, hardenAlphaEdges, type PatternType, type RemoveBgResult } from "./picsart-client";
+import { generatePattern, type PatternType } from "./replicate-bg-remover";
+import {
+  processApparelMotif,
+  trimTransparentBounds,
+  sanitizeApparelStylePrefix,
+  processApparelMotifToDataUrl,
+} from "./apparel-matting";
 import { tileImage, type TileMode } from "./sharp-tiler";
 import pg from "pg";
 import express, { type Express, Request, Response, NextFunction } from "express";
@@ -570,213 +576,12 @@ MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
 4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean #FF00FF space around it.
 5. CLEAN EDGES: The design must have crisp, clean edges against the hot pink background. No fuzzy, gradient, or semi-transparent edges.
 6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid hot pink background.
+6b. NO WHITE OR GREY PLATE: Do NOT render the subject on a white or grey mat — the ONLY background color is #FF00FF edge-to-edge.
 7. PRINT-READY: This is for t-shirt/apparel printing — create an isolated graphic that can be printed on fabric.
 8. COMPOSITION FORMAT: Fill the canvas matching the requested aspect ratio with the design centered.
 9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
 ${APPAREL_CHROMA_MATTING_LINE}
 `;
-}
-
-/**
- * Shrink the opaque alpha mask inward to discard chroma fringe on anti-aliased edges.
- */
-async function erodeAlphaChannel(buffer: Buffer, radiusPx: number = 2): Promise<Buffer> {
-  if (radiusPx <= 0) return buffer;
-  const { data, info } = await sharp(buffer)
-    .ensureAlpha()
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-  const { width, height, channels } = info;
-  const src = new Uint8Array(data);
-  const dst = new Uint8Array(src);
-  const alphaThreshold = 8;
-
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = (y * width + x) * channels;
-      if (src[idx + 3] <= alphaThreshold) continue;
-
-      let keep = true;
-      for (let dy = -radiusPx; dy <= radiusPx && keep; dy++) {
-        for (let dx = -radiusPx; dx <= radiusPx; dx++) {
-          const nx = x + dx;
-          const ny = y + dy;
-          if (nx < 0 || ny < 0 || nx >= width || ny >= height) {
-            keep = false;
-            break;
-          }
-          const nidx = (ny * width + nx) * channels;
-          if (src[nidx + 3] <= alphaThreshold) {
-            keep = false;
-            break;
-          }
-        }
-      }
-      if (!keep) dst[idx + 3] = 0;
-    }
-  }
-
-  return sharp(Buffer.from(dst), { raw: { width, height, channels } }).png().toBuffer();
-}
-
-/**
- * Chroma key background removal with smart fallback.
- *
- * 1. Try removing #FF00FF (hot pink) pixels — the intended chroma key.
- * 2. If <10% of pixels were pink (AI ignored the instruction), detect the actual
- *    background color by sampling the four corners, then remove that color instead.
- */
-async function removeChromaKeyBackground(buffer: Buffer, tolerance: number = 60): Promise<Buffer> {
-  console.log(`[Chroma Key] Starting background removal (tolerance=${tolerance})...`);
-  const startTime = Date.now();
-
-  const { data, info } = await sharp(buffer)
-    .ensureAlpha()
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-
-  const { width, height, channels } = info;
-  const pixels = new Uint8Array(data);
-  const total = width * height;
-
-  // Pass 1: try #FF00FF chroma key
-  let removed = 0;
-  const targetR = 255, targetG = 0, targetB = 255;
-
-  for (let i = 0; i < pixels.length; i += channels) {
-    const r = pixels[i], g = pixels[i + 1], b = pixels[i + 2];
-    const dist = Math.abs(r - targetR) + Math.abs(g - targetG) + Math.abs(b - targetB);
-    if (dist <= tolerance) {
-      pixels[i + 3] = 0;
-      removed++;
-    }
-  }
-
-  const pinkPct = (removed / total) * 100;
-  console.log(`[Chroma Key] Pink pass: removed ${removed}/${total} (${pinkPct.toFixed(1)}%)`);
-
-  // If pink removal worked (>10% of image was pink background), we're done
-  if (pinkPct >= 10) {
-    const elapsed = Date.now() - startTime;
-    console.log(`[Chroma Key] Complete in ${elapsed}ms — pink chroma key succeeded`);
-    return sharp(Buffer.from(pixels), { raw: { width, height, channels } }).png().toBuffer();
-  }
-
-  // Pass 2: pink didn't work — detect actual bg color from corners and remove it
-  console.log(`[Chroma Key] Pink pass removed <10%, falling back to corner-sample detection...`);
-
-  // Re-read raw pixels (undo the few pink removals)
-  const { data: data2 } = await sharp(buffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-  const px = new Uint8Array(data2);
-
-  // Sample the four corners (5x5 pixel blocks) to find the dominant background color
-  const cornerSamples: { r: number; g: number; b: number }[] = [];
-  const sampleSize = 5;
-  const corners = [
-    [0, 0], [width - sampleSize, 0],
-    [0, height - sampleSize], [width - sampleSize, height - sampleSize],
-  ];
-  for (const [cx, cy] of corners) {
-    for (let dy = 0; dy < sampleSize; dy++) {
-      for (let dx = 0; dx < sampleSize; dx++) {
-        const idx = ((cy + dy) * width + (cx + dx)) * channels;
-        cornerSamples.push({ r: px[idx], g: px[idx + 1], b: px[idx + 2] });
-      }
-    }
-  }
-
-  // Average the corner samples to get the background color
-  let avgR = Math.round(cornerSamples.reduce((s, c) => s + c.r, 0) / cornerSamples.length);
-  let avgG = Math.round(cornerSamples.reduce((s, c) => s + c.g, 0) / cornerSamples.length);
-  let avgB = Math.round(cornerSamples.reduce((s, c) => s + c.b, 0) / cornerSamples.length);
-  
-  // Special case: if corners are very bright (white/off-white), force pure white detection
-  // This helps with AI-generated images that have slight compression artifacts in the white background
-  if (avgR > 240 && avgG > 240 && avgB > 240) {
-    console.log(`[Chroma Key] Bright corners detected (${avgR},${avgG},${avgB}), forcing white background removal`);
-    avgR = 255; avgG = 255; avgB = 255;
-  }
-  
-  console.log(`[Chroma Key] Detected corner bg color: rgb(${avgR},${avgG},${avgB})`);
-
-  // Remove all pixels matching the detected background color (with tolerance)
-  let fallbackRemoved = 0;
-  const bgTolerance = 45;
-  for (let i = 0; i < px.length; i += channels) {
-    const r = px[i], g = px[i + 1], b = px[i + 2];
-    const dist = Math.abs(r - avgR) + Math.abs(g - avgG) + Math.abs(b - avgB);
-    if (dist <= bgTolerance) {
-      px[i + 3] = 0;
-      fallbackRemoved++;
-    }
-  }
-
-  const fallbackPct = (fallbackRemoved / total) * 100;
-  const elapsed = Date.now() - startTime;
-  console.log(`[Chroma Key] Fallback pass: removed ${fallbackRemoved}/${total} (${fallbackPct.toFixed(1)}%) in ${elapsed}ms`);
-
-  return sharp(Buffer.from(px), { raw: { width, height, channels } }).png().toBuffer();
-}
-
-/**
- * Crop fully transparent margins after background removal so repeated tiles use
- * the artwork bounds instead of the original empty canvas.
- */
-async function trimTransparentBounds(
-  buffer: Buffer,
-  alphaThreshold: number = 8,
-  padding: number = 8,
-): Promise<Buffer> {
-  const { data, info } = await sharp(buffer)
-    .ensureAlpha()
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-
-  const { width, height, channels } = info;
-  const pixels = new Uint8Array(data);
-
-  let minX = width;
-  let minY = height;
-  let maxX = -1;
-  let maxY = -1;
-
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = (y * width + x) * channels;
-      const alpha = pixels[idx + 3];
-      if (alpha > alphaThreshold) {
-        if (x < minX) minX = x;
-        if (y < minY) minY = y;
-        if (x > maxX) maxX = x;
-        if (y > maxY) maxY = y;
-      }
-    }
-  }
-
-  if (maxX < minX || maxY < minY) {
-    console.warn("[trimTransparentBounds] No opaque pixels found; leaving original image unchanged");
-    return buffer;
-  }
-
-  const left = Math.max(0, minX - padding);
-  const top = Math.max(0, minY - padding);
-  const right = Math.min(width - 1, maxX + padding);
-  const bottom = Math.min(height - 1, maxY + padding);
-  const cropWidth = Math.max(1, right - left + 1);
-  const cropHeight = Math.max(1, bottom - top + 1);
-
-  if (left === 0 && top === 0 && cropWidth === width && cropHeight === height) {
-    return buffer;
-  }
-
-  console.log(
-    `[trimTransparentBounds] Cropping ${width}x${height} -> ${cropWidth}x${cropHeight} (padding=${padding})`,
-  );
-
-  return sharp(buffer)
-    .extract({ left, top, width: cropWidth, height: cropHeight })
-    .png()
-    .toBuffer();
 }
 
 /**
@@ -952,29 +757,6 @@ interface SaveImageOptions {
   bgRemovalSensitivity?: number;
 }
 
-/** Alpha erosion radius after matting — lighter when remove.bg succeeded cleanly. */
-function resolveAlphaErosionRadius(opts: {
-  removeBgUsedApi: boolean;
-  bgRemovalSensitivity?: number;
-}): number {
-  if (typeof opts.bgRemovalSensitivity === "number" && Number.isFinite(opts.bgRemovalSensitivity)) {
-    const s = Math.max(0, Math.min(100, opts.bgRemovalSensitivity));
-    return Math.round((s / 100) * 2);
-  }
-  return opts.removeBgUsedApi ? 0 : 1;
-}
-
-async function bufferFromRemoveBgResult(removeBgResult: RemoveBgResult): Promise<Buffer> {
-  if (removeBgResult.url.startsWith("data:")) {
-    return Buffer.from(removeBgResult.url.split(",")[1], "base64");
-  }
-  const response = await fetch(removeBgResult.url);
-  if (!response.ok) {
-    throw new Error(`Failed to download background removal result: ${response.statusText}`);
-  }
-  return Buffer.from(await response.arrayBuffer());
-}
-
 async function saveImageToStorage(base64Data: string, mimeType: string, options?: SaveImageOptions): Promise<SaveImageResult> {
   const { isApparel = false, isAllOverPrint = false, targetDims, bgRemovalSensitivity } = options || {};
   const imageId = crypto.randomUUID();
@@ -987,73 +769,23 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
   // For apparel, remove background using Replicate — including AOP
   // This ensures the motif is clean before tiling or placement
   if (isApparel) {
-    console.log(`[saveImageToStorage] Removing background for apparel (AOP=${isAllOverPrint})...`);
+    console.log(`[saveImageToStorage] Chroma-first matting for apparel (AOP=${isAllOverPrint})...`);
     const sourceBuffer = buffer;
-    try {
-      let apiBuffer: Buffer | null = null;
-
-      const tempImageId = `temp_${crypto.randomUUID()}`;
-      const tempFilename = `${tempImageId}.${extension}`;
-      const tempUrl = await uploadDesignFileToSupabase({
-        buffer: sourceBuffer,
-        filename: tempFilename,
-        contentType: actualMimeType,
-      });
-
-      if (tempUrl) {
-        try {
-          apiBuffer = await bufferFromRemoveBgResult(
-            await removeBackground({ imageUrl: tempUrl }),
-          );
-        } catch (urlErr) {
-          console.warn(
-            "[saveImageToStorage] URL-based removal failed, trying buffer:",
-            (urlErr as Error).message,
-          );
-        }
-      }
-
-      if (!apiBuffer) {
-        apiBuffer = await bufferFromRemoveBgResult(
-          await removeBackground({ imageBuffer: sourceBuffer }),
-        );
-      }
-
-      buffer = apiBuffer;
-      extension = "png";
-      actualMimeType = "image/png";
-      removeBgUsedApi = true;
-      console.log("[saveImageToStorage] Replicate background removal successful");
-    } catch (err) {
-      console.error("[saveImageToStorage] Replicate failed, falling back to chroma key:", (err as Error).message);
-      buffer = await removeChromaKeyBackground(sourceBuffer);
-      extension = "png";
-      actualMimeType = "image/png";
+    const matting = await processApparelMotif(sourceBuffer, {
+      isAllOverPrint,
+      bgRemovalSensitivity,
+      allowWhiteKey: true,
+      useMlFallback: process.env.APPAREL_ML_BG_FALLBACK !== "false",
+      vectorize: process.env.APPAREL_VECTORIZE === "true",
+    });
+    buffer = matting.buffer;
+    extension = "png";
+    actualMimeType = "image/png";
+    removeBgUsedApi = matting.usedMlFallback;
+    if (matting.qa.softAlphaRatio > 0.03 || matting.qa.cornerBgOpaqueRatio > 0.5) {
+      console.warn("[saveImageToStorage] Matting QA:", JSON.stringify(matting.qa));
     }
-
-    // Decontaminate the #FF00FF chroma-key spill left on anti-aliased edges
-    try {
-      buffer = await despillMagenta(buffer);
-    } catch (despillErr) {
-      console.warn("[saveImageToStorage] magenta despill skipped:", (despillErr as Error).message);
-    }
-
-    try {
-      buffer = await hardenAlphaEdges(buffer);
-    } catch (hardenErr) {
-      console.warn("[saveImageToStorage] alpha edge hardening skipped:", (hardenErr as Error).message);
-    }
-
-    const erosionRadius = resolveAlphaErosionRadius({ removeBgUsedApi, bgRemovalSensitivity });
-    if (erosionRadius > 0) {
-      try {
-        buffer = await erodeAlphaChannel(buffer, erosionRadius);
-      } catch (erodeErr) {
-        console.warn("[saveImageToStorage] alpha erosion skipped:", (erodeErr as Error).message);
-      }
-    }
-
-    buffer = await trimTransparentBounds(buffer, 8, removeBgUsedApi ? 4 : 8);
+    buffer = await trimTransparentBounds(buffer, 8, matting.usedMlFallback ? 4 : 8);
   } else if (targetDims && targetDims.width !== targetDims.height) {
     const outputFormat =
       actualMimeType.includes("jpeg") || actualMimeType.includes("jpg")
@@ -2571,6 +2303,10 @@ export async function registerRoutes(
         isApparel = true;
       }
 
+      if (isApparel && stylePromptPrefix) {
+        stylePromptPrefix = sanitizeApparelStylePrefix(stylePromptPrefix);
+      }
+
       const isAllOverPrint = !!(productType?.isAllOverPrint);      // Determine color tier for apparel products
       let colorTier: ColorTier = "light"; // Default to light (dark designs on white background)
 
@@ -3350,6 +3086,12 @@ console.log("[shopify/session] installation ok", {
       let productType = null;
       if (productTypeId) {
         productType = await storage.getProductType(parseInt(productTypeId));
+      }
+
+      const embedIsApparelEarly =
+        productType?.designerType === "apparel" || embedStyleCategory === "apparel";
+      if (embedIsApparelEarly && stylePromptPrefix) {
+        stylePromptPrefix = sanitizeApparelStylePrefix(stylePromptPrefix);
       }
 
 
@@ -7363,6 +7105,10 @@ ${textEdgeRestrictions}
         isApparel = true;
       }
 
+      if (isApparel && stylePromptPrefix) {
+        stylePromptPrefix = sanitizeApparelStylePrefix(stylePromptPrefix);
+      }
+
       const isAllOverPrint = !!(productType?.isAllOverPrint);
       if (sizeConfig && isApparel && !isAllOverPrint) {
         const normalized = resolveGenerationAspectRatio(sizeConfig.aspectRatio, { isApparel, isAllOverPrint });
@@ -7402,6 +7148,7 @@ MANDATORY IMAGE REQUIREMENTS FOR ALL-OVER PRINT (AOP) - FOLLOW EXACTLY:
 4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean hot pink space around it.
 5. CLEAN EDGES: The design must have crisp, hard vector-like edges against the hot pink background. No fuzzy, gradient, or semi-transparent edges.
 6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid hot pink background.
+6b. NO WHITE OR GREY PLATE: Do NOT render the subject on a white or grey mat — the ONLY background color is #FF00FF edge-to-edge.
 7. PRINT-READY: This is for all-over print fabric — create an isolated motif graphic.
 8. COMPOSITION FORMAT: Fill the canvas matching the requested aspect ratio with the design centered.
 9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
@@ -10049,9 +9796,11 @@ ${textEdgeRestrictions}
         sourceBuffer = Buffer.from(await srcRes.arrayBuffer());
       }
 
-      const { removeBackground } = await import("./picsart-client");
-      const result = await removeBackground({ imageBuffer: sourceBuffer });
-      res.json({ url: result.url });
+      const url = await processApparelMotifToDataUrl(sourceBuffer, {
+        allowWhiteKey: true,
+        useMlFallback: process.env.APPAREL_ML_BG_FALLBACK !== "false",
+      });
+      res.json({ url });
     } catch (err: any) {
       console.error("[Remove BG] Error:", err.message);
       res.status(500).json({ error: err.message ?? "Background removal failed" });

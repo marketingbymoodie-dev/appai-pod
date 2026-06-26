@@ -161,6 +161,7 @@ function compressPrompt(raw: string, isApparel: boolean, isAllOverPrint?: boolea
     const shortAopConstraints =
       "Isolated centered motif on a SOLID HOT PINK (#FF00FF) background. " +
       "Every pixel not part of the design must be exactly #FF00FF. " +
+      "NO white mat, NO white rectangle, NO card behind subject — background must be pure #FF00FF to all four edges. " +
       "Do NOT use hot pink or magenta anywhere in the design itself. " +
       "Clean hard edges, no gradients into background, no rectangular frames. " +
       "Do NOT add any text, words, slogans, or labels unless the user explicitly requested them. ";
@@ -178,6 +179,7 @@ function compressPrompt(raw: string, isApparel: boolean, isAllOverPrint?: boolea
     const shortApparelConstraints =
       "Isolated centered graphic on a SOLID HOT PINK (#FF00FF) background. " +
       "Every pixel not part of the design must be exactly #FF00FF. " +
+      "NO white mat, NO white rectangle, NO card behind subject — background must be pure #FF00FF to all four edges. " +
       "Do NOT use hot pink or magenta anywhere in the design itself. " +
       "Clean hard edges, no gradients into background, no outer glow or halos, no rectangular frames. " +
       "Do NOT add any text, words, slogans, or labels unless the user explicitly requested them. ";
