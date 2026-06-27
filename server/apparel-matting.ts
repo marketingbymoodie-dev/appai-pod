@@ -9,6 +9,7 @@ import {
   bufferFromRemoveBgResult,
   type RemoveBgResult,
 } from "./replicate-bg-remover";
+import { rasterizeSvgBuffer, vectorizeWithRecraft } from "./replicate-vectorizer";
 
 export const CHROMA_KEY = { r: 255, g: 0, b: 255 } as const;
 
@@ -854,39 +855,65 @@ export async function trimTransparentBounds(
     .toBuffer();
 }
 
+async function vectorizeWithNeplex(buffer: Buffer, width: number, height: number): Promise<Buffer> {
+  const { vectorize, ColorMode, Hierarchical, PathSimplifyMode } = await import("@neplex/vectorizer");
+
+  const svg = await vectorize(buffer, {
+    colorMode: ColorMode.Color,
+    colorPrecision: 5,
+    filterSpeckle: 4,
+    cornerThreshold: 80,
+    hierarchical: Hierarchical.Stacked,
+    mode: PathSimplifyMode.Spline,
+    pathPrecision: 4,
+  });
+
+  return rasterizeSvgBuffer(Buffer.from(svg), width, height);
+}
+
 async function maybeVectorizeFlatGraphic(buffer: Buffer): Promise<Buffer> {
   if (process.env.APPAREL_VECTORIZE !== "true") return buffer;
 
-  try {
-    const meta = await sharp(buffer).metadata();
-    const width = meta.width ?? 1024;
-    const height = meta.height ?? 1024;
+  const startedAt = Date.now();
+  const meta = await sharp(buffer).metadata();
+  const width = meta.width ?? 1024;
+  const height = meta.height ?? 1024;
+  const provider = (process.env.APPAREL_VECTORIZE_PROVIDER || "recraft").trim().toLowerCase();
 
-    const { vectorize, ColorMode, Hierarchical, PathSimplifyMode } = await import(
-      "@neplex/vectorizer"
-    );
-
-    const svg = await vectorize(buffer, {
-      colorMode: ColorMode.Color,
-      colorPrecision: 5,
-      filterSpeckle: 4,
-      cornerThreshold: 80,
-      hierarchical: Hierarchical.Stacked,
-      mode: PathSimplifyMode.Spline,
-      pathPrecision: 4,
-    });
-
-    const rasterized = await sharp(Buffer.from(svg))
-      .resize(width, height, { fit: "fill" })
-      .png()
-      .toBuffer();
-
-    console.log("[Apparel Matting] Vectorize round-trip complete");
-    return rasterized;
-  } catch (err) {
-    console.warn("[Apparel Matting] Vectorize skipped:", (err as Error).message);
-    return buffer;
+  if (provider === "recraft" || provider === "") {
+    try {
+      const svg = await vectorizeWithRecraft({ imageBuffer: buffer });
+      const rasterized = await rasterizeSvgBuffer(svg, width, height);
+      console.log(
+        `[Apparel Matting] Recraft vectorize round-trip complete in ${Date.now() - startedAt}ms`,
+      );
+      return rasterized;
+    } catch (err) {
+      console.warn(
+        `[Apparel Matting] Recraft vectorize failed after ${Date.now() - startedAt}ms, trying neplex:`,
+        (err as Error).message,
+      );
+    }
   }
+
+  if (provider === "recraft" || provider === "neplex") {
+    try {
+      const neplexStarted = Date.now();
+      const rasterized = await vectorizeWithNeplex(buffer, width, height);
+      console.log(
+        `[Apparel Matting] Neplex vectorize round-trip complete in ${Date.now() - neplexStarted}ms (total ${Date.now() - startedAt}ms)`,
+      );
+      return rasterized;
+    } catch (err) {
+      console.warn("[Apparel Matting] Neplex vectorize skipped:", (err as Error).message);
+    }
+  } else {
+    console.warn(
+      `[Apparel Matting] Unknown APPAREL_VECTORIZE_PROVIDER="${provider}" — skipping vectorize`,
+    );
+  }
+
+  return buffer;
 }
 
 function logQaWarnings(qa: AlphaQualityMetrics, chromaRemovedPct: number): void {
