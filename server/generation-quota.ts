@@ -1,61 +1,64 @@
 /**
  * Per-merchant monthly generation quota enforcement.
- *
- * The Plan & Billing page advertises monthly generation allotments + overage
- * pricing per plan (see server/customizer-plans.ts). This module wires that up:
- * it reads the merchant's effective plan from the Shopify installation, meters
- * generations against the plan's free allotment + overage cap, and blocks once
- * the hard cap is reached.
- *
- * Two counter buckets exist (see resolveGenerationQuota):
- *   - Paid+active plans: monthly bucket "YYYY-MM" (resets each calendar month).
- *   - Trial / no-plan:   cumulative bucket "trial" (20 free total, never resets).
- *
- * The separate per-CUSTOMER 10-free-generation limit (FREE_GENERATION_LIMIT in
- * routes.ts/storage.ts) is unrelated and remains enforced independently.
- *
- * Customer-paid credits ($1 / 10-pack on the storefront) also do NOT consume
- * merchant plan quota — only generations billed to the shop (free customer
- * slots, anonymous session, admin tester, etc.) increment monthlyGenerationsUsed.
  */
 import { storage } from "./storage";
 import {
   getEffectivePlan,
   resolveGenerationQuota,
   PLAN_DISPLAY_NAMES,
+  type GenerationQuotaConfig,
 } from "./customizer-plans";
 import { emitOverageUsageCharge } from "./usage-billing";
+import {
+  includedUsedFromCounters,
+  extraSpentCents,
+  isOverageOptInActive,
+  planMaxOverageBudgetCents,
+  resolveEffectiveOverageCap,
+  OVERAGE_PRICE_CENTS,
+} from "./overage-settings";
 import type { ShopifyInstallation } from "@shared/schema";
 
+export type QuotaBlockCode =
+  | "TRIAL_LIMIT_REACHED"
+  | "MONTHLY_LIMIT_REACHED"
+  | "OVERAGE_OPT_IN_REQUIRED"
+  | "OVERAGE_BUDGET_EXHAUSTED";
+
 export interface MerchantQuotaDecision {
-  /** Whether the generation is permitted. */
   allowed: boolean;
-  /** Owner-shop bypass — unlimited, no metering. */
   unlimited: boolean;
-  /** Machine-readable block reason (only when !allowed). */
-  code?: "TRIAL_LIMIT_REACHED" | "MONTHLY_LIMIT_REACHED";
-  /** Human-readable message the UI can surface. */
+  code?: QuotaBlockCode;
   message?: string;
-  /** Suggested HTTP status when blocked. */
   status?: number;
-  /** Effective plan the quota was derived from (e.g. "trial", "starter"). */
   planName: string | null;
-  /** Free generations included in the bucket. */
   freeQuota: number;
-  /** Overage cap (extra generations beyond free) in the bucket. */
+  /** Plan-level max overage units (before merchant opt-in). */
+  planOverageCap: number;
+  /** Effective overage cap after merchant opt-in budget. */
   overageCap: number;
-  /** Hard cap = freeQuota + overageCap. */
   hardCap: number;
-  /** Generations used in the current bucket (after consumption when consumed). */
   used: number;
-  /** Overage units used in the current bucket (for billing tally). */
   overageUsed: number;
-  /** Generations remaining before the hard block. */
   remaining: number;
-  /** True when the metered generation fell into the overage band. */
   isOverage: boolean;
-  /** Per-overage-generation price in USD (0 when plan has no overage). */
   overagePriceUsd: number;
+  /** Included (plan allowance) usage — excludes extra pay-as-you-go. */
+  includedUsed: number;
+  includedLimit: number;
+  includedRemaining: number;
+  extraUsed: number;
+  extraLimit: number;
+  extraBudgetCents: number | null;
+  extraSpentCents: number;
+  extraRemainingCents: number | null;
+  overageOptInEnabled: boolean;
+  overageRecurring: boolean;
+  /** True when included usage >= 90% and not opted in. */
+  showOptInForm: boolean;
+  /** True when included quota exhausted and not opted in. */
+  includedExhausted: boolean;
+  currency: "USD";
 }
 
 function isOwnerShop(shopDomain: string | null | undefined): boolean {
@@ -64,12 +67,71 @@ function isOwnerShop(shopDomain: string | null | undefined): boolean {
   return shopDomain.toLowerCase().replace(/^https?:\/\//, "") === ownerShop;
 }
 
+function enrichDecision(
+  base: Omit<
+    MerchantQuotaDecision,
+    | "includedUsed"
+    | "includedLimit"
+    | "includedRemaining"
+    | "extraUsed"
+    | "extraLimit"
+    | "extraBudgetCents"
+    | "extraSpentCents"
+    | "extraRemainingCents"
+    | "overageOptInEnabled"
+    | "overageRecurring"
+    | "showOptInForm"
+    | "includedExhausted"
+    | "currency"
+    | "planOverageCap"
+  > & { planOverageCap?: number },
+  installation: ShopifyInstallation,
+  quota: GenerationQuotaConfig,
+): MerchantQuotaDecision {
+  const includedUsed = includedUsedFromCounters(base.used, base.overageUsed);
+  const includedLimit = base.freeQuota;
+  const includedRemaining = Math.max(0, includedLimit - includedUsed);
+  const extraUsed = base.overageUsed;
+  const extraLimit = base.overageCap;
+  const budgetCents = installation.overageBudgetCents ?? null;
+  const spentCents = extraSpentCents(extraUsed);
+  const extraRemainingCents =
+    budgetCents != null ? Math.max(0, budgetCents - spentCents) : null;
+  const optedIn = isOverageOptInActive(installation, quota.bucketKey);
+  const includedExhausted = !base.unlimited && includedUsed >= includedLimit && includedLimit > 0;
+  const showOptInForm =
+    !base.unlimited &&
+    quota.monthly &&
+    !optedIn &&
+    includedLimit > 0 &&
+    includedUsed >= Math.ceil(includedLimit * 0.9);
+
+  return {
+    ...base,
+    planOverageCap: base.planOverageCap ?? quota.overageCap,
+    includedUsed,
+    includedLimit,
+    includedRemaining,
+    extraUsed,
+    extraLimit,
+    extraBudgetCents: budgetCents,
+    extraSpentCents: spentCents,
+    extraRemainingCents,
+    overageOptInEnabled: optedIn,
+    overageRecurring: !!installation.overageRecurring,
+    showOptInForm,
+    includedExhausted,
+    currency: "USD",
+  };
+}
+
 function unlimitedDecision(planName: string | null): MerchantQuotaDecision {
   return {
     allowed: true,
     unlimited: true,
     planName,
     freeQuota: Infinity,
+    planOverageCap: 0,
     overageCap: 0,
     hardCap: Infinity,
     used: 0,
@@ -77,123 +139,206 @@ function unlimitedDecision(planName: string | null): MerchantQuotaDecision {
     remaining: Infinity,
     isOverage: false,
     overagePriceUsd: 0,
+    includedUsed: 0,
+    includedLimit: Infinity,
+    includedRemaining: Infinity,
+    extraUsed: 0,
+    extraLimit: 0,
+    extraBudgetCents: null,
+    extraSpentCents: 0,
+    extraRemainingCents: null,
+    overageOptInEnabled: false,
+    overageRecurring: false,
+    showOptInForm: false,
+    includedExhausted: false,
+    currency: "USD",
   };
 }
 
 function blockedDecision(
-  quota: ReturnType<typeof resolveGenerationQuota>,
+  quota: GenerationQuotaConfig,
   used: number,
-  overageUsed: number
+  overageUsed: number,
+  installation: ShopifyInstallation,
+  code: QuotaBlockCode,
 ): MerchantQuotaDecision {
-  const isTrial = !quota.monthly;
-  const code = isTrial ? "TRIAL_LIMIT_REACHED" : "MONTHLY_LIMIT_REACHED";
-  const message = isTrial
-    ? `You've used all ${quota.freeQuota} free trial generations. Upgrade to Starter to keep generating.`
-    : `Monthly generation limit reached for your ${PLAN_DISPLAY_NAMES[quota.effectivePlan] ?? quota.effectivePlan} plan. Your quota resets at the start of next month.`;
-  return {
-    allowed: false,
-    unlimited: false,
-    code,
-    message,
-    status: 402,
-    planName: quota.effectivePlan,
-    freeQuota: quota.freeQuota,
-    overageCap: quota.overageCap,
-    hardCap: quota.hardCap,
-    used,
-    overageUsed,
-    remaining: 0,
-    isOverage: false,
-    overagePriceUsd: quota.overagePriceUsd,
-  };
-}
+  const effectiveOverageCap = resolveEffectiveOverageCap(installation, quota);
+  const hardCap = quota.freeQuota + effectiveOverageCap;
+  const includedUsed = includedUsedFromCounters(used, overageUsed);
 
-/**
- * Read-only check of whether the merchant has generation quota remaining.
- * Does NOT consume. Use to fail fast before doing per-customer work.
- */
-export async function peekMerchantGenerationQuota(
-  installation: ShopifyInstallation
-): Promise<MerchantQuotaDecision> {
-  if (isOwnerShop(installation.shopDomain)) return unlimitedDecision(null);
-
-  const eff = getEffectivePlan(installation as any, installation.shopDomain);
-  const quota = resolveGenerationQuota(eff.planName, eff.isActive);
-  const usage = await storage.getMerchantGenerationUsage(installation.id, quota.bucketKey);
-  const remaining = Math.max(0, quota.hardCap - usage.used);
-
-  if (usage.used >= quota.hardCap) {
-    return blockedDecision(quota, usage.used, usage.overageUsed);
+  let message: string;
+  switch (code) {
+    case "TRIAL_LIMIT_REACHED":
+      message = `You've used all ${quota.freeQuota} free trial generations. Upgrade to Starter to keep generating.`;
+      break;
+    case "OVERAGE_OPT_IN_REQUIRED":
+      message =
+        "Included AI generations for this billing period are used up. Enable pay-as-you-go extra usage (USD), upgrade your plan, or wait until your next billing period.";
+      break;
+    case "OVERAGE_BUDGET_EXHAUSTED":
+      message =
+        "Your pay-as-you-go extra generation budget for this period is exhausted. Increase your budget, upgrade your plan, or wait until next month.";
+      break;
+    default:
+      message = `Monthly generation limit reached for your ${PLAN_DISPLAY_NAMES[quota.effectivePlan] ?? quota.effectivePlan} plan.`;
   }
 
-  return {
-    allowed: true,
-    unlimited: false,
-    planName: quota.effectivePlan,
-    freeQuota: quota.freeQuota,
-    overageCap: quota.overageCap,
-    hardCap: quota.hardCap,
-    used: usage.used,
-    overageUsed: usage.overageUsed,
-    remaining,
-    isOverage: usage.used >= quota.freeQuota,
-    overagePriceUsd: quota.overagePriceUsd,
-  };
+  return enrichDecision(
+    {
+      allowed: false,
+      unlimited: false,
+      code,
+      message,
+      status: 402,
+      planName: quota.effectivePlan,
+      freeQuota: quota.freeQuota,
+      planOverageCap: quota.overageCap,
+      overageCap: effectiveOverageCap,
+      hardCap,
+      used,
+      overageUsed,
+      remaining: 0,
+      isOverage: false,
+      overagePriceUsd: quota.overagePriceUsd,
+    },
+    installation,
+    quota,
+  );
 }
 
-/**
- * Atomically consume one generation against the merchant's plan quota.
- * Returns allowed=false (no mutation) when the hard cap is reached.
- */
-export async function consumeMerchantGenerationQuota(
-  installation: ShopifyInstallation
+async function resolveQuotaContext(installation: ShopifyInstallation): Promise<{
+  quota: GenerationQuotaConfig;
+  effectiveOverageCap: number;
+  hardCap: number;
+}> {
+  await storage.syncOverageOptInForBucket(installation.id, installation);
+  const refreshed = (await storage.getShopifyInstallation(installation.id)) ?? installation;
+
+  const eff = getEffectivePlan(refreshed as any, refreshed.shopDomain);
+  const quota = resolveGenerationQuota(eff.planName, eff.isActive);
+  const effectiveOverageCap = resolveEffectiveOverageCap(refreshed, quota);
+  const hardCap = quota.freeQuota + effectiveOverageCap;
+  return { quota, effectiveOverageCap, hardCap };
+}
+
+function classifyBlock(
+  quota: GenerationQuotaConfig,
+  used: number,
+  overageUsed: number,
+  installation: ShopifyInstallation,
+  effectiveOverageCap: number,
+): QuotaBlockCode | null {
+  if (!quota.monthly) {
+    if (used >= quota.freeQuota) return "TRIAL_LIMIT_REACHED";
+    return null;
+  }
+
+  const includedUsed = includedUsedFromCounters(used, overageUsed);
+  if (includedUsed < quota.freeQuota) return null;
+
+  if (effectiveOverageCap <= 0) return "OVERAGE_OPT_IN_REQUIRED";
+
+  const hardCap = quota.freeQuota + effectiveOverageCap;
+  if (used >= hardCap) return "OVERAGE_BUDGET_EXHAUSTED";
+
+  return null;
+}
+
+export async function peekMerchantGenerationQuota(
+  installation: ShopifyInstallation,
 ): Promise<MerchantQuotaDecision> {
   if (isOwnerShop(installation.shopDomain)) return unlimitedDecision(null);
 
-  const eff = getEffectivePlan(installation as any, installation.shopDomain);
-  const quota = resolveGenerationQuota(eff.planName, eff.isActive);
+  const { quota, effectiveOverageCap, hardCap } = await resolveQuotaContext(installation);
+  const refreshed = (await storage.getShopifyInstallation(installation.id)) ?? installation;
+  const usage = await storage.getMerchantGenerationUsage(refreshed.id, quota.bucketKey);
+
+  const blockCode = classifyBlock(
+    quota,
+    usage.used,
+    usage.overageUsed,
+    refreshed,
+    effectiveOverageCap,
+  );
+  if (blockCode) {
+    return blockedDecision(quota, usage.used, usage.overageUsed, refreshed, blockCode);
+  }
+
+  return enrichDecision(
+    {
+      allowed: true,
+      unlimited: false,
+      planName: quota.effectivePlan,
+      freeQuota: quota.freeQuota,
+      planOverageCap: quota.overageCap,
+      overageCap: effectiveOverageCap,
+      hardCap,
+      used: usage.used,
+      overageUsed: usage.overageUsed,
+      remaining: Math.max(0, hardCap - usage.used),
+      isOverage: usage.used >= quota.freeQuota,
+      overagePriceUsd: quota.overagePriceUsd,
+    },
+    refreshed,
+    quota,
+  );
+}
+
+export async function consumeMerchantGenerationQuota(
+  installation: ShopifyInstallation,
+): Promise<MerchantQuotaDecision> {
+  if (isOwnerShop(installation.shopDomain)) return unlimitedDecision(null);
+
+  const { quota, effectiveOverageCap } = await resolveQuotaContext(installation);
+  const refreshed = (await storage.getShopifyInstallation(installation.id)) ?? installation;
+
   const r = await storage.consumeMerchantGeneration({
-    installationId: installation.id,
+    installationId: refreshed.id,
     bucketKey: quota.bucketKey,
     freeQuota: quota.freeQuota,
-    overageCap: quota.overageCap,
+    overageCap: effectiveOverageCap,
   });
 
   if (!r.allowed) {
-    return blockedDecision(quota, r.used, r.overageUsed);
+    const blockCode =
+      classifyBlock(quota, r.used, r.overageUsed, refreshed, effectiveOverageCap) ??
+      (!quota.monthly ? "TRIAL_LIMIT_REACHED" : "OVERAGE_BUDGET_EXHAUSTED");
+    return blockedDecision(quota, r.used, r.overageUsed, refreshed, blockCode);
   }
 
-  // The consumed unit fell into the paid overage band → bill it as a Shopify
-  // usage charge. Fire-and-forget + fully self-contained error handling so a
-  // billing hiccup never blocks the generation the merchant already passed
-  // quota checks for. Idempotent per (installation, bucket, overage count).
   if (r.isOverage && quota.overagePriceUsd > 0) {
     void emitOverageUsageCharge({
-      installation,
+      installation: refreshed,
       bucketKey: quota.bucketKey,
       overageSeq: r.overageUsed,
       priceUsd: quota.overagePriceUsd,
     }).catch((err) => {
       console.error(
-        `[generation-quota] overage charge emit failed for ${installation.shopDomain}:`,
-        err?.message ?? err
+        `[generation-quota] overage charge emit failed for ${refreshed.shopDomain}:`,
+        err?.message ?? err,
       );
     });
   }
 
-  return {
-    allowed: true,
-    unlimited: false,
-    planName: quota.effectivePlan,
-    freeQuota: quota.freeQuota,
-    overageCap: quota.overageCap,
-    hardCap: quota.hardCap,
-    used: r.used,
-    overageUsed: r.overageUsed,
-    remaining: Math.max(0, quota.hardCap - r.used),
-    isOverage: r.isOverage,
-    overagePriceUsd: quota.overagePriceUsd,
-  };
+  const hardCap = quota.freeQuota + effectiveOverageCap;
+  return enrichDecision(
+    {
+      allowed: true,
+      unlimited: false,
+      planName: quota.effectivePlan,
+      freeQuota: quota.freeQuota,
+      planOverageCap: quota.overageCap,
+      overageCap: effectiveOverageCap,
+      hardCap,
+      used: r.used,
+      overageUsed: r.overageUsed,
+      remaining: Math.max(0, hardCap - r.used),
+      isOverage: r.isOverage,
+      overagePriceUsd: quota.overagePriceUsd,
+    },
+    refreshed,
+    quota,
+  );
 }
 
 /** Build the JSON body for a blocked-quota API response. */
@@ -202,10 +347,38 @@ export function quotaBlockBody(decision: MerchantQuotaDecision) {
     error: decision.code,
     code: decision.code,
     message: decision.message,
-    upgrade: decision.code === "TRIAL_LIMIT_REACHED",
+    upgrade:
+      decision.code === "TRIAL_LIMIT_REACHED" || decision.code === "OVERAGE_OPT_IN_REQUIRED",
+    optIn: decision.code === "OVERAGE_OPT_IN_REQUIRED",
     plan: decision.planName,
     used: decision.used,
     limit: decision.hardCap,
     remaining: 0,
+    includedUsed: decision.includedUsed,
+    includedLimit: decision.includedLimit,
+    currency: "USD",
+  };
+}
+
+export function buildUpgradePreview(params: {
+  currentPlan: string;
+  newPlan: string;
+  includedUsed: number;
+  newFreeQuota: number;
+  newPriceUsd: number;
+}) {
+  const { currentPlan, newPlan, includedUsed, newFreeQuota, newPriceUsd } = params;
+  const newIncludedRemaining = Math.max(0, newFreeQuota - includedUsed);
+  return {
+    currentPlan,
+    newPlan,
+    newPriceUsd,
+    currency: "USD",
+    includedConsumed: includedUsed,
+    newIncludedAllowance: newFreeQuota,
+    newIncludedRemaining,
+    confirmationMessage: `You will be charged $${newPriceUsd.toFixed(2)} USD/month for the ${PLAN_DISPLAY_NAMES[newPlan] ?? newPlan} plan on your next Shopify app bill. Your included allowance becomes ${newFreeQuota} generations per month with ${newIncludedRemaining} remaining this period (${includedUsed} already used from your previous plan's included quota). All amounts in USD.`,
+    planMaxOverageBudgetCents: planMaxOverageBudgetCents(newPlan),
+    overagePriceCents: OVERAGE_PRICE_CENTS,
   };
 }

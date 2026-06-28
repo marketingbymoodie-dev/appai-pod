@@ -68,9 +68,22 @@ import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { syncCreditEntitlementMetafield } from "./credit-entitlements";
 import { privacyPolicyHtml } from "./privacy-policy";
 import Stripe from "stripe";
-import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS } from "./customizer-plans";
+import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota } from "./customizer-plans";
 import { extractUsageLineItemId, retryPendingOverageCharges } from "./usage-billing";
-import { peekMerchantGenerationQuota, consumeMerchantGenerationQuota, quotaBlockBody } from "./generation-quota";
+import { peekMerchantGenerationQuota, quotaBlockBody, buildUpgradePreview } from "./generation-quota";
+import {
+  finalizeGenerationBilling,
+  peekMerchantQuotaWithAlerts,
+  applyMerchantBillingOnSuccess,
+  applyCustomerBillingOnSuccess,
+  type GenerationBillingMode,
+} from "./generation-billing";
+import { recordGenerationOutcomeForFounder } from "./founder-generation-alerts";
+import {
+  planMaxOverageBudgetCents,
+  budgetCentsToOverageUnits,
+  OVERAGE_PRICE_CENTS,
+} from "./overage-settings";
 import { logMerchantGeneration } from "./merchant-generation-log";
 import type { CustomizerPage } from "@shared/schema";
 import { ObjectStorageService, registerObjectStorageRoutes, objectStorageClient, getStorageDir } from "./replit_integrations/object_storage";
@@ -2187,7 +2200,7 @@ export async function registerRoutes(
           genShopDomain.toLowerCase().replace(/^https?:\/\//, "")
         );
         if (genInstall) {
-          const genQuota = await consumeMerchantGenerationQuota(genInstall);
+          const genQuota = await peekMerchantQuotaWithAlerts(genInstall);
           if (!genQuota.allowed) {
             return res.status(genQuota.status ?? 402).json(quotaBlockBody(genQuota));
           }
@@ -2585,6 +2598,16 @@ console.log("[api/shopify/generate] saved image", result);
         status: "completed",
       });
 
+      // Merchant plan quota — consume only after successful generation.
+      if (genShopDomain) {
+        const genInstallAfter = await getAuthorizedInstallation(
+          genShopDomain.toLowerCase().replace(/^https?:\/\//, "")
+        );
+        if (genInstallAfter) {
+          await applyMerchantBillingOnSuccess(genInstallAfter);
+        }
+      }
+
       // Deduct credit (skipped for app owner)
       if (!isOwner) {
         await storage.updateCustomer(customer.id, {
@@ -2964,6 +2987,7 @@ console.log("[shopify/session] installation ok", {
   // Shopify Storefront Generate (for embedded design studio)
   // Requires valid session token from /api/shopify/session
   app.post("/api/shopify/generate", async (req: Request, res: Response) => {
+    let embedInstallation: Awaited<ReturnType<typeof getAuthorizedInstallation>> = null;
     try {
       const { prompt, userPrompt: rawUserPromptEmbed, stylePreset, size, frameColor, referenceImage, referenceImages: referenceImagesArr, shop, sessionToken, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrlEmbed } = req.body;
 
@@ -2996,10 +3020,11 @@ console.log("[shopify/session] installation ok", {
       }
 
       // Verify shop is installed
-      const installation = await getAuthorizedInstallation(shop);
-      if (!installation) {
+      embedInstallation = await getAuthorizedInstallation(shop);
+      if (!embedInstallation) {
         return res.status(403).json({ error: "Shop not authorized" });
       }
+      const installation = embedInstallation;
 
       // For Shopify embedded mode, customer login is OPTIONAL
       // Business model: Shop pays for generation capacity via rate limits.
@@ -3012,24 +3037,15 @@ console.log("[shopify/session] installation ok", {
         if (customer) {
           const balance = await storage.ensureCustomerBalance(customer.id);
           if (balance.credits > 0) {
-            const embedReqId = `shopify-gen-${Date.now().toString(36)}`;
-            const paid = await storage.consumePaidCredit(
-              customer.id,
-              `shopify-generation:${embedReqId}`,
-              embedReqId,
-            );
-            if (paid.consumed) {
-              usedCustomerPaidCredit = true;
-              customer = (await storage.getCustomer(customer.id)) ?? customer;
-              console.log(`[Shopify Generate] customer ${customer.id} paid credit consumed — merchant plan quota skipped`);
-            }
+            usedCustomerPaidCredit = true;
+            console.log(`[Shopify Generate] customer ${customer.id} has paid credits — merchant plan quota skipped on success`);
           }
         }
       }
       // Anonymous Shopify customers are allowed - shop-level rate limiting handles abuse
 
       if (!usedCustomerPaidCredit) {
-        const embedQuotaPeek = await peekMerchantGenerationQuota(installation);
+        const embedQuotaPeek = await peekMerchantQuotaWithAlerts(installation);
         if (!embedQuotaPeek.allowed) {
           return res.status(embedQuotaPeek.status ?? 402).json(quotaBlockBody(embedQuotaPeek));
         }
@@ -3059,14 +3075,7 @@ console.log("[shopify/session] installation ok", {
         return res.status(400).json({ error: "Prompt and size are required" });
       }
 
-      if (!usedCustomerPaidCredit) {
-        const embedQuota = await consumeMerchantGenerationQuota(installation);
-        if (!embedQuota.allowed) {
-          return res.status(embedQuota.status ?? 402).json(quotaBlockBody(embedQuota));
-        }
-      }
-
-      // Look up style preset and get its promptSuffix
+      const embedBillingReqId = `shopify-gen-${Date.now().toString(36)}`;
       let stylePromptPrefix = "";
       let styleName = "";
       let embedStyleCategory = "all";
@@ -3314,6 +3323,7 @@ ${textEdgeRestrictions}
 
       if (!base64Data) {
         console.error("[Shopify Generate] Replicate returned no image data");
+        void recordGenerationOutcomeForFounder(installation, false);
         return res.status(500).json({ error: "Failed to generate image" });
       }
 
@@ -3361,14 +3371,26 @@ ${textEdgeRestrictions}
 
       const designId = `shopify-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
-      // Legacy credit_transactions row (ledger already updated via consumePaidCredit).
+      // Bill merchant or customer only after successful generation.
       if (usedCustomerPaidCredit && customer) {
+        const consumed = await applyCustomerBillingOnSuccess({
+          customerId: customer.id,
+          mode: "customer_paid",
+          idempotencyKey: `shopify-generation:${embedBillingReqId}`,
+          externalRef: embedBillingReqId,
+        });
+        if (!consumed) {
+          return res.status(403).json({ error: "INSUFFICIENT_CREDITS", message: "You've run out of credits." });
+        }
+        customer = (await storage.getCustomer(customer.id)) ?? customer;
         await storage.createCreditTransaction({
           customerId: customer.id,
           type: "generation",
           amount: -1,
           description: `Shopify artwork: ${prompt.substring(0, 50)}...`,
         });
+      } else {
+        await applyMerchantBillingOnSuccess(installation);
       }
 
       void logMerchantGeneration({
@@ -3392,7 +3414,7 @@ ${textEdgeRestrictions}
       });
     } catch (error) {
       console.error("Error generating Shopify artwork:", error);
-      // Note: Credit was already deducted. In production, consider refunding on failure.
+      void recordGenerationOutcomeForFounder(embedInstallation, false);
       res.status(500).json({ error: "Failed to generate artwork" });
     }
   });
@@ -6888,17 +6910,14 @@ ${textEdgeRestrictions}
         });
       }
 
-      // Per-merchant monthly plan quota — fail fast before consuming any
-      // per-customer free generation / credit below.
+      // Per-merchant monthly plan quota — fail fast before job creation.
       // Customer-paid credits ($1 packs) are billed to the customer, not the shop plan.
       let usedCustomerPaidCredit = false;
+      let storefrontBillingMode: GenerationBillingMode = "merchant";
 
       // Generation limit logic (10 free generations total per customer/session)
       const FREE_GENERATION_LIMIT = 10;
 
-      // Credit/limit check is handled in the block below (single deduction).
-      // Store the internal customer id on the job so status polling reads the
-      // same ledger-backed balance that generation consumed from.
       let customer: any = null;
       let resolvedJobCustomerId: string | null = null;
 
@@ -6913,20 +6932,15 @@ ${textEdgeRestrictions}
           console.warn(P, reqId, `customer ${customerId} could not be resolved:`, err?.message);
           return null;
         });
-        
+
         if (customer) {
           resolvedJobCustomerId = customer.id;
           const balance = await storage.ensureCustomerBalance(customer.id);
           if (balance.credits > 0) {
-            console.log(P, reqId, `customer ${customer.id} has ${balance.credits} ledger credits, deducting 1`);
-            const result = await storage.consumePaidCredit(customer.id, `storefront-generation:${reqId}`, reqId.toString());
-            if (!result.consumed) {
-              return res.status(403).json({ error: "INSUFFICIENT_CREDITS", message: "You've run out of credits. Purchase more to continue." });
-            }
             usedCustomerPaidCredit = true;
-            console.log(P, reqId, `customer ${customer.id} paid credit consumed — merchant plan quota skipped`);
+            storefrontBillingMode = "customer_paid";
+            console.log(P, reqId, `customer ${customer.id} has ${balance.credits} ledger credits — will deduct on success`);
           } else {
-            // No credits, check free limit
             const freeUsed = balance.freeGenerationsUsed || 0;
             if (freeUsed >= FREE_GENERATION_LIMIT) {
               return res.status(403).json({
@@ -6936,20 +6950,11 @@ ${textEdgeRestrictions}
                 limit: FREE_GENERATION_LIMIT,
               });
             }
-            const result = await storage.consumeFreeGeneration(customer.id, `storefront-free-generation:${reqId}`, reqId.toString());
-            if (!result.consumed) {
-              return res.status(403).json({
-                error: "FREE_LIMIT_REACHED",
-                message: "You've used all 10 free generations. Purchase credits to continue.",
-                generationsUsed: freeUsed,
-                limit: FREE_GENERATION_LIMIT,
-              });
-            }
-            console.log(P, reqId, `customer ${customer.id} used free generation ${freeUsed + 1}/${FREE_GENERATION_LIMIT}`);
+            storefrontBillingMode = "customer_free";
+            console.log(P, reqId, `customer ${customer.id} will use free generation on success (${freeUsed + 1}/${FREE_GENERATION_LIMIT})`);
           }
         }
       } else if (sessionId) {
-        // Anonymous session limit
         const count = await storage.countSessionGenerations(shop, sessionId);
         if (count >= FREE_GENERATION_LIMIT) {
           return res.status(403).json({
@@ -6959,10 +6964,11 @@ ${textEdgeRestrictions}
             limit: FREE_GENERATION_LIMIT,
           });
         }
+        storefrontBillingMode = "session";
       }
 
-      if (!usedCustomerPaidCredit) {
-        const sfQuotaPeek = await peekMerchantGenerationQuota(installation);
+      if (!usedCustomerPaidCredit && storefrontBillingMode === "merchant") {
+        const sfQuotaPeek = await peekMerchantQuotaWithAlerts(installation);
         if (!sfQuotaPeek.allowed) {
           return res.status(sfQuotaPeek.status ?? 402).json(quotaBlockBody(sfQuotaPeek));
         }
@@ -7014,15 +7020,7 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "Prompt and size are required" });
       }
 
-      // Merchant plan quota — skipped when the customer paid with their own credit pack.
-      if (!usedCustomerPaidCredit) {
-        const sfQuota = await consumeMerchantGenerationQuota(installation);
-        if (!sfQuota.allowed) {
-          return res.status(sfQuota.status ?? 402).json(quotaBlockBody(sfQuota));
-        }
-      }
-
-      // Look up style preset
+      // Merchant plan quota is consumed in the worker after success (peek-only here).
       let stylePromptPrefix = "";
       let styleName = "";
       let sfStyleCategory = "all";
@@ -7317,6 +7315,7 @@ ${textEdgeRestrictions}
         frameColor: frameColor ?? null,
         productTypeId: productTypeId ? String(productTypeId) : null,
         referenceImageUrl: null,
+        billingMode: storefrontBillingMode,
         expiresAt,
       }), 8000, "createGenerationJob");
       const jobId = job.id;
@@ -7469,6 +7468,15 @@ ${textEdgeRestrictions}
             designId,
           });
 
+          await finalizeGenerationBilling({
+            installation,
+            billingMode: storefrontBillingMode,
+            customerId: resolvedJobCustomerId,
+            idempotencyKey: reqId.toString(),
+          });
+
+          void recordGenerationOutcomeForFounder(installation, true);
+
           void logMerchantGeneration({
             installation,
             customerId: resolvedJobCustomerId,
@@ -7501,6 +7509,7 @@ ${textEdgeRestrictions}
             success: false,
             errorMessage: workerErr.message ?? "Unknown generation error",
           });
+          void recordGenerationOutcomeForFounder(installation, false);
         }
       })();
 
@@ -17549,19 +17558,66 @@ ${textEdgeRestrictions}
     const pagesCount = await storage.countCustomizerPages(installation.shopDomain);
 
     // Generation quota status (free allotment + overage usage this bucket).
-    const q = await peekMerchantGenerationQuota(installation);
+    const q = await peekMerchantQuotaWithAlerts(installation);
     const finite = (n: number) => (Number.isFinite(n) ? n : null);
     const generationQuota = {
       plan: q.planName,
       unlimited: q.unlimited,
       freeQuota: finite(q.freeQuota),
       overageCap: q.overageCap,
+      planOverageCap: q.planOverageCap,
       limit: finite(q.hardCap),
       used: q.used,
       remaining: finite(q.remaining),
       overageUsed: q.overageUsed,
       overagePriceUsd: q.overagePriceUsd,
       isOverage: q.isOverage,
+      includedUsed: q.includedUsed,
+      includedLimit: finite(q.includedLimit),
+      includedRemaining: finite(q.includedRemaining),
+      extraUsed: q.extraUsed,
+      extraLimit: q.extraLimit,
+      extraBudgetCents: q.extraBudgetCents,
+      extraSpentCents: q.extraSpentCents,
+      extraRemainingCents: q.extraRemainingCents,
+      overageOptInEnabled: q.overageOptInEnabled,
+      overageRecurring: q.overageRecurring,
+      showOptInForm: q.showOptInForm,
+      includedExhausted: q.includedExhausted,
+      currency: "USD",
+    };
+
+    const planMaxBudgetCents = planMaxOverageBudgetCents(plan.planName);
+    const overage = {
+      priceCents: OVERAGE_PRICE_CENTS,
+      priceUsd: q.overagePriceUsd,
+      currency: "USD",
+      optInEnabled: q.overageOptInEnabled,
+      recurring: q.overageRecurring,
+      budgetCents: q.extraBudgetCents,
+      spentCents: q.extraSpentCents,
+      remainingCents: q.extraRemainingCents,
+      planMaxBudgetCents: planMaxBudgetCents,
+      planMaxUnits: q.planOverageCap,
+      effectiveUnitCap: q.extraLimit,
+      requiresOptIn: q.includedExhausted && !q.overageOptInEnabled,
+      showOptInForm: q.showOptInForm,
+    };
+
+    const included = {
+      used: q.includedUsed,
+      limit: finite(q.includedLimit),
+      remaining: finite(q.includedRemaining),
+      currency: "USD",
+    };
+
+    const extra = {
+      used: q.extraUsed,
+      unitLimit: q.extraLimit,
+      budgetCents: q.extraBudgetCents,
+      spentCents: q.extraSpentCents,
+      remainingCents: q.extraRemainingCents,
+      currency: "USD",
     };
 
     // Overage billing readiness. A paid, active plan that can incur overages but
@@ -17592,7 +17648,108 @@ ${textEdgeRestrictions}
       overageBillingActive: hasUsageLine,
       needsOverageBillingUpgrade,
       generationQuota,
+      included,
+      extra,
+      overage,
+      usdDisclaimer: "All prices in USD.",
     });
+  }));
+
+  /** GET /api/appai/billing/upgrade-preview?plan=starter — confirm before Shopify redirect */
+  app.get("/api/appai/billing/upgrade-preview", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveShopInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
+
+    const { installation } = resolved;
+    const newPlan = String(req.query.plan || "");
+    if (!newPlan || !(PAID_PLANS as readonly string[]).includes(newPlan)) {
+      return res.status(400).json({ error: `Invalid plan. Must be one of: ${PAID_PLANS.join(", ")}` });
+    }
+
+    const current = getEffectivePlan(installation as any, installation.shopDomain);
+    const q = await peekMerchantGenerationQuota(installation);
+    const newPriceUsd = PLAN_PRICES_USD[newPlan] ?? 0;
+    const newQuota = resolveGenerationQuota(newPlan, true);
+
+    return res.json(
+      buildUpgradePreview({
+        currentPlan: current.planName ?? "trial",
+        newPlan,
+        includedUsed: q.includedUsed,
+        newFreeQuota: newQuota.freeQuota,
+        newPriceUsd,
+      }),
+    );
+  }));
+
+  /** POST /api/appai/billing/overage-opt-in — enable pay-as-you-go extra usage */
+  app.post("/api/appai/billing/overage-opt-in", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveShopInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
+
+    const { installation } = resolved;
+    const { budgetCents, recurring, acknowledged } = req.body as {
+      budgetCents?: number;
+      recurring?: boolean;
+      acknowledged?: boolean;
+    };
+
+    if (!acknowledged) {
+      return res.status(400).json({ error: "You must acknowledge the pay-as-you-go terms." });
+    }
+
+    const plan = getEffectivePlan(installation as any, installation.shopDomain);
+    if (!plan.isActive || !plan.planName || plan.planName === "trial") {
+      return res.status(400).json({ error: "Overage opt-in requires an active paid plan." });
+    }
+
+    const budget = Number(budgetCents);
+    if (!Number.isFinite(budget) || budget < OVERAGE_PRICE_CENTS) {
+      return res.status(400).json({ error: `Budget must be at least $${(OVERAGE_PRICE_CENTS / 100).toFixed(2)} USD.` });
+    }
+
+    const planMaxCents = planMaxOverageBudgetCents(plan.planName);
+    if (budget > planMaxCents) {
+      return res.status(400).json({
+        error: `Budget cannot exceed $${(planMaxCents / 100).toFixed(2)} USD for your plan.`,
+        planMaxBudgetCents: planMaxCents,
+      });
+    }
+
+    const quota = resolveGenerationQuota(plan.planName, true);
+    const units = budgetCentsToOverageUnits(budget);
+    if (units <= 0) {
+      return res.status(400).json({ error: "Budget too low for any extra generations." });
+    }
+
+    const updated = await storage.setMerchantOverageOptIn({
+      installationId: installation.id,
+      budgetCents: budget,
+      recurring: !!recurring,
+      bucketKey: quota.bucketKey,
+    });
+
+    const q = await peekMerchantQuotaWithAlerts(updated ?? installation);
+    return res.json({
+      success: true,
+      overageOptInEnabled: true,
+      budgetCents: budget,
+      recurring: !!recurring,
+      extraUnitCap: Math.min(units, quota.overageCap),
+      currency: "USD",
+      quota: q,
+    });
+  }));
+
+  /** POST /api/appai/billing/overage-opt-out — disable extra usage for current bucket */
+  app.post("/api/appai/billing/overage-opt-out", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveShopInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
+
+    const { installation } = resolved;
+    await storage.disableMerchantOverageOptIn(installation.id);
+    const q = await peekMerchantQuotaWithAlerts(installation);
+    return res.json({ success: true, overageOptInEnabled: false, quota: q });
   }));
 
   /** POST /api/appai/billing/start-trial — activate the trial plan (no credit card) */

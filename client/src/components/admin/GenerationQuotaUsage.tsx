@@ -6,18 +6,49 @@ import { AlertTriangle, ArrowUpRight } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
+import { OverageOptInForm, planMaxBudgetFromApi } from "./OverageOptInForm";
 
 export interface PlanGenerationQuota {
   plan: string | null;
   unlimited: boolean;
   freeQuota: number | null;
   overageCap: number;
+  planOverageCap?: number;
   limit: number | null;
   used: number;
   remaining: number | null;
   overageUsed: number;
   overagePriceUsd: number;
   isOverage: boolean;
+  includedUsed?: number;
+  includedLimit?: number | null;
+  includedRemaining?: number | null;
+  extraUsed?: number;
+  extraLimit?: number;
+  extraBudgetCents?: number | null;
+  extraSpentCents?: number;
+  extraRemainingCents?: number | null;
+  overageOptInEnabled?: boolean;
+  overageRecurring?: boolean;
+  showOptInForm?: boolean;
+  includedExhausted?: boolean;
+  currency?: string;
+}
+
+export interface PlanOverageBlock {
+  priceCents: number;
+  priceUsd: number;
+  currency: string;
+  optInEnabled: boolean;
+  recurring: boolean;
+  budgetCents: number | null;
+  spentCents: number;
+  remainingCents: number | null;
+  planMaxBudgetCents: number;
+  planMaxUnits: number;
+  effectiveUnitCap: number;
+  requiresOptIn: boolean;
+  showOptInForm: boolean;
 }
 
 export interface PlanApiResponse {
@@ -25,6 +56,17 @@ export interface PlanApiResponse {
   planStatus: string | null;
   isActive: boolean;
   generationQuota: PlanGenerationQuota;
+  included?: { used: number; limit: number | null; remaining: number | null; currency: string };
+  extra?: {
+    used: number;
+    unitLimit: number;
+    budgetCents: number | null;
+    spentCents: number;
+    remainingCents: number | null;
+    currency: string;
+  };
+  overage?: PlanOverageBlock;
+  usdDisclaimer?: string;
 }
 
 const PLAN_DISPLAY: Record<string, string> = {
@@ -42,13 +84,12 @@ function quotaLabel(quota: PlanGenerationQuota): string {
 }
 
 interface GenerationQuotaUsageProps {
-  /** Show compact inline bar (Customizer Pages). Default: full card. */
   variant?: "card" | "inline";
-  /** Link target for upgrade when at/near limit */
   upgradeHref?: string;
   onUpgradeClick?: () => void;
-  /** Hide the manage/upgrade link (e.g. on Plan & Billing page). */
   showManageLink?: boolean;
+  /** Show overage opt-in form when at ≥90% included (default true). */
+  showOptInForm?: boolean;
   className?: string;
 }
 
@@ -63,17 +104,62 @@ export function usePlanGenerationQuota(enabled = true) {
   });
 }
 
+function UsageBar({
+  label,
+  used,
+  limit,
+  spentCents,
+  budgetCents,
+  atLimit,
+  nearLimit,
+}: {
+  label: string;
+  used: number;
+  limit: number | null;
+  spentCents?: number;
+  budgetCents?: number | null;
+  atLimit: boolean;
+  nearLimit: boolean;
+}) {
+  const pct = limit && limit > 0 ? Math.min((used / limit) * 100, 100) : 0;
+  return (
+    <div className="space-y-1">
+      <div className="flex justify-between text-xs gap-2 flex-wrap">
+        <span className="font-medium">{label}</span>
+        <span className="text-muted-foreground">
+          {limit != null ? `${used} / ${limit}` : `${used} used`}
+          {spentCents != null && budgetCents != null && budgetCents > 0 && (
+            <> · ${(spentCents / 100).toFixed(2)} / ${(budgetCents / 100).toFixed(2)} USD</>
+          )}
+        </span>
+      </div>
+      {limit != null && limit > 0 && (
+        <div className="h-2 bg-muted rounded-full overflow-hidden">
+          <div
+            className={`h-full rounded-full transition-all ${
+              atLimit ? "bg-red-500" : nearLimit ? "bg-amber-500" : "bg-primary"
+            }`}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function GenerationQuotaUsage({
   variant = "card",
   upgradeHref = "/admin/plan",
   onUpgradeClick,
   showManageLink = true,
+  showOptInForm = true,
   className,
 }: GenerationQuotaUsageProps) {
   const { data, isLoading } = usePlanGenerationQuota();
   const quota = data?.generationQuota;
   const planName = data?.planName;
   const planStatus = data?.planStatus;
+  const overage = data?.overage;
 
   if (isLoading) {
     if (variant === "inline") {
@@ -90,18 +176,29 @@ export default function GenerationQuotaUsage({
 
   if (!quota) return null;
 
-  const limit = quota.unlimited ? null : quota.limit;
-  const used = quota.used ?? 0;
-  const pct =
-    limit && limit > 0 ? Math.min((used / limit) * 100, 100) : quota.unlimited ? 0 : 0;
-  const atLimit = !quota.unlimited && limit != null && used >= limit;
-  const nearLimit = !quota.unlimited && limit != null && used >= limit * 0.8;
+  const includedUsed = data?.included?.used ?? quota.includedUsed ?? quota.used;
+  const includedLimit = data?.included?.limit ?? quota.includedLimit ?? quota.freeQuota;
+  const extraUsed = data?.extra?.used ?? quota.extraUsed ?? quota.overageUsed;
+  const extraLimit = data?.extra?.unitLimit ?? quota.extraLimit ?? quota.overageCap;
+  const extraBudgetCents = data?.extra?.budgetCents ?? quota.extraBudgetCents ?? null;
+  const extraSpentCents = data?.extra?.spentCents ?? quota.extraSpentCents ?? 0;
+
+  const includedAtLimit =
+    !quota.unlimited && includedLimit != null && includedUsed >= includedLimit;
+  const includedNearLimit =
+    !quota.unlimited && includedLimit != null && includedUsed >= includedLimit * 0.9;
+  const extraAtLimit = extraLimit > 0 && extraUsed >= extraLimit;
   const displayPlan = planName ? (PLAN_DISPLAY[planName] ?? planName) : "—";
   const period = quotaLabel(quota);
+  const showForm =
+    showOptInForm &&
+    (overage?.showOptInForm || quota.showOptInForm) &&
+    !quota.unlimited &&
+    planName !== "trial";
 
   const bar = (
     <>
-      <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+      <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
         <span className="text-sm font-medium flex items-center gap-2">
           AI generations
           {planName && (
@@ -116,56 +213,79 @@ export default function GenerationQuotaUsage({
           )}
         </span>
         <div className="flex items-center gap-3">
-          <span className="text-sm text-muted-foreground" data-testid="text-generation-quota">
-            {quota.unlimited ? `${used.toLocaleString()} used` : `${used} / ${limit} (${period})`}
-          </span>
-          {(showManageLink && (onUpgradeClick || upgradeHref)) && (
+          {!quota.unlimited && includedLimit != null && (
+            <span className="text-sm text-muted-foreground" data-testid="text-generation-quota">
+              {includedUsed} / {includedLimit} included ({period})
+            </span>
+          )}
+          {quota.unlimited && (
+            <span className="text-sm text-muted-foreground">{includedUsed.toLocaleString()} used</span>
+          )}
+          {showManageLink && (onUpgradeClick || upgradeHref) && (
             onUpgradeClick ? (
               <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={onUpgradeClick}>
                 <ArrowUpRight className="h-3 w-3 mr-1" />
-                {atLimit ? "Upgrade" : "Manage Plan"}
+                {includedAtLimit ? "Upgrade" : "Manage Plan"}
               </Button>
             ) : (
               <Button size="sm" variant="ghost" className="h-7 text-xs" asChild>
                 <Link href={upgradeHref!}>
                   <ArrowUpRight className="h-3 w-3 mr-1" />
-                  {atLimit ? "Upgrade" : "Manage Plan"}
+                  {includedAtLimit ? "Upgrade" : "Manage Plan"}
                 </Link>
               </Button>
             )
           )}
         </div>
       </div>
+
       {!quota.unlimited && (
-        <div className="h-2 bg-muted rounded-full overflow-hidden">
-          <div
-            className={`h-full rounded-full transition-all ${
-              atLimit ? "bg-red-500" : nearLimit ? "bg-amber-500" : "bg-primary"
-            }`}
-            style={{ width: `${pct}%` }}
+        <div className="space-y-3">
+          <UsageBar
+            label="Included (USD plan allowance)"
+            used={includedUsed}
+            limit={includedLimit}
+            atLimit={includedAtLimit}
+            nearLimit={includedNearLimit && !includedAtLimit}
           />
+          {(overage?.optInEnabled || quota.overageOptInEnabled || showForm || includedNearLimit) &&
+            planName !== "trial" && (
+              <UsageBar
+                label="Extra pay-as-you-go (USD)"
+                used={extraUsed}
+                limit={extraLimit > 0 ? extraLimit : null}
+                spentCents={extraSpentCents}
+                budgetCents={extraBudgetCents}
+                atLimit={extraAtLimit}
+                nearLimit={false}
+              />
+            )}
         </div>
       )}
+
       {quota.unlimited && (
         <p className="text-xs text-muted-foreground mt-1">Owner store — no plan cap.</p>
       )}
-      {atLimit && !quota.unlimited && (
-        <p className="text-xs text-red-600 mt-2 flex items-center gap-1">
-          <AlertTriangle className="h-3 w-3" />
+
+      {includedAtLimit && !quota.overageOptInEnabled && !overage?.optInEnabled && !quota.unlimited && (
+        <p className="text-xs text-red-600 mt-3 flex items-start gap-1">
+          <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
           {quota.plan === "trial"
             ? "Trial limit reached. Upgrade to Starter to keep generating."
-            : "Monthly generation limit reached. Resets at the start of next month, or upgrade for a higher cap."}
+            : "Included allowance used up. Merchant-billed generations are blocked until next period, you enable extra usage, or upgrade. Customer credit packs still work."}
         </p>
       )}
-      {!atLimit && !quota.unlimited && quota.isOverage && quota.overageCap > 0 && (
-        <p className="text-xs text-muted-foreground mt-2">
-          Using overage: {quota.overageUsed} paid generation
-          {quota.overageUsed !== 1 ? "s" : ""} this period ($
-          {quota.overagePriceUsd.toFixed(2)} each, max {quota.overageCap}/mo).
-        </p>
+
+      {showForm && (
+        <OverageOptInForm
+          className="mt-4"
+          planMaxBudgetCents={planMaxBudgetFromApi(data)}
+        />
       )}
-      <p className="text-xs text-muted-foreground mt-2">
-        Customer-purchased credit packs ($1 / 10) do not count toward this shop quota.
+
+      <p className="text-xs text-muted-foreground mt-3">
+        {data?.usdDisclaimer ?? "All prices in USD."} Customer-purchased credit packs ($1 / 10) do not
+        count toward this shop quota.
       </p>
     </>
   );

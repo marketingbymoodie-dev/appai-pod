@@ -171,6 +171,14 @@ export const shopifyInstallations = pgTable("shopify_installations", {
   generationMonth: text("generation_month"),
   monthlyGenerationsUsed: integer("monthly_generations_used").notNull().default(0),
   monthlyOverageUsed: integer("monthly_overage_used").notNull().default(0),
+  // Merchant opt-in for pay-as-you-go overage (USD; billed per generation after included quota).
+  overageOptInEnabled: boolean("overage_opt_in_enabled").notNull().default(false),
+  overageBudgetCents: integer("overage_budget_cents"),
+  overageRecurring: boolean("overage_recurring").notNull().default(false),
+  overageOptInAt: timestamp("overage_opt_in_at"),
+  overageOptInBucketKey: text("overage_opt_in_bucket_key"),
+  quotaAlert90BucketKey: text("quota_alert_90_bucket_key"),
+  quotaAlert100BucketKey: text("quota_alert_100_bucket_key"),
 });
 
 export const insertShopifyInstallationSchema = createInsertSchema(shopifyInstallations).omit({
@@ -213,6 +221,35 @@ export const merchantUsageCharges = pgTable("merchant_usage_charges", {
 }));
 
 export type MerchantUsageCharge = typeof merchantUsageCharges.$inferSelect;
+
+/** Rolling failure-rate window per shop (founder monitoring). */
+export const merchantGenerationHealth = pgTable("merchant_generation_health", {
+  id: serial("id").primaryKey(),
+  installationId: integer("installation_id").notNull().unique(),
+  shopDomain: text("shop_domain").notNull(),
+  windowStart: timestamp("window_start").notNull(),
+  successCount: integer("success_count").notNull().default(0),
+  failureCount: integer("failure_count").notNull().default(0),
+  lastFailureAt: timestamp("last_failure_at"),
+  founderAlertSentAt: timestamp("founder_alert_sent_at"),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export type MerchantGenerationHealth = typeof merchantGenerationHealth.$inferSelect;
+
+/** Audit log of founder alert emails sent. */
+export const founderAlerts = pgTable("founder_alerts", {
+  id: serial("id").primaryKey(),
+  installationId: integer("installation_id"),
+  shopDomain: text("shop_domain").notNull(),
+  alertType: text("alert_type").notNull(),
+  failureRate: decimal("failure_rate", { precision: 5, scale: 4 }),
+  attempts: integer("attempts"),
+  emailSent: boolean("email_sent").notNull().default(false),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export type FounderAlert = typeof founderAlerts.$inferSelect;
 
 export const insertMerchantSchema = createInsertSchema(merchants).omit({
   id: true,
@@ -558,6 +595,8 @@ export const generationJobs = pgTable("generation_jobs", {
   designState: json("design_state"),             // Full design state snapshot (transform, size, color, preset)
   designId: text("design_id"),
   errorMessage: text("error_message"),
+  /** How merchant/customer billing applies on success: merchant | customer_paid | customer_free | session */
+  billingMode: text("billing_mode"),
   // Pre-created shadow product for instant Add to Cart
   shadowProductId: text("shadow_product_id"),   // Shopify product GID (pre-created after generation)
   shadowVariantId: text("shadow_variant_id"),   // Shopify variant GID (used directly for cart add)

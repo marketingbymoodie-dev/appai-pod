@@ -19,6 +19,7 @@ import HoodieTemplateMapperPage from "@/pages/hoodie-template-mapper";
 import FlatCalibrationMapperPage from "@/pages/flat-calibration-mapper";
 import PlatformCatalogPage from "@/pages/platform-catalog";
 import OperatorCatalogPage from "@/pages/operator-catalog";
+import PlatformGenerationHealthPage from "@/pages/platform-generation-health";
 import NotFound from "@/pages/not-found";
 
 import AdminDashboard from "@/pages/admin/dashboard";
@@ -54,6 +55,7 @@ function AppRouter() {
       <Route path="/admin/hoodie-template-mapper" component={HoodieTemplateMapperPage} />
       <Route path="/admin/platform/catalog" component={PlatformCatalogPage} />
       <Route path="/admin/platform/operator-catalog" component={OperatorCatalogPage} />
+      <Route path="/admin/platform/generation-health" component={PlatformGenerationHealthPage} />
       <Route path="/admin/platform/flat-calibrator/:blueprintId" component={FlatCalibrationMapperPage} />
 
       {/* Storefront designer — dedicated path, never initializes App Bridge */}

@@ -153,6 +153,8 @@ describe("quota enforcement simulation", () => {
 
 vi.mock("./storage", () => ({
   storage: {
+    syncOverageOptInForBucket: vi.fn(),
+    getShopifyInstallation: vi.fn(),
     getMerchantGenerationUsage: vi.fn(),
     consumeMerchantGeneration: vi.fn(),
   },
@@ -175,14 +177,25 @@ import {
 const baseInstall = {
   id: 1,
   shopDomain: "test-shop.myshopify.com",
+  planName: "starter",
+  planStatus: "active",
+  overageOptInEnabled: true,
+  overageBudgetCents: 1600,
+  overageRecurring: false,
+  overageOptInBucketKey: "2026-06",
+  generationMonth: "2026-06",
 } as any;
 
 describe("merchant quota orchestration", () => {
   const savedOwner = process.env.OWNER_SHOP_DOMAIN;
+  let currentInstall = baseInstall;
 
   beforeEach(() => {
     vi.clearAllMocks();
     delete process.env.OWNER_SHOP_DOMAIN;
+    currentInstall = baseInstall;
+    (storage.syncOverageOptInForBucket as any).mockResolvedValue(undefined);
+    (storage.getShopifyInstallation as any).mockImplementation(async () => currentInstall);
   });
   afterEach(() => {
     if (savedOwner === undefined) delete process.env.OWNER_SHOP_DOMAIN;
@@ -196,7 +209,17 @@ describe("merchant quota orchestration", () => {
       overageUsed: 0,
       isOverage: false,
     });
-    const inst = { ...baseInstall, planName: "trial", planStatus: "trialing" };
+    const inst = {
+      id: 1,
+      shopDomain: "test-shop.myshopify.com",
+      planName: "trial",
+      planStatus: "trialing",
+      overageOptInEnabled: false,
+      overageBudgetCents: null,
+      overageOptInBucketKey: null,
+      generationMonth: "trial",
+    };
+    currentInstall = inst;
     const decision = await consumeMerchantGenerationQuota(inst);
     expect(decision.allowed).toBe(false);
     expect(decision.code).toBe("TRIAL_LIMIT_REACHED");
@@ -208,7 +231,7 @@ describe("merchant quota orchestration", () => {
     expect(body.limit).toBe(20);
   });
 
-  it("blocks a paid shop over cap with a monthly-limit message", async () => {
+  it("blocks a paid shop over cap with OVERAGE_BUDGET_EXHAUSTED", async () => {
     (storage.consumeMerchantGeneration as any).mockResolvedValue({
       allowed: false,
       used: 450,
@@ -218,7 +241,7 @@ describe("merchant quota orchestration", () => {
     const inst = { ...baseInstall, planName: "starter", planStatus: "active" };
     const decision = await consumeMerchantGenerationQuota(inst);
     expect(decision.allowed).toBe(false);
-    expect(decision.code).toBe("MONTHLY_LIMIT_REACHED");
+    expect(decision.code).toBe("OVERAGE_BUDGET_EXHAUSTED");
     expect(quotaBlockBody(decision).upgrade).toBe(false);
   });
 

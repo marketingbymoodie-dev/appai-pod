@@ -8,6 +8,16 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import { Loader2, CheckCircle, Zap, LayoutTemplate, Star, Rocket, Info } from "lucide-react";
 import GenerationQuotaUsage from "@/components/admin/GenerationQuotaUsage";
 
@@ -128,6 +138,14 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
+  const [upgradePlan, setUpgradePlan] = useState<string | null>(null);
+  const [upgradePreview, setUpgradePreview] = useState<{
+    confirmationMessage: string;
+    newPriceUsd: number;
+    newIncludedRemaining: number;
+  } | null>(null);
+  const [upgradeAcknowledged, setUpgradeAcknowledged] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
 
   const trialMutation = useMutation({
     mutationFn: () => apiRequest("POST", "/api/appai/billing/start-trial"),
@@ -171,9 +189,33 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
     trialMutation.mutate();
   };
 
-  const handlePaid = (plan: string) => {
-    setLoadingPlan(plan);
-    subscriptionMutation.mutate(plan);
+  const handlePaid = async (plan: string) => {
+    setPreviewLoading(true);
+    setUpgradePlan(plan);
+    setUpgradeAcknowledged(false);
+    try {
+      const res = await apiRequest("GET", `/api/appai/billing/upgrade-preview?plan=${encodeURIComponent(plan)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not load upgrade preview");
+      setUpgradePreview({
+        confirmationMessage: data.confirmationMessage,
+        newPriceUsd: data.newPriceUsd,
+        newIncludedRemaining: data.newIncludedRemaining,
+      });
+    } catch (err: any) {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+      setUpgradePlan(null);
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const confirmUpgrade = () => {
+    if (!upgradePlan) return;
+    setLoadingPlan(upgradePlan);
+    subscriptionMutation.mutate(upgradePlan);
+    setUpgradePlan(null);
+    setUpgradePreview(null);
   };
 
   const content = (
@@ -263,9 +305,46 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
       </div>
 
       <p className="text-center text-xs text-muted-foreground">
-        Paid plans are billed monthly through Shopify. Cancel anytime.
-        Each plan includes a monthly allotment of free AI generations — tap the ⓘ icon on a plan for overage details.
+        Paid plans are billed monthly through Shopify in USD. Cancel anytime.
+        Extra generations require in-app opt-in ($0.08 USD each, pay-as-you-go). Tap ⓘ on a plan for details.
       </p>
+
+      <Dialog open={!!upgradePlan} onOpenChange={(open) => !open && setUpgradePlan(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirm plan upgrade</DialogTitle>
+            <DialogDescription>Review billing before continuing to Shopify.</DialogDescription>
+          </DialogHeader>
+          {previewLoading ? (
+            <div className="flex justify-center py-6">
+              <Loader2 className="h-6 w-6 animate-spin" />
+            </div>
+          ) : upgradePreview ? (
+            <div className="space-y-4 text-sm">
+              <p>{upgradePreview.confirmationMessage}</p>
+              <div className="flex items-start gap-2">
+                <Checkbox
+                  id="upgrade-ack"
+                  checked={upgradeAcknowledged}
+                  onCheckedChange={(c) => setUpgradeAcknowledged(!!c)}
+                />
+                <Label htmlFor="upgrade-ack" className="font-normal leading-relaxed">
+                  I understand I will be charged through Shopify and my included usage carries over as
+                  described above. All amounts in USD.
+                </Label>
+              </div>
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setUpgradePlan(null)}>
+              Cancel
+            </Button>
+            <Button disabled={!upgradeAcknowledged || previewLoading} onClick={confirmUpgrade}>
+              Continue to Shopify
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 
