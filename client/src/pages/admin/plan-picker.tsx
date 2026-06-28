@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Loader2, CheckCircle, Zap, LayoutTemplate, Star, Rocket, Info } from "lucide-react";
+import GenerationQuotaUsage from "@/components/admin/GenerationQuotaUsage";
 
 /**
  * Shared note appended to every paid plan's info popover (and the Trial card).
@@ -177,6 +178,8 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
 
   const content = (
     <div className="max-w-5xl mx-auto py-8 px-4">
+      <GenerationQuotaUsage showManageLink={false} className="mb-6" />
+
       <div className="text-center mb-8">
         <h2 className="text-2xl font-bold mb-2">Pick a plan to get started</h2>
         <p className="text-muted-foreground">

@@ -71,6 +71,7 @@ import Stripe from "stripe";
 import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS } from "./customizer-plans";
 import { extractUsageLineItemId, retryPendingOverageCharges } from "./usage-billing";
 import { peekMerchantGenerationQuota, consumeMerchantGenerationQuota, quotaBlockBody } from "./generation-quota";
+import { logMerchantGeneration } from "./merchant-generation-log";
 import type { CustomizerPage } from "@shared/schema";
 import { ObjectStorageService, registerObjectStorageRoutes, objectStorageClient, getStorageDir } from "./replit_integrations/object_storage";
 import {
@@ -3000,33 +3001,39 @@ console.log("[shopify/session] installation ok", {
         return res.status(403).json({ error: "Shop not authorized" });
       }
 
-      // Per-merchant monthly plan quota — fail fast before touching customer credits.
-      const embedQuotaPeek = await peekMerchantGenerationQuota(installation);
-      if (!embedQuotaPeek.allowed) {
-        return res.status(embedQuotaPeek.status ?? 402).json(quotaBlockBody(embedQuotaPeek));
-      }
-
       // For Shopify embedded mode, customer login is OPTIONAL
       // Business model: Shop pays for generation capacity via rate limits.
       // If a customer is logged in with personal credits, we deduct from their credits first.
-      // If no credits or not logged in, generation is allowed under shop's rate limit.
+      // Customer-paid credits do NOT consume the merchant's plan quota.
       let customer = null;
-      let creditDeducted = false;
+      let usedCustomerPaidCredit = false;
       if (session.internalCustomerId) {
         customer = await storage.getCustomer(session.internalCustomerId);
-        if (customer && customer.credits > 0) {
-          // Atomically decrement credits BEFORE generation
-          const updatedCustomer = await storage.decrementCreditsIfAvailable(customer.id);
-          if (updatedCustomer) {
-            customer = updatedCustomer;
-            creditDeducted = true;
+        if (customer) {
+          const balance = await storage.ensureCustomerBalance(customer.id);
+          if (balance.credits > 0) {
+            const embedReqId = `shopify-gen-${Date.now().toString(36)}`;
+            const paid = await storage.consumePaidCredit(
+              customer.id,
+              `shopify-generation:${embedReqId}`,
+              embedReqId,
+            );
+            if (paid.consumed) {
+              usedCustomerPaidCredit = true;
+              customer = (await storage.getCustomer(customer.id)) ?? customer;
+              console.log(`[Shopify Generate] customer ${customer.id} paid credit consumed — merchant plan quota skipped`);
+            }
           }
-          // If decrement fails (race condition), still allow generation via shop's rate limit
         }
-        // If customer has no personal credits, generation is allowed via shop's rate limit
-        // This is intentional - shop is paying for capacity, individual credits are optional
       }
       // Anonymous Shopify customers are allowed - shop-level rate limiting handles abuse
+
+      if (!usedCustomerPaidCredit) {
+        const embedQuotaPeek = await peekMerchantGenerationQuota(installation);
+        if (!embedQuotaPeek.allowed) {
+          return res.status(embedQuotaPeek.status ?? 402).json(quotaBlockBody(embedQuotaPeek));
+        }
+      }
 
       // Rate limiting per shop
       const now = Date.now();
@@ -3052,10 +3059,11 @@ console.log("[shopify/session] installation ok", {
         return res.status(400).json({ error: "Prompt and size are required" });
       }
 
-      // Atomically consume one unit of the merchant's plan quota right before generation.
-      const embedQuota = await consumeMerchantGenerationQuota(installation);
-      if (!embedQuota.allowed) {
-        return res.status(embedQuota.status ?? 402).json(quotaBlockBody(embedQuota));
+      if (!usedCustomerPaidCredit) {
+        const embedQuota = await consumeMerchantGenerationQuota(installation);
+        if (!embedQuota.allowed) {
+          return res.status(embedQuota.status ?? 402).json(quotaBlockBody(embedQuota));
+        }
       }
 
       // Look up style preset and get its promptSuffix
@@ -3353,8 +3361,8 @@ ${textEdgeRestrictions}
 
       const designId = `shopify-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
-      // Log the generation only if credits were deducted from a customer account
-      if (creditDeducted && customer) {
+      // Legacy credit_transactions row (ledger already updated via consumePaidCredit).
+      if (usedCustomerPaidCredit && customer) {
         await storage.createCreditTransaction({
           customerId: customer.id,
           type: "generation",
@@ -3362,6 +3370,18 @@ ${textEdgeRestrictions}
           description: `Shopify artwork: ${prompt.substring(0, 50)}...`,
         });
       }
+
+      void logMerchantGeneration({
+        installation,
+        customerId: customer?.id ?? session.internalCustomerId ?? null,
+        designId,
+        promptLength: String(rawUserPromptEmbed ?? prompt ?? "").length,
+        hadReferenceImage:
+          !!(Array.isArray(referenceImagesArr) && referenceImagesArr.length > 0) || !!referenceImage,
+        stylePreset: stylePreset ?? null,
+        size: size ?? null,
+        success: true,
+      });
 
       res.json({
         imageUrl,
@@ -6870,10 +6890,8 @@ ${textEdgeRestrictions}
 
       // Per-merchant monthly plan quota — fail fast before consuming any
       // per-customer free generation / credit below.
-      const sfQuotaPeek = await peekMerchantGenerationQuota(installation);
-      if (!sfQuotaPeek.allowed) {
-        return res.status(sfQuotaPeek.status ?? 402).json(quotaBlockBody(sfQuotaPeek));
-      }
+      // Customer-paid credits ($1 packs) are billed to the customer, not the shop plan.
+      let usedCustomerPaidCredit = false;
 
       // Generation limit logic (10 free generations total per customer/session)
       const FREE_GENERATION_LIMIT = 10;
@@ -6905,6 +6923,8 @@ ${textEdgeRestrictions}
             if (!result.consumed) {
               return res.status(403).json({ error: "INSUFFICIENT_CREDITS", message: "You've run out of credits. Purchase more to continue." });
             }
+            usedCustomerPaidCredit = true;
+            console.log(P, reqId, `customer ${customer.id} paid credit consumed — merchant plan quota skipped`);
           } else {
             // No credits, check free limit
             const freeUsed = balance.freeGenerationsUsed || 0;
@@ -6938,6 +6958,13 @@ ${textEdgeRestrictions}
             generationsUsed: count,
             limit: FREE_GENERATION_LIMIT,
           });
+        }
+      }
+
+      if (!usedCustomerPaidCredit) {
+        const sfQuotaPeek = await peekMerchantGenerationQuota(installation);
+        if (!sfQuotaPeek.allowed) {
+          return res.status(sfQuotaPeek.status ?? 402).json(quotaBlockBody(sfQuotaPeek));
         }
       }
 
@@ -6987,10 +7014,12 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "Prompt and size are required" });
       }
 
-      // Atomically consume one unit of the merchant's plan quota right before generation.
-      const sfQuota = await consumeMerchantGenerationQuota(installation);
-      if (!sfQuota.allowed) {
-        return res.status(sfQuota.status ?? 402).json(quotaBlockBody(sfQuota));
+      // Merchant plan quota — skipped when the customer paid with their own credit pack.
+      if (!usedCustomerPaidCredit) {
+        const sfQuota = await consumeMerchantGenerationQuota(installation);
+        if (!sfQuota.allowed) {
+          return res.status(sfQuota.status ?? 402).json(quotaBlockBody(sfQuota));
+        }
       }
 
       // Look up style preset
@@ -7369,6 +7398,18 @@ ${textEdgeRestrictions}
 
           if (!base64Data) {
             await storage.updateGenerationJob(jobId, { status: "failed", errorMessage: "AI model returned no image data" });
+            void logMerchantGeneration({
+              installation,
+              customerId: resolvedJobCustomerId,
+              promptLength: String(rawUserPrompt ?? prompt ?? "").length,
+              hadReferenceImage:
+                !!(Array.isArray(referenceImagesArrSf) && referenceImagesArrSf.length > 0) ||
+                !!referenceImage,
+              stylePreset: stylePreset ?? null,
+              size: size ?? null,
+              success: false,
+              errorMessage: "AI model returned no image data",
+            });
             console.error(`${W} AI returned no image data — job failed`);
             return;
           }
@@ -7428,6 +7469,19 @@ ${textEdgeRestrictions}
             designId,
           });
 
+          void logMerchantGeneration({
+            installation,
+            customerId: resolvedJobCustomerId,
+            designId,
+            promptLength: String(rawUserPrompt ?? prompt ?? "").length,
+            hadReferenceImage:
+              !!(Array.isArray(referenceImagesArrSf) && referenceImagesArrSf.length > 0) ||
+              !!referenceImage,
+            stylePreset: stylePreset ?? null,
+            size: size ?? null,
+            success: true,
+          });
+
           console.log(`${W} complete designId=${designId} total=${Date.now() - wStart}ms`);
         } catch (workerErr: any) {
           console.error(`${W} worker failed +${Date.now() - wStart}ms stage=unknown:`, workerErr.message ?? workerErr);
@@ -7435,6 +7489,18 @@ ${textEdgeRestrictions}
             status: "failed",
             errorMessage: workerErr.message ?? "Unknown generation error",
           }).catch(() => {});
+          void logMerchantGeneration({
+            installation,
+            customerId: resolvedJobCustomerId,
+            promptLength: String(rawUserPrompt ?? prompt ?? "").length,
+            hadReferenceImage:
+              !!(Array.isArray(referenceImagesArrSf) && referenceImagesArrSf.length > 0) ||
+              !!referenceImage,
+            stylePreset: stylePreset ?? null,
+            size: size ?? null,
+            success: false,
+            errorMessage: workerErr.message ?? "Unknown generation error",
+          });
         }
       })();
 
@@ -10847,7 +10913,35 @@ ${textEdgeRestrictions}
       startDate.setDate(startDate.getDate() - 30);
 
       const stats = await storage.getGenerationStats(merchant.id, startDate, endDate);
-      res.json(stats);
+
+      let planQuota: Record<string, unknown> | null = null;
+      const merchantShop = (req as any).shopDomain as string | undefined;
+      if (merchantShop) {
+        try {
+          const inst = await getAuthorizedInstallation(
+            merchantShop.toLowerCase().replace(/^https?:\/\//, "")
+          );
+          if (inst) {
+            const q = await peekMerchantGenerationQuota(inst);
+            planQuota = {
+              plan: q.planName,
+              unlimited: q.unlimited,
+              freeQuota: Number.isFinite(q.freeQuota) ? q.freeQuota : null,
+              overageCap: q.overageCap,
+              limit: Number.isFinite(q.hardCap) ? q.hardCap : null,
+              used: q.used,
+              remaining: Number.isFinite(q.remaining) ? q.remaining : null,
+              overageUsed: q.overageUsed,
+              isOverage: q.isOverage,
+              isTrial: q.planName === "trial",
+            };
+          }
+        } catch (e: any) {
+          console.warn("[/api/admin/stats] planQuota derive failed:", e?.message ?? e);
+        }
+      }
+
+      res.json({ ...stats, planQuota });
     } catch (error) {
       console.error("Error fetching stats:", error);
       res.status(500).json({ error: "Failed to fetch stats" });
@@ -17607,7 +17701,9 @@ ${textEdgeRestrictions}
       variables: {
         name: `${displayName} Plan`,
         returnUrl,
-        test: process.env.NODE_ENV !== "production",
+        test:
+          process.env.SHOPIFY_BILLING_TEST === "true" ||
+          process.env.NODE_ENV !== "production",
         lineItems,
       },
     });

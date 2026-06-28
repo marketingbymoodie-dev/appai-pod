@@ -3,7 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Skeleton } from "@/components/ui/skeleton";
 import { CreditCard, TrendingUp, Users } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
-import type { Merchant } from "@shared/schema";
+import GenerationQuotaUsage, { usePlanGenerationQuota } from "@/components/admin/GenerationQuotaUsage";
 
 interface CreditStats {
   totalCreditsIssued: number;
@@ -12,9 +12,8 @@ interface CreditStats {
 }
 
 export default function AdminCredits() {
-  const { data: merchant } = useQuery<Merchant>({
-    queryKey: ["/api/merchant"],
-  });
+  const { data: planData } = usePlanGenerationQuota();
+  const quota = planData?.generationQuota;
 
   const { data: stats, isLoading } = useQuery<CreditStats>({
     queryKey: ["/api/admin/credit-stats"],
@@ -27,41 +26,53 @@ export default function AdminCredits() {
     },
   });
 
+  const planLabel = planData?.planName
+    ? planData.planName.replace("_", " ")
+    : "—";
+
   return (
     <AdminLayout>
       <div className="space-y-6">
         <div>
           <h1 className="text-2xl font-bold" data-testid="text-credits-title">Credits</h1>
-          <p className="text-muted-foreground">Monitor credit usage across your store</p>
+          <p className="text-muted-foreground">
+            Shop plan quota and end-customer credit usage
+          </p>
         </div>
+
+        <GenerationQuotaUsage />
 
         <div className="grid gap-4 md:grid-cols-3">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between gap-4 space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Monthly Limit</CardTitle>
+              <CardTitle className="text-sm font-medium">Shop plan quota</CardTitle>
               <CreditCard className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold" data-testid="text-monthly-limit">
-                {merchant?.generationsThisMonth || 0} / {merchant?.monthlyGenerationLimit || 100}
+                {quota?.unlimited
+                  ? `${quota.used} used`
+                  : `${quota?.used ?? 0} / ${quota?.limit ?? "—"}`}
               </div>
               <p className="text-xs text-muted-foreground">
-                Generations this billing period
+                {quota?.plan === "trial"
+                  ? "Trial generations (lifetime total for your shop)"
+                  : "AI generations this billing period (your shop)"}
               </p>
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader className="flex flex-row items-center justify-between gap-4 space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Subscription</CardTitle>
+              <CardTitle className="text-sm font-medium">Current plan</CardTitle>
               <TrendingUp className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold capitalize" data-testid="text-subscription-tier">
-                {merchant?.subscriptionTier || "Free"}
+                {planLabel}
               </div>
               <p className="text-xs text-muted-foreground">
-                Current plan
+                {planData?.planStatus === "trialing" ? "Trial active" : "Subscription status"}
               </p>
             </CardContent>
           </Card>
@@ -80,7 +91,7 @@ export default function AdminCredits() {
                 </div>
               )}
               <p className="text-xs text-muted-foreground">
-                Customers with credits
+                Customers with credit balances
               </p>
             </CardContent>
           </Card>
@@ -88,39 +99,19 @@ export default function AdminCredits() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Usage Overview</CardTitle>
-            <CardDescription>Credit allocation and consumption</CardDescription>
+            <CardTitle>Customer credits</CardTitle>
+            <CardDescription>
+              End-customer packs (10 free generations per customer, then paid credits) are separate from your shop plan quota above.
+            </CardDescription>
           </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <span className="text-sm">Total Credits Issued</span>
-                {isLoading ? (
-                  <Skeleton className="h-5 w-16" />
-                ) : (
-                  <span className="font-medium">{stats?.totalCreditsIssued || 0}</span>
-                )}
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm">Total Credits Used</span>
-                {isLoading ? (
-                  <Skeleton className="h-5 w-16" />
-                ) : (
-                  <span className="font-medium">{stats?.totalCreditsUsed || 0}</span>
-                )}
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm">Utilization Rate</span>
-                {isLoading ? (
-                  <Skeleton className="h-5 w-16" />
-                ) : (
-                  <span className="font-medium">
-                    {stats?.totalCreditsIssued 
-                      ? Math.round((stats.totalCreditsUsed / stats.totalCreditsIssued) * 100)
-                      : 0}%
-                  </span>
-                )}
-              </div>
+          <CardContent className="grid gap-4 md:grid-cols-2">
+            <div>
+              <p className="text-sm text-muted-foreground">Total credits issued</p>
+              <p className="text-xl font-semibold">{stats?.totalCreditsIssued ?? 0}</p>
+            </div>
+            <div>
+              <p className="text-sm text-muted-foreground">Total credits used</p>
+              <p className="text-xl font-semibold">{stats?.totalCreditsUsed ?? 0}</p>
             </div>
           </CardContent>
         </Card>

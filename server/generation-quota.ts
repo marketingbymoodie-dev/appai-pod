@@ -13,6 +13,10 @@
  *
  * The separate per-CUSTOMER 10-free-generation limit (FREE_GENERATION_LIMIT in
  * routes.ts/storage.ts) is unrelated and remains enforced independently.
+ *
+ * Customer-paid credits ($1 / 10-pack on the storefront) also do NOT consume
+ * merchant plan quota — only generations billed to the shop (free customer
+ * slots, anonymous session, admin tester, etc.) increment monthlyGenerationsUsed.
  */
 import { storage } from "./storage";
 import {

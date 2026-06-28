@@ -33,6 +33,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import AdminLayout from "@/components/admin-layout";
 import ResyncPricesDialog from "@/components/admin/ResyncPricesDialog";
 import PlanPicker from "./plan-picker";
+import GenerationQuotaUsage from "@/components/admin/GenerationQuotaUsage";
 
 interface CustomizerPage {
   id: string;
@@ -1565,6 +1566,8 @@ export default function AdminCustomizerPages() {
                 )}
               </CardContent>
             </Card>
+
+            <GenerationQuotaUsage onUpgradeClick={() => navigate("/admin/plan")} />
 
             {/* ── PAGES LIST ── */}
             {pagesLoading ? (
