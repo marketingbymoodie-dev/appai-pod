@@ -67,6 +67,8 @@ export interface PlanApiResponse {
   };
   overage?: PlanOverageBlock;
   usdDisclaimer?: string;
+  pendingPlanName?: string | null;
+  pendingPlanEffectiveAt?: string | null;
 }
 
 const PLAN_DISPLAY: Record<string, string> = {
@@ -160,6 +162,8 @@ export default function GenerationQuotaUsage({
   const planName = data?.planName;
   const planStatus = data?.planStatus;
   const overage = data?.overage;
+  const pendingPlanName = data?.pendingPlanName;
+  const pendingPlanEffectiveAt = data?.pendingPlanEffectiveAt;
 
   if (isLoading) {
     if (variant === "inline") {
@@ -198,6 +202,13 @@ export default function GenerationQuotaUsage({
 
   const bar = (
     <>
+      {pendingPlanName && pendingPlanEffectiveAt && (
+        <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-3">
+          Plan change to <strong className="capitalize">{pendingPlanName.replace("_", " ")}</strong> scheduled
+          for {new Date(pendingPlanEffectiveAt).toLocaleDateString("en-US", { dateStyle: "long" })}.
+          Until then your current plan benefits apply.
+        </p>
+      )}
       <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
         <span className="text-sm font-medium flex items-center gap-2">
           AI generations

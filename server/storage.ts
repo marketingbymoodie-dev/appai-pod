@@ -25,7 +25,7 @@ import {
   founderAlerts,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, gte, lte, desc, sql, isNull } from "drizzle-orm";
+import { eq, and, gte, lte, desc, asc, inArray, sql, isNull } from "drizzle-orm";
 import { computeGenerationConsume, getEffectivePlan, resolveGenerationQuota } from "./customizer-plans";
 
 export interface IStorage {
@@ -189,7 +189,11 @@ export interface IStorage {
   deleteCustomizerPage(id: string): Promise<void>;
   countCustomizerPages(shop: string): Promise<number>;
   countActiveCustomizerPages(shop: string): Promise<number>;
-
+  enforceCustomizerPageLimit(
+    shop: string,
+    limit: number,
+  ): Promise<{ deactivatedIds: string[]; keptActiveCount: number }>;
+  
   // Published Products (design → native Shopify product)
   getPublishedProduct(shop: string, designId: string): Promise<PublishedProduct | undefined>;
   createPublishedProduct(product: InsertPublishedProduct): Promise<PublishedProduct>;
@@ -1385,6 +1389,48 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
       .from(customizerPages)
       .where(and(eq(customizerPages.shop, shop), eq(customizerPages.status, "active")));
     return result?.count ?? 0;
+  }
+
+  /**
+   * Keep oldest active pages live; disable newest excess (not deleted).
+   */
+  async enforceCustomizerPageLimit(
+    shop: string,
+    limit: number,
+  ): Promise<{ deactivatedIds: string[]; keptActiveCount: number }> {
+    if (limit <= 0) {
+      const active = await db
+        .select({ id: customizerPages.id })
+        .from(customizerPages)
+        .where(and(eq(customizerPages.shop, shop), eq(customizerPages.status, "active")));
+      const ids = active.map((p) => p.id);
+      if (ids.length > 0) {
+        await db
+          .update(customizerPages)
+          .set({ status: "disabled", updatedAt: new Date() })
+          .where(inArray(customizerPages.id, ids));
+      }
+      return { deactivatedIds: ids, keptActiveCount: 0 };
+    }
+
+    const active = await db
+      .select()
+      .from(customizerPages)
+      .where(and(eq(customizerPages.shop, shop), eq(customizerPages.status, "active")))
+      .orderBy(asc(customizerPages.createdAt));
+
+    if (active.length <= limit) {
+      return { deactivatedIds: [], keptActiveCount: active.length };
+    }
+
+    const toDisable = active.slice(limit);
+    const deactivatedIds = toDisable.map((p) => p.id);
+    await db
+      .update(customizerPages)
+      .set({ status: "disabled", updatedAt: new Date() })
+      .where(inArray(customizerPages.id, deactivatedIds));
+
+    return { deactivatedIds, keptActiveCount: limit };
   }
 
   // Published Products

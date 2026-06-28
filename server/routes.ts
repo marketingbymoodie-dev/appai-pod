@@ -70,7 +70,15 @@ import { privacyPolicyHtml } from "./privacy-policy";
 import Stripe from "stripe";
 import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota } from "./customizer-plans";
 import { extractUsageLineItemId, retryPendingOverageCharges } from "./usage-billing";
-import { peekMerchantGenerationQuota, quotaBlockBody, buildUpgradePreview } from "./generation-quota";
+import { peekMerchantGenerationQuota, quotaBlockBody } from "./generation-quota";
+import {
+  buildUpgradePreview,
+  buildDowngradePreview,
+  classifyPlanChange,
+  resolveCarryoverIncludedUsed,
+  trialToPaidMeteringReset,
+} from "./plan-transitions";
+import { maybeApplyPendingPlan } from "./plan-transition-apply";
 import {
   finalizeGenerationBilling,
   peekMerchantQuotaWithAlerts,
@@ -17553,7 +17561,8 @@ ${textEdgeRestrictions}
     const resolved = await resolveShopInstallation(req);
     if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
 
-    const { installation } = resolved;
+    const { installation: rawInstallation } = resolved;
+    const installation = await maybeApplyPendingPlan(rawInstallation);
     const plan = getEffectivePlan(installation as any, installation.shopDomain);
     const pagesCount = await storage.countCustomizerPages(installation.shopDomain);
 
@@ -17652,6 +17661,8 @@ ${textEdgeRestrictions}
       extra,
       overage,
       usdDisclaimer: "All prices in USD.",
+      pendingPlanName: (installation as any).pendingPlanName ?? null,
+      pendingPlanEffectiveAt: (installation as any).pendingPlanEffectiveAt ?? null,
     });
   }));
 
@@ -17671,11 +17682,31 @@ ${textEdgeRestrictions}
     const newPriceUsd = PLAN_PRICES_USD[newPlan] ?? 0;
     const newQuota = resolveGenerationQuota(newPlan, true);
 
+    const currentPlanName = current.planName ?? "trial";
+    const changeKind = classifyPlanChange(currentPlanName, newPlan);
+
+    if (changeKind === "paid_downgrade") {
+      return res.json(
+        buildDowngradePreview({
+          currentPlan: currentPlanName,
+          newPlan,
+          effectiveAt: (installation as any).pendingPlanEffectiveAt ?? (installation as any).billingCurrentPeriodEnd ?? null,
+          currentPeriodEnd: (installation as any).billingCurrentPeriodEnd ?? null,
+        }),
+      );
+    }
+
+    const carryoverIncludedUsed = resolveCarryoverIncludedUsed({
+      fromPlan: currentPlanName,
+      toPlan: newPlan,
+      includedUsed: q.includedUsed,
+    });
+
     return res.json(
       buildUpgradePreview({
-        currentPlan: current.planName ?? "trial",
+        currentPlan: currentPlanName,
         newPlan,
-        includedUsed: q.includedUsed,
+        carryoverIncludedUsed,
         newFreeQuota: newQuota.freeQuota,
         newPriceUsd,
       }),
@@ -17976,14 +18007,40 @@ ${textEdgeRestrictions}
       }
 
       if (subscriptionStatus === "ACTIVE" || subscriptionStatus === "PENDING") {
-        await storage.updateShopifyInstallation(installation.id, {
-          planName: plan,
-          planStatus: "active",
+        const currentPlanName = installation.planName ?? "trial";
+        const changeKind = classifyPlanChange(currentPlanName, plan);
+        const billingFields = {
           billingSubscriptionId: charge_id,
           billingUsageLineItemId: usageLineItemId,
           billingCurrentPeriodEnd: currentPeriodEnd ?? undefined,
-        } as any);
-        console.log(`[Billing] Activated ${plan} plan for ${shop} (usageLine=${usageLineItemId ? "yes" : "none"})`);
+        };
+
+        if (changeKind === "paid_downgrade") {
+          const effectiveAt =
+            currentPeriodEnd ?? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+          await storage.updateShopifyInstallation(installation.id, {
+            ...billingFields,
+            pendingPlanName: plan,
+            pendingPlanEffectiveAt: effectiveAt,
+          } as any);
+          console.log(
+            `[Billing] Scheduled downgrade ${currentPlanName} → ${plan} for ${shop} effective ${effectiveAt.toISOString()}`,
+          );
+        } else {
+          const planUpdates: Record<string, unknown> = {
+            ...billingFields,
+            planName: plan,
+            planStatus: "active",
+            pendingPlanName: null,
+            pendingPlanEffectiveAt: null,
+          };
+          if (changeKind === "trial_to_paid") {
+            Object.assign(planUpdates, trialToPaidMeteringReset());
+          }
+          await storage.updateShopifyInstallation(installation.id, planUpdates as any);
+          console.log(`[Billing] Activated ${plan} plan for ${shop} (usageLine=${usageLineItemId ? "yes" : "none"})`);
+        }
+
         // A re-subscribe may have just attached a usage line — flush any overage
         // charges that were recorded as skipped/failed while it was missing.
         if (usageLineItemId) {
@@ -17995,12 +18052,27 @@ ${textEdgeRestrictions}
       }
     } catch (err: any) {
       console.error(`[Billing] Callback verification failed for ${shop}:`, err.message);
-      // Still mark as active optimistically — Shopify wouldn't redirect here without approval
-      await storage.updateShopifyInstallation(installation.id, {
-        planName: plan,
-        planStatus: "active",
-        billingSubscriptionId: charge_id,
-      } as any);
+      const currentPlanName = installation.planName ?? "trial";
+      const changeKind = classifyPlanChange(currentPlanName, plan);
+      if (changeKind === "paid_downgrade") {
+        await storage.updateShopifyInstallation(installation.id, {
+          billingSubscriptionId: charge_id,
+          pendingPlanName: plan,
+          pendingPlanEffectiveAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+        } as any);
+      } else {
+        const planUpdates: Record<string, unknown> = {
+          planName: plan,
+          planStatus: "active",
+          billingSubscriptionId: charge_id,
+          pendingPlanName: null,
+          pendingPlanEffectiveAt: null,
+        };
+        if (changeKind === "trial_to_paid") {
+          Object.assign(planUpdates, trialToPaidMeteringReset());
+        }
+        await storage.updateShopifyInstallation(installation.id, planUpdates as any);
+      }
     }
 
     // Redirect back to the Shopify Admin app

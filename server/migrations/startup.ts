@@ -30,6 +30,8 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "shopify_installations", column: "overage_opt_in_bucket_key",   type: "TEXT" },
   { table: "shopify_installations", column: "quota_alert_90_bucket_key",   type: "TEXT" },
   { table: "shopify_installations", column: "quota_alert_100_bucket_key",  type: "TEXT" },
+  { table: "shopify_installations", column: "pending_plan_name",           type: "TEXT" },
+  { table: "shopify_installations", column: "pending_plan_effective_at",   type: "TIMESTAMP" },
   { table: "generation_jobs",       column: "billing_mode",                type: "TEXT" },
   { table: "customizer_pages",      column: "base_product_handle",         type: "TEXT" },
   { table: "generation_jobs",       column: "session_id",                  type: "TEXT" },

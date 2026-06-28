@@ -142,7 +142,8 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
   const [upgradePreview, setUpgradePreview] = useState<{
     confirmationMessage: string;
     newPriceUsd: number;
-    newIncludedRemaining: number;
+    newIncludedRemaining?: number | null;
+    isDowngrade?: boolean;
   } | null>(null);
   const [upgradeAcknowledged, setUpgradeAcknowledged] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -200,7 +201,8 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
       setUpgradePreview({
         confirmationMessage: data.confirmationMessage,
         newPriceUsd: data.newPriceUsd,
-        newIncludedRemaining: data.newIncludedRemaining,
+        newIncludedRemaining: data.newIncludedRemaining ?? null,
+        isDowngrade: !!data.isDowngrade,
       });
     } catch (err: any) {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -312,7 +314,9 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
       <Dialog open={!!upgradePlan} onOpenChange={(open) => !open && setUpgradePlan(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Confirm plan upgrade</DialogTitle>
+            <DialogTitle>
+              {upgradePreview?.isDowngrade ? "Confirm plan change" : "Confirm plan upgrade"}
+            </DialogTitle>
             <DialogDescription>Review billing before continuing to Shopify.</DialogDescription>
           </DialogHeader>
           {previewLoading ? (
@@ -329,8 +333,9 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
                   onCheckedChange={(c) => setUpgradeAcknowledged(!!c)}
                 />
                 <Label htmlFor="upgrade-ack" className="font-normal leading-relaxed">
-                  I understand I will be charged through Shopify and my included usage carries over as
-                  described above. All amounts in USD.
+                  {upgradePreview.isDowngrade
+                    ? "I understand the new plan takes effect at the end of my current billing period and my current benefits continue until then. All amounts in USD."
+                    : "I understand I will be charged through Shopify and my included allowance is as described above. All amounts in USD."}
                 </Label>
               </div>
             </div>

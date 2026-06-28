@@ -179,6 +179,9 @@ export const shopifyInstallations = pgTable("shopify_installations", {
   overageOptInBucketKey: text("overage_opt_in_bucket_key"),
   quotaAlert90BucketKey: text("quota_alert_90_bucket_key"),
   quotaAlert100BucketKey: text("quota_alert_100_bucket_key"),
+  /** Deferred plan change (downgrades take effect at billing period end). */
+  pendingPlanName: text("pending_plan_name"),
+  pendingPlanEffectiveAt: timestamp("pending_plan_effective_at"),
 });
 
 export const insertShopifyInstallationSchema = createInsertSchema(shopifyInstallations).omit({

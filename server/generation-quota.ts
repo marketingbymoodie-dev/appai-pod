@@ -13,10 +13,9 @@ import {
   includedUsedFromCounters,
   extraSpentCents,
   isOverageOptInActive,
-  planMaxOverageBudgetCents,
   resolveEffectiveOverageCap,
-  OVERAGE_PRICE_CENTS,
 } from "./overage-settings";
+import { maybeApplyPendingPlan } from "./plan-transition-apply";
 import type { ShopifyInstallation } from "@shared/schema";
 
 export type QuotaBlockCode =
@@ -212,7 +211,8 @@ async function resolveQuotaContext(installation: ShopifyInstallation): Promise<{
   hardCap: number;
 }> {
   await storage.syncOverageOptInForBucket(installation.id, installation);
-  const refreshed = (await storage.getShopifyInstallation(installation.id)) ?? installation;
+  let refreshed = (await storage.getShopifyInstallation(installation.id)) ?? installation;
+  refreshed = await maybeApplyPendingPlan(refreshed);
 
   const eff = getEffectivePlan(refreshed as any, refreshed.shopDomain);
   const quota = resolveGenerationQuota(eff.planName, eff.isActive);
@@ -357,28 +357,5 @@ export function quotaBlockBody(decision: MerchantQuotaDecision) {
     includedUsed: decision.includedUsed,
     includedLimit: decision.includedLimit,
     currency: "USD",
-  };
-}
-
-export function buildUpgradePreview(params: {
-  currentPlan: string;
-  newPlan: string;
-  includedUsed: number;
-  newFreeQuota: number;
-  newPriceUsd: number;
-}) {
-  const { currentPlan, newPlan, includedUsed, newFreeQuota, newPriceUsd } = params;
-  const newIncludedRemaining = Math.max(0, newFreeQuota - includedUsed);
-  return {
-    currentPlan,
-    newPlan,
-    newPriceUsd,
-    currency: "USD",
-    includedConsumed: includedUsed,
-    newIncludedAllowance: newFreeQuota,
-    newIncludedRemaining,
-    confirmationMessage: `You will be charged $${newPriceUsd.toFixed(2)} USD/month for the ${PLAN_DISPLAY_NAMES[newPlan] ?? newPlan} plan on your next Shopify app bill. Your included allowance becomes ${newFreeQuota} generations per month with ${newIncludedRemaining} remaining this period (${includedUsed} already used from your previous plan's included quota). All amounts in USD.`,
-    planMaxOverageBudgetCents: planMaxOverageBudgetCents(newPlan),
-    overagePriceCents: OVERAGE_PRICE_CENTS,
   };
 }

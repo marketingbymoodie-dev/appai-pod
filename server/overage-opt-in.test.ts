@@ -8,7 +8,7 @@ import {
   OVERAGE_PRICE_CENTS,
 } from "./overage-settings";
 import { resolveGenerationQuota } from "./customizer-plans";
-import { buildUpgradePreview } from "./generation-quota";
+import { buildUpgradePreview } from "./plan-transitions";
 
 describe("overage opt-in settings", () => {
   const starterQuota = resolveGenerationQuota("starter", true);
@@ -69,11 +69,11 @@ describe("overage opt-in settings", () => {
 });
 
 describe("buildUpgradePreview", () => {
-  it("remaining included = newFreeQuota - includedUsed (overage does not reduce)", () => {
+  it("remaining included = newFreeQuota - carryover (overage does not reduce)", () => {
     const preview = buildUpgradePreview({
       currentPlan: "starter",
       newPlan: "pro",
-      includedUsed: 200,
+      carryoverIncludedUsed: 200,
       newFreeQuota: 1500,
       newPriceUsd: 99,
     });
