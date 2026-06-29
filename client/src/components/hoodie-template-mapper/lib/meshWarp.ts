@@ -64,6 +64,36 @@ function applySourceUvTransform(
  * before clipping. Eliminates 1-pixel seams between adjacent cells.
  */
 const SEAM_INFLATE_PX = 0.6;
+/** Extra inflation when rasterizing SVG first — vector sources show harsher triangle seams. */
+const SVG_RASTER_SEAM_INFLATE_PX = 1.25;
+
+function isSvgImageSource(image: CanvasImageSource): boolean {
+  if (typeof HTMLImageElement === "undefined" || !(image instanceof HTMLImageElement)) {
+    return false;
+  }
+  const src = (image.currentSrc || image.src || "").toLowerCase();
+  return src.includes(".svg") || src.startsWith("data:image/svg");
+}
+
+/** Rasterize SVG once so mesh-warp triangle draws don't resample vector paths per cell. */
+function rasterizeArtworkSource(
+  image: CanvasImageSource,
+  width: number,
+  height: number,
+): { source: CanvasImageSource; width: number; height: number } {
+  if (typeof document === "undefined") {
+    return { source: image, width, height };
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(width));
+  canvas.height = Math.max(1, Math.round(height));
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return { source: image, width, height };
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+  return { source: canvas, width: canvas.width, height: canvas.height };
+}
 
 export type WarpOptions = {
   /**
@@ -97,11 +127,24 @@ export function drawMeshWarp(
   if (mesh.cols < 2 || mesh.rows < 2) return;
   if (mesh.targetPoints.length !== mesh.cols * mesh.rows) return;
 
+  let drawImage: CanvasImageSource = image;
+  let drawWidth = imageWidth;
+  let drawHeight = imageHeight;
+  let seamInflate = inflate ? SEAM_INFLATE_PX : 0;
+
+  if (isSvgImageSource(image)) {
+    const raster = rasterizeArtworkSource(image, imageWidth, imageHeight);
+    drawImage = raster.source;
+    drawWidth = raster.width;
+    drawHeight = raster.height;
+    if (inflate) seamInflate = SVG_RASTER_SEAM_INFLATE_PX;
+  }
+
   const src: SourceRect = mesh.sourceRect ?? {
     x: 0,
     y: 0,
-    width: imageWidth,
-    height: imageHeight,
+    width: drawWidth,
+    height: drawHeight,
   };
   if (src.width <= 0 || src.height <= 0) return;
 
@@ -143,8 +186,8 @@ export function drawMeshWarp(
       const tBL = mesh.targetPoints[(r + 1) * cols + c];
       const tBR = mesh.targetPoints[(r + 1) * cols + (c + 1)];
 
-      drawAffineTriangle(ctx, image, sTL, sTR, sBL, tTL, tTR, tBL, inflate);
-      drawAffineTriangle(ctx, image, sTR, sBR, sBL, tTR, tBR, tBL, inflate);
+      drawAffineTriangle(ctx, drawImage, sTL, sTR, sBL, tTL, tTR, tBL, inflate, seamInflate);
+      drawAffineTriangle(ctx, drawImage, sTR, sBR, sBL, tTR, tBR, tBL, inflate, seamInflate);
     }
   }
 
@@ -169,6 +212,7 @@ function drawAffineTriangle(
   t1: Pt,
   t2: Pt,
   inflate: boolean,
+  seamInflatePx: number = SEAM_INFLATE_PX,
 ): void {
   // Solve affine M such that M * s = t for each pair.
   // Using barycentric form, M maps:
@@ -198,7 +242,7 @@ function drawAffineTriangle(
   ctx.save();
 
   // Clip to (optionally inflated) target triangle.
-  const clip = inflate ? inflateTriangle([t0, t1, t2], SEAM_INFLATE_PX) : [t0, t1, t2];
+  const clip = inflate ? inflateTriangle([t0, t1, t2], seamInflatePx) : [t0, t1, t2];
   ctx.beginPath();
   ctx.moveTo(clip[0].x, clip[0].y);
   ctx.lineTo(clip[1].x, clip[1].y);

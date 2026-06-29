@@ -6,6 +6,12 @@ import { z } from "zod";
 export * from "./models/auth";
 export * from "./models/chat";
 export * from "./colorUtils";
+export {
+  APPAREL_CHROMA_STYLE_BY_NAME,
+  APPAREL_DARK_TIER_PROMPTS,
+  NO_HOT_PINK_IN_DESIGN,
+} from "./apparel-chroma-prompts";
+import { APPAREL_CHROMA_STYLE_BY_NAME, APPAREL_DARK_TIER_PROMPTS } from "./apparel-chroma-prompts";
 
 // Customer table extending auth users with credits
 export const customers = pgTable("customers", {
@@ -390,6 +396,7 @@ export const stylePresets = pgTable("style_presets", {
   merchantId: varchar("merchant_id").notNull(),
   name: text("name").notNull(),
   promptPrefix: text("prompt_prefix").notNull(),
+  promptPrefixDark: text("prompt_prefix_dark"),
   category: text("category").notNull().default("all"),
   isActive: boolean("is_active").notNull().default(true),
   sortOrder: integer("sort_order").notNull().default(0),
@@ -734,14 +741,14 @@ export const STYLE_PRESETS = [
   {
     id: "pattern-maker",
     name: "Pattern Maker",
-    promptPrefix: "Seamless repeating pattern design, tileable motif, clean vector shapes, flat colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, isolated on a solid hot pink (#FF00FF) background. Create a repeating pattern of",
+    promptPrefix: APPAREL_CHROMA_STYLE_BY_NAME["pattern maker"],
     category: "apparel",
     promptPlaceholder: "Describe your pattern idea (e.g. tiny tacos and hot sauce bottles)",
   },
   {
     id: "opinionated",
     name: "Opinionated",
-    promptPrefix: "T-shirt graphic, bold stacked text typography, strong opinion statement, up to 6 words maximum, flat vibrant colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, clean typographic layout. Create a bold text stack design of",
+    promptPrefix: APPAREL_CHROMA_STYLE_BY_NAME.opinionated,
     category: "apparel",
     promptPlaceholder: "State your opinion in up to 6 words, e.g. Dogs Are Better Than People, Pizza Fixes Everything, Mondays Should Be Illegal, Naps Over Small Talk, Cats Run This House",
     options: {
@@ -759,7 +766,7 @@ export const STYLE_PRESETS = [
   {
     id: "quotes",
     name: "Quotes",
-    promptPrefix: "T-shirt graphic, stylish quote typography, expressive lettering, flat vibrant colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, creative typographic layout. Create a quote design of",
+    promptPrefix: APPAREL_CHROMA_STYLE_BY_NAME.quotes,
     category: "apparel",
     promptPlaceholder: "Enter your topic (e.g. life, cats, Monday mornings, coffee addiction)",
     options: {
@@ -776,7 +783,7 @@ export const STYLE_PRESETS = [
   {
     id: "pet-portraits",
     name: "Pet Portraits",
-    promptPrefix: "T-shirt graphic, illustrated pet portrait, detailed character illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (avoid hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, clean illustrated style. Create a pet portrait of",
+    promptPrefix: APPAREL_CHROMA_STYLE_BY_NAME["pet portraits"],
     category: "apparel",
     promptPlaceholder: "What's the pet's name?",
     options: {
@@ -794,14 +801,14 @@ export const STYLE_PRESETS = [
   {
     id: "centered-graphic",
     name: "Centered Graphic",
-    promptPrefix: "T-shirt graphic, centered flat vector illustration, bold clean shapes, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (avoid hot pink/magenta in the design), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of",
+    promptPrefix: APPAREL_CHROMA_STYLE_BY_NAME["centered graphic"],
     category: "apparel",
     promptPlaceholder: "Describe your centered graphic (e.g. scary bear standing up, vintage skull, geometric wolf)",
   },
   {
     id: "illustrated-motif",
     name: "Illustrated Motif",
-    promptPrefix: "T-shirt graphic, illustrated character motif, detailed illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (avoid hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of",
+    promptPrefix: APPAREL_CHROMA_STYLE_BY_NAME["illustrated motif"],
     category: "apparel",
     promptPlaceholder: "Describe your illustrated motif (e.g. scary grizzly bear standing up, retro robot, floral skull)",
   },
@@ -826,19 +833,6 @@ export const STYLE_PRESETS = [
     },
   },
 ] as const;
-
-// Apparel prompt variants for dark garments (light/vibrant designs)
-// Uses same #FF00FF chroma key background — removed after generation regardless of garment color
-export const APPAREL_DARK_TIER_PROMPTS: Record<string, string> = {
-  "free-4-all": "",
-  "pattern-maker": "Seamless repeating pattern design, tileable motif, clean vector shapes, bright vibrant colors including white and light tones (avoid dark, black, and hot pink/magenta colors in the design), high contrast, isolated on a solid hot pink (#FF00FF) background. Create a repeating pattern of",
-  "opinionated": "T-shirt graphic, bold stacked text typography, strong opinion statement, up to 6 words maximum, bright vibrant colors including white and light tones (avoid dark, black, and hot pink/magenta colors in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, clean typographic layout. Create a bold text stack design of",
-  "quotes": "T-shirt graphic, stylish quote typography, expressive lettering, bright vibrant colors including white and light tones (avoid dark, black, and hot pink/magenta colors in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, creative typographic layout. Create a quote design of",
-  "pet-portraits": "T-shirt graphic, illustrated pet portrait, detailed character illustration, bright vibrant colors including white and light tones (avoid dark, black, and hot pink/magenta colors in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, clean illustrated style. Create a pet portrait of",
-  "centered-graphic": "T-shirt graphic, centered flat vector illustration, bold clean shapes, bright vibrant colors including white and light tones (avoid dark, black, and hot pink/magenta colors in the design), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of",
-  "illustrated-motif": "T-shirt graphic, illustrated character motif, detailed illustration, bright vibrant colors including white and light tones (avoid dark, black, and hot pink/magenta colors in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of",
-  "none": "",
-};
 
 export type PrintSize = typeof PRINT_SIZES[number];
 export type FrameColor = typeof FRAME_COLORS[number];

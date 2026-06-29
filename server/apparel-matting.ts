@@ -10,6 +10,17 @@ import {
   type RemoveBgResult,
 } from "./replicate-bg-remover";
 import { sanitizeVectorSvg, vectorizeWithRecraft } from "./replicate-vectorizer";
+import {
+  APPAREL_CHROMA_STYLE_BY_NAME,
+  APPAREL_DARK_TIER_PROMPTS,
+  isChromaSafeApparelPrefix,
+} from "@shared/apparel-chroma-prompts";
+
+export {
+  APPAREL_CHROMA_STYLE_BY_NAME,
+  APPAREL_DARK_TIER_PROMPTS,
+  isChromaSafeApparelPrefix,
+} from "@shared/apparel-chroma-prompts";
 
 export const CHROMA_KEY = { r: 255, g: 0, b: 255 } as const;
 
@@ -109,34 +120,6 @@ export function resolveIsApparelGeneration(
   return false;
 }
 
-/** Canonical hot-pink chroma prefixes keyed by lowercased style name. */
-export const APPAREL_CHROMA_STYLE_BY_NAME: Record<string, string> = {
-  "free 4 all": "",
-  "pattern maker":
-    "Seamless repeating pattern design, tileable motif, clean vector shapes, flat colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, isolated on a solid hot pink (#FF00FF) background, no white mat, no rectangular frame. Create a repeating pattern of",
-  opinionated:
-    "T-shirt graphic, bold stacked text typography, strong opinion statement, up to 6 words maximum, flat vibrant colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, clean typographic layout. Create a bold text stack design of",
-  quotes:
-    "T-shirt graphic, stylish quote typography, expressive lettering, flat vibrant colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, creative typographic layout. Create a quote design of",
-  "pet portraits":
-    "T-shirt graphic, illustrated pet portrait, detailed character illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (avoid hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, clean illustrated style. Create a pet portrait of",
-  "centered graphic":
-    "T-shirt graphic, centered flat vector illustration, bold clean shapes, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (avoid hot pink/magenta in the design), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of",
-  "illustrated motif":
-    "T-shirt graphic, illustrated character motif, detailed illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (avoid hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of",
-};
-
-/**
- * Replace DB prefix with repo canonical copy for known apparel chroma styles,
- * then sanitize conflicting background language.
- */
-export function resolveApparelStylePrefix(styleName: string, dbPrefix: string): string {
-  const key = styleName.trim().toLowerCase();
-  const canonical = APPAREL_CHROMA_STYLE_BY_NAME[key];
-  const base = canonical !== undefined ? canonical : dbPrefix;
-  return sanitizeApparelStylePrefix(base);
-}
-
 /** Strip conflicting background language from merchant apparel style prefixes. */
 export function sanitizeApparelStylePrefix(prefix: string): string {
   let cleaned = prefix.trim();
@@ -150,6 +133,36 @@ export function sanitizeApparelStylePrefix(prefix: string): string {
     cleaned = `${cleaned}, no white mat, no rectangular frame`;
   }
   return cleaned;
+}
+
+/** Light-garment prefix: prefer Admin/DB when chroma-safe; else repo fallback by style name. */
+export function resolveApparelStylePrefix(styleName: string, dbPrefix: string): string {
+  const trimmed = dbPrefix.trim();
+  if (trimmed && isChromaSafeApparelPrefix(trimmed)) {
+    return sanitizeApparelStylePrefix(trimmed);
+  }
+  const key = styleName.trim().toLowerCase();
+  const canonical = APPAREL_CHROMA_STYLE_BY_NAME[key];
+  if (canonical !== undefined) {
+    return sanitizeApparelStylePrefix(canonical);
+  }
+  return sanitizeApparelStylePrefix(trimmed);
+}
+
+/** Dark-garment prefix: prefer DB `prompt_prefix_dark`, else fallback by preset id. */
+export function resolveApparelDarkTierPrefix(
+  stylePresetId: string | null | undefined,
+  dbDarkPrefix: string | null | undefined,
+): string {
+  const trimmed = (dbDarkPrefix ?? "").trim();
+  if (trimmed && isChromaSafeApparelPrefix(trimmed)) {
+    return sanitizeApparelStylePrefix(trimmed);
+  }
+  const fallback = stylePresetId ? APPAREL_DARK_TIER_PROMPTS[stylePresetId] : "";
+  if (fallback) {
+    return sanitizeApparelStylePrefix(fallback);
+  }
+  return "";
 }
 
 function pixelLuminance(r: number, g: number, b: number): number {

@@ -76,12 +76,21 @@ describe("sanitizeApparelStylePrefix", () => {
 });
 
 describe("resolveApparelStylePrefix", () => {
-  it("replaces Illustrated Motif DB prefix with canonical chroma copy", () => {
+  it("prefers chroma-safe DB prefix over repo fallback", () => {
+    const dbCopy =
+      "T-shirt graphic, illustrated character motif, custom merchant copy isolated on a solid hot pink (#FF00FF) background. Create an illustrated motif of";
+    const out = resolveApparelStylePrefix("Illustrated Motif", dbCopy);
+    expect(out).toContain("custom merchant copy");
+    expect(out.toLowerCase()).toContain("#ff00ff");
+  });
+
+  it("falls back to canonical when DB prefix lacks chroma key", () => {
     const out = resolveApparelStylePrefix(
       "Illustrated Motif",
       "Illustrated character on white card background",
     );
     expect(out.toLowerCase()).toContain("#ff00ff");
+    expect(out.toLowerCase()).toContain("do not use solid hot pink");
     expect(out.toLowerCase()).not.toContain("white card");
   });
 });

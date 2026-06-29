@@ -4,6 +4,7 @@ import {
   processApparelMotif,
   trimTransparentBounds,
   resolveApparelStylePrefix,
+  resolveApparelDarkTierPrefix,
   resolveIsApparelGeneration,
   APPAREL_CHROMA_STYLE_BY_NAME,
   processApparelMotifToDataUrl,
@@ -2236,6 +2237,7 @@ export async function registerRoutes(
       // Look up style preset and get its promptSuffix
       let stylePromptPrefix = "";
       let styleName = "";
+      let stylePromptPrefixDark: string | null = null;
       let styleCategory = "all"; // Track category for base prompt enforcement
       let styleBaseImageUrl: string | undefined; // Style-level base reference image
       if (stylePreset) {
@@ -2250,7 +2252,7 @@ export async function registerRoutes(
             if (selectedStyle.promptPrefix) {
               stylePromptPrefix = selectedStyle.promptPrefix;
             }
-            // Prefer baseImageUrls array, fall back to single baseImageUrl
+            stylePromptPrefixDark = (selectedStyle as any).promptPrefixDark ?? null;
             const dbBaseUrls: string[] = (selectedStyle as any).baseImageUrls ||
               (selectedStyle.baseImageUrl ? [selectedStyle.baseImageUrl] : []);
             if (dbBaseUrls.length > 0) styleBaseImageUrl = dbBaseUrls[0];
@@ -2387,9 +2389,8 @@ export async function registerRoutes(
       const userDescAdmin = (rawUserPromptAdmin || "").trim();
       let fullPrompt: string;
       
-      if (isApparel && colorTier === "dark" && stylePreset && APPAREL_DARK_TIER_PROMPTS[stylePreset]) {
-        // Use dark tier prompt for dark apparel (light designs on dark background)
-        const darkTierPrompt = APPAREL_DARK_TIER_PROMPTS[stylePreset];
+      if (isApparel && colorTier === "dark" && stylePreset) {
+        const darkTierPrompt = resolveApparelDarkTierPrefix(stylePreset, stylePromptPrefixDark);
         if (darkTierPrompt) {
           fullPrompt = userDescAdmin ? `${userDescAdmin}, ${darkTierPrompt}` : darkTierPrompt;
         } else {
@@ -2729,11 +2730,10 @@ console.log("[api/shopify/generate] saved image", result);
       const stylePreset = originalDesign.stylePreset;
       
       if (stylePreset) {
-        // For dark tier, use the dark tier prompt variants
-        if (newColorTier === "dark" && APPAREL_DARK_TIER_PROMPTS[stylePreset]) {
-          stylePromptPrefix = APPAREL_DARK_TIER_PROMPTS[stylePreset];
-        } else {
-          // Use regular prompt
+        if (newColorTier === "dark") {
+          stylePromptPrefix = resolveApparelDarkTierPrefix(stylePreset, null);
+        }
+        if (!stylePromptPrefix) {
           const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
           if (hardcodedStyle && hardcodedStyle.promptPrefix) {
             stylePromptPrefix = hardcodedStyle.promptPrefix;
@@ -7043,6 +7043,7 @@ ${textEdgeRestrictions}
       // Merchant plan quota is consumed in the worker after success (peek-only here).
       let stylePromptPrefix = "";
       let styleName = "";
+      let stylePromptPrefixDark: string | null = null;
       let sfStyleCategory = "all";
       let sfStyleBaseImageUrl: string | undefined;
       let sfStyleBaseImageUrls: string[] = [];
@@ -7059,6 +7060,7 @@ ${textEdgeRestrictions}
           if (selectedStyle.promptPrefix) {
             stylePromptPrefix = selectedStyle.promptPrefix;
           }
+          stylePromptPrefixDark = (selectedStyle as any).promptPrefixDark ?? null;
           const dbBaseUrls: string[] = (selectedStyle as any).baseImageUrls ||
             (selectedStyle.baseImageUrl ? [selectedStyle.baseImageUrl] : []);
           sfStyleBaseImageUrls = dbBaseUrls;
@@ -7234,8 +7236,8 @@ MANDATORY IMAGE REQUIREMENTS FOR ALL-OVER PRINT (AOP) - FOLLOW EXACTLY:
           : "VIBRANT colors. White may be used inside the subject (teeth, eyes, highlights) but NOT as a background mat. AVOID hot pink/magenta in the design.";
 
         // Use dark tier prompt variant if available
-        if (isDarkTier && stylePreset && APPAREL_DARK_TIER_PROMPTS[stylePreset]) {
-          const darkTierPrompt = APPAREL_DARK_TIER_PROMPTS[stylePreset];
+        if (isDarkTier && stylePreset) {
+          const darkTierPrompt = resolveApparelDarkTierPrefix(stylePreset, stylePromptPrefixDark);
           if (darkTierPrompt) {
             fullPrompt = userDescSf ? `${userDescSf}, ${darkTierPrompt}` : darkTierPrompt;
           }
@@ -11373,7 +11375,7 @@ ${textEdgeRestrictions}
         return res.status(404).json({ error: "Merchant not found" });
       }
 
-      const { name, promptPrefix, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options } = req.body;
+      const { name, promptPrefix, promptPrefixDark, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options } = req.body;
       
       if (!name) {
         return res.status(400).json({ error: "Style name is required" });
@@ -11382,6 +11384,7 @@ ${textEdgeRestrictions}
         merchantId: merchant.id,
         name,
         promptPrefix: promptPrefix || "",
+        promptPrefixDark: promptPrefixDark ?? null,
         category: category || "all",
         isActive: isActive !== undefined ? isActive : true,
         sortOrder: sortOrder || 0,
@@ -11415,11 +11418,13 @@ ${textEdgeRestrictions}
         return res.status(404).json({ error: "Style preset not found" });
       }
 
-      const { name, promptPrefix, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options } = req.body;
+      const { name, promptPrefix, promptPrefixDark, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options } = req.body;
       
       const updated = await storage.updateStylePreset(presetId, {
         name: name !== undefined ? name : preset.name,
         promptPrefix: promptPrefix !== undefined ? promptPrefix : preset.promptPrefix,
+        promptPrefixDark:
+          promptPrefixDark !== undefined ? (promptPrefixDark || null) : (preset as any).promptPrefixDark,
         category: category !== undefined ? category : preset.category,
         isActive: isActive !== undefined ? isActive : preset.isActive,
         sortOrder: sortOrder !== undefined ? sortOrder : preset.sortOrder,

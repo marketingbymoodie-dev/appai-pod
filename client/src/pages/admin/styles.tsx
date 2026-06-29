@@ -70,6 +70,7 @@ export default function AdminStyles() {
   // Main style fields
   const [styleName, setStyleName] = useState("");
   const [stylePrompt, setStylePrompt] = useState("");
+  const [stylePromptDark, setStylePromptDark] = useState("");
   // Category stored as Set of "decor" | "apparel" — empty means "all"
   const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set());
   const [styleBaseImageUrls, setStyleBaseImageUrls] = useState<string[]>([]);
@@ -224,6 +225,7 @@ export default function AdminStyles() {
     setEditingStyle(null);
     setStyleName("");
     setStylePrompt("");
+    setStylePromptDark("");
     setSelectedCategories(new Set());
     setStyleBaseImageUrls([]);
     setStylePromptPlaceholder("");
@@ -266,6 +268,7 @@ export default function AdminStyles() {
     setEditingStyle(style);
     setStyleName(style.name);
     setStylePrompt(style.promptPrefix || "");
+    setStylePromptDark((style as any).promptPrefixDark || "");
     setSelectedCategories(dbValueToCategories(style.category));
     // Load base images: prefer new array, fall back to legacy single URL
     const existingBaseUrls: string[] = (style as any).baseImageUrls ||
@@ -364,6 +367,7 @@ export default function AdminStyles() {
     const payload = {
       name: styleName,
       promptPrefix: stylePrompt,
+      promptPrefixDark: stylePromptDark || null,
       category,
       // Send both: new array for multi-image support, legacy single for backwards compat
       baseImageUrl: styleBaseImageUrls[0] || null,
@@ -667,9 +671,30 @@ export default function AdminStyles() {
                   data-testid="input-style-prompt"
                 />
                 <p className="text-xs text-muted-foreground">
-                  This text will be prepended to the customer's prompt
+                  Light-garment prefix. Must include hot pink (#FF00FF) background language. Edits apply immediately — no deploy needed.
                 </p>
               </div>
+
+              {(selectedCategories.has("apparel") || selectedCategories.size === 0) && (
+                <div className="space-y-2">
+                  <Label htmlFor="style-prompt-dark">
+                    Dark garment prompt prefix{" "}
+                    <span className="text-muted-foreground font-normal">(olive/black hoodies, etc.)</span>
+                  </Label>
+                  <textarea
+                    id="style-prompt-dark"
+                    value={stylePromptDark}
+                    onChange={(e) => setStylePromptDark(e.target.value)}
+                    placeholder="Bright vibrant colors on dark garments… isolated on solid hot pink (#FF00FF) background…"
+                    rows={3}
+                    className="w-full min-h-[72px] resize-y rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    data-testid="input-style-prompt-dark"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Used when the selected garment color is dark. Leave empty to use the built-in fallback for this style id.
+                  </p>
+                </div>
+              )}
 
               {/* Prompt Placeholder */}
               <div className="space-y-2">
