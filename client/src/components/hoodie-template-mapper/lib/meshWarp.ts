@@ -127,6 +127,8 @@ export function drawMeshWarp(
   if (mesh.cols < 2 || mesh.rows < 2) return;
   if (mesh.targetPoints.length !== mesh.cols * mesh.rows) return;
 
+  const inflate = options.inflateSeams !== false;
+
   let drawImage: CanvasImageSource = image;
   let drawWidth = imageWidth;
   let drawHeight = imageHeight;
@@ -147,8 +149,6 @@ export function drawMeshWarp(
     height: drawHeight,
   };
   if (src.width <= 0 || src.height <= 0) return;
-
-  const inflate = options.inflateSeams !== false;
 
   ctx.save();
   if (typeof options.globalAlpha === "number") {
