@@ -106,7 +106,27 @@ export async function vectorizeWithRecraft(params: RecraftVectorizeParams): Prom
     throw new Error(`Failed to download Recraft SVG: HTTP ${response.status}`);
   }
 
-  return Buffer.from(await response.arrayBuffer());
+  return sanitizeVectorSvg(Buffer.from(await response.arrayBuffer()));
+}
+
+/** Strip chroma-key pink from traced SVG (fast string pass, no extra API latency). */
+export function sanitizeVectorSvg(svg: Buffer): Buffer {
+  let text = svg.toString("utf8");
+  if (!text.includes("<svg")) return svg;
+
+  const pinkFill =
+    /fill\s*=\s*["'](?:#ff00ff|#FF00FF|#f0f|#F0F|rgb\(\s*255\s*,\s*0\s*,\s*255\s*\)|rgba\(\s*255\s*,\s*0\s*,\s*255\s*,[^)]+\))["']/gi;
+  const pinkStroke =
+    /stroke\s*=\s*["'](?:#ff00ff|#FF00FF|#f0f|#F0F|rgb\(\s*255\s*,\s*0\s*,\s*255\s*\)|rgba\(\s*255\s*,\s*0\s*,\s*255\s*,[^)]+\))["']/gi;
+
+  text = text.replace(pinkFill, 'fill="none"');
+  text = text.replace(pinkStroke, 'stroke="none"');
+  text = text.replace(
+    /style\s*=\s*["'][^"']*(?:fill|stroke)\s*:\s*(?:#ff00ff|#FF00FF|#f0f|#F0F|rgb\(\s*255\s*,\s*0\s*,\s*255\s*\))[^"']*["']/gi,
+    'style="display:none"',
+  );
+
+  return Buffer.from(text, "utf8");
 }
 
 export async function rasterizeSvgBuffer(

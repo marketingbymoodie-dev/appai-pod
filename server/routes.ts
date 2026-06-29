@@ -467,7 +467,11 @@ async function fetchImageFromStorageAsBase64(objectPath: string): Promise<{ base
     if (!res.ok) throw new Error(`Failed to fetch image: ${res.status}`);
     buffer = Buffer.from(await res.arrayBuffer());
     const contentType = res.headers.get("content-type") || "";
-    extension = contentType.includes("png") ? "png" : "jpg";
+    extension = contentType.includes("svg")
+      ? "svg"
+      : contentType.includes("png")
+        ? "png"
+        : "jpg";
   } else {
     // Local path: /objects/designs/abc123.png
     const relativePath = objectPath.replace(/^\/objects\//, "");
@@ -477,12 +481,21 @@ async function fetchImageFromStorageAsBase64(objectPath: string): Promise<{ base
   }
 
   const base64 = buffer.toString("base64");
-  const mimeType = extension === "jpg" || extension === "jpeg" ? "image/jpeg" : "image/png";
+  const mimeType =
+    extension === "svg"
+      ? "image/svg+xml"
+      : extension === "jpg" || extension === "jpeg"
+        ? "image/jpeg"
+        : "image/png";
   return { base64, mimeType };
 }
 
-async function generateThumbnail(buffer: Buffer): Promise<Buffer> {
-  return sharp(buffer)
+async function generateThumbnail(buffer: Buffer, mimeType?: string): Promise<Buffer> {
+  const isSvg =
+    mimeType === "image/svg+xml" ||
+    buffer.toString("utf8", 0, Math.min(256, buffer.length)).trimStart().startsWith("<svg");
+  const pipeline = isSvg ? sharp(buffer, { density: 150 }) : sharp(buffer);
+  return pipeline
     .resize(THUMBNAIL_SIZE, THUMBNAIL_SIZE, {
       fit: 'inside',
       withoutEnlargement: true
@@ -803,13 +816,12 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
       vectorize: process.env.APPAREL_VECTORIZE === "true",
     });
     buffer = matting.buffer;
-    extension = "png";
-    actualMimeType = "image/png";
+    extension = matting.mimeType === "image/svg+xml" ? "svg" : "png";
+    actualMimeType = matting.mimeType;
     removeBgUsedApi = matting.usedMlFallback;
     if (matting.qa.softAlphaRatio > 0.03 || matting.qa.cornerBgOpaqueRatio > 0.5) {
       console.warn("[saveImageToStorage] Matting QA:", JSON.stringify(matting.qa));
     }
-    buffer = await trimTransparentBounds(buffer, 8, matting.usedMlFallback ? 4 : 8);
   } else if (targetDims && targetDims.width !== targetDims.height) {
     const outputFormat =
       actualMimeType.includes("jpeg") || actualMimeType.includes("jpg")
@@ -821,7 +833,7 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
   }
 
   const filename = `${imageId}.${extension}`;
-  const thumbnailBuffer = await generateThumbnail(buffer);
+  const thumbnailBuffer = await generateThumbnail(buffer, actualMimeType);
 
   // Prefer Supabase Storage when configured (persists across Railway redeploys)
   if (isSupabaseDesignsConfigured()) {
@@ -830,7 +842,7 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
         imageBuffer: buffer,
         thumbnailBuffer,
         imageId,
-        extension: extension as "png" | "jpg",
+        extension: extension as "png" | "jpg" | "svg",
       });
       if (result) return result;
     } catch (err) {
@@ -7460,7 +7472,7 @@ ${textEdgeRestrictions}
                   useMlFallback: process.env.APPAREL_ML_BG_FALLBACK !== "false",
                   vectorize: process.env.APPAREL_VECTORIZE === "true",
                 });
-                imageUrl = `data:image/png;base64,${matted.buffer.toString("base64")}`;
+                imageUrl = `data:${matted.mimeType};base64,${matted.buffer.toString("base64")}`;
               } else {
                 imageUrl = `data:${mimeType};base64,${base64Data}`;
               }

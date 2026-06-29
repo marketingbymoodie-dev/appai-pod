@@ -23,7 +23,7 @@ export async function uploadDesignToSupabase(params: {
   imageBuffer: Buffer;
   thumbnailBuffer: Buffer;
   imageId: string;
-  extension: "png" | "jpg";
+  extension: "png" | "jpg" | "svg";
 }): Promise<{ imageUrl: string; thumbnailUrl: string } | null> {
   if (!supabase) return null;
 
@@ -31,7 +31,8 @@ export async function uploadDesignToSupabase(params: {
   const filename = `${imageId}.${extension}`;
   const thumbFilename = `thumb_${imageId}.jpg`;
 
-  const contentType = extension === "png" ? "image/png" : "image/jpeg";
+  const contentType =
+    extension === "svg" ? "image/svg+xml" : extension === "png" ? "image/png" : "image/jpeg";
 
   const [imageResult, thumbResult] = await Promise.all([
     supabase.storage.from(BUCKET).upload(filename, imageBuffer, {

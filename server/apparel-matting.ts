@@ -9,7 +9,7 @@ import {
   bufferFromRemoveBgResult,
   type RemoveBgResult,
 } from "./replicate-bg-remover";
-import { rasterizeSvgBuffer, vectorizeWithRecraft } from "./replicate-vectorizer";
+import { sanitizeVectorSvg, vectorizeWithRecraft } from "./replicate-vectorizer";
 
 export const CHROMA_KEY = { r: 255, g: 0, b: 255 } as const;
 
@@ -68,10 +68,18 @@ export type ProcessApparelMotifOptions = {
   vectorize?: boolean;
 };
 
+export type ApparelMotifMimeType = "image/png" | "image/svg+xml";
+
 export type ProcessApparelMotifResult = {
   buffer: Buffer;
+  mimeType: ApparelMotifMimeType;
   usedMlFallback: boolean;
   qa: AlphaQualityMetrics;
+};
+
+export type VectorizeFlatGraphicResult = {
+  buffer: Buffer;
+  mimeType: ApparelMotifMimeType;
 };
 
 const CHROMA_SUFFIX =
@@ -855,7 +863,7 @@ export async function trimTransparentBounds(
     .toBuffer();
 }
 
-async function vectorizeWithNeplex(buffer: Buffer, width: number, height: number): Promise<Buffer> {
+async function vectorizeWithNeplex(buffer: Buffer): Promise<Buffer> {
   const { vectorize, ColorMode, Hierarchical, PathSimplifyMode } = await import("@neplex/vectorizer");
 
   const svg = await vectorize(buffer, {
@@ -868,26 +876,24 @@ async function vectorizeWithNeplex(buffer: Buffer, width: number, height: number
     pathPrecision: 4,
   });
 
-  return rasterizeSvgBuffer(Buffer.from(svg), width, height);
+  return sanitizeVectorSvg(Buffer.from(svg));
 }
 
-async function maybeVectorizeFlatGraphic(buffer: Buffer): Promise<Buffer> {
-  if (process.env.APPAREL_VECTORIZE !== "true") return buffer;
+export async function maybeVectorizeFlatGraphic(buffer: Buffer): Promise<VectorizeFlatGraphicResult> {
+  if (process.env.APPAREL_VECTORIZE !== "true") {
+    return { buffer, mimeType: "image/png" };
+  }
 
   const startedAt = Date.now();
-  const meta = await sharp(buffer).metadata();
-  const width = meta.width ?? 1024;
-  const height = meta.height ?? 1024;
   const provider = (process.env.APPAREL_VECTORIZE_PROVIDER || "recraft").trim().toLowerCase();
 
   if (provider === "recraft" || provider === "") {
     try {
       const svg = await vectorizeWithRecraft({ imageBuffer: buffer });
-      const rasterized = await rasterizeSvgBuffer(svg, width, height);
       console.log(
-        `[Apparel Matting] Recraft vectorize round-trip complete in ${Date.now() - startedAt}ms`,
+        `[Apparel Matting] Recraft vectorize complete (SVG retained) in ${Date.now() - startedAt}ms`,
       );
-      return rasterized;
+      return { buffer: svg, mimeType: "image/svg+xml" };
     } catch (err) {
       console.warn(
         `[Apparel Matting] Recraft vectorize failed after ${Date.now() - startedAt}ms, trying neplex:`,
@@ -899,11 +905,11 @@ async function maybeVectorizeFlatGraphic(buffer: Buffer): Promise<Buffer> {
   if (provider === "recraft" || provider === "neplex") {
     try {
       const neplexStarted = Date.now();
-      const rasterized = await vectorizeWithNeplex(buffer, width, height);
+      const svg = await vectorizeWithNeplex(buffer);
       console.log(
-        `[Apparel Matting] Neplex vectorize round-trip complete in ${Date.now() - neplexStarted}ms (total ${Date.now() - startedAt}ms)`,
+        `[Apparel Matting] Neplex vectorize complete (SVG retained) in ${Date.now() - neplexStarted}ms (total ${Date.now() - startedAt}ms)`,
       );
-      return rasterized;
+      return { buffer: svg, mimeType: "image/svg+xml" };
     } catch (err) {
       console.warn("[Apparel Matting] Neplex vectorize skipped:", (err as Error).message);
     }
@@ -913,7 +919,7 @@ async function maybeVectorizeFlatGraphic(buffer: Buffer): Promise<Buffer> {
     );
   }
 
-  return buffer;
+  return { buffer, mimeType: "image/png" };
 }
 
 function logQaWarnings(qa: AlphaQualityMetrics, chromaRemovedPct: number): void {
@@ -1051,22 +1057,32 @@ export async function processApparelMotif(
     });
   }
 
+  buffer = await trimTransparentBounds(buffer, 8, usedMlFallback ? 4 : 8);
+
+  let mimeType: ApparelMotifMimeType = "image/png";
+  const qaBeforeVectorize = await analyzeAlphaQuality(buffer);
+
   if (opts.vectorize || process.env.APPAREL_VECTORIZE === "true") {
-    buffer = await maybeVectorizeFlatGraphic(buffer);
+    const vectorized = await maybeVectorizeFlatGraphic(buffer);
+    buffer = vectorized.buffer;
+    mimeType = vectorized.mimeType;
   }
 
-  qa = await analyzeAlphaQuality(buffer);
+  qa =
+    mimeType === "image/svg+xml"
+      ? { ...qaBeforeVectorize, chromaRemovedPct: chroma.chromaRemovedPct }
+      : await analyzeAlphaQuality(buffer);
   qa = { ...qa, chromaRemovedPct: chroma.chromaRemovedPct };
   logQaWarnings(qa, chroma.chromaRemovedPct);
 
-  return { buffer, usedMlFallback, qa };
+  return { buffer, mimeType, usedMlFallback, qa };
 }
 
-/** Data URL PNG for API responses (remove-bg endpoint). */
+/** Data URL for API responses (remove-bg endpoint). */
 export async function processApparelMotifToDataUrl(
   sourceBuffer: Buffer,
   opts?: ProcessApparelMotifOptions,
 ): Promise<string> {
-  const { buffer } = await processApparelMotif(sourceBuffer, opts);
-  return `data:image/png;base64,${buffer.toString("base64")}`;
+  const { buffer, mimeType } = await processApparelMotif(sourceBuffer, opts);
+  return `data:${mimeType};base64,${buffer.toString("base64")}`;
 }

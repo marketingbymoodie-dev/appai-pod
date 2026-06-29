@@ -39,6 +39,13 @@ async function alphaAt(buffer: Buffer, x: number, y: number): Promise<number> {
   return data[idx + 3];
 }
 
+async function bufferCenter(buffer: Buffer): Promise<{ w: number; h: number; cx: number; cy: number }> {
+  const meta = await sharp(buffer).metadata();
+  const w = meta.width ?? 1;
+  const h = meta.height ?? 1;
+  return { w, h, cx: Math.floor(w / 2), cy: Math.floor(h / 2) };
+}
+
 describe("resolveIsApparelGeneration", () => {
   it("treats all-over-print designerType as apparel for matting", () => {
     expect(
@@ -174,9 +181,14 @@ describe("removeChromaKeyBackground", () => {
       }
     });
 
-    const result = await processApparelMotif(src, { useMlFallback: false, allowWhiteKey: true });
-    expect(await alphaAt(result.buffer, 50, 60)).toBeGreaterThan(200);
-    expect(await alphaAt(result.buffer, 10, 10)).toBe(0);
+    const result = await processApparelMotif(src, {
+      useMlFallback: false,
+      allowWhiteKey: true,
+      vectorize: false,
+    });
+    const { w, h, cx } = await bufferCenter(result.buffer);
+    expect(await alphaAt(result.buffer, cx, Math.min(h - 1, Math.floor(h * 0.65)))).toBeGreaterThan(200);
+    expect(await alphaAt(result.buffer, 0, 0)).toBe(0);
   });
 
   it("keys enclosed pink pocket inside subject", async () => {
@@ -267,10 +279,15 @@ describe("removeChromaKeyBackground", () => {
       }
     });
 
-    const result = await processApparelMotif(src, { useMlFallback: true, allowWhiteKey: true });
+    const result = await processApparelMotif(src, {
+      useMlFallback: true,
+      allowWhiteKey: true,
+      vectorize: false,
+    });
     expect(result.usedMlFallback).toBe(false);
-    expect(await alphaAt(result.buffer, 20, 20)).toBe(0);
-    expect(await alphaAt(result.buffer, 50, 50)).toBeGreaterThan(200);
+    const { cx, cy } = await bufferCenter(result.buffer);
+    expect(await alphaAt(result.buffer, 0, 0)).toBe(0);
+    expect(await alphaAt(result.buffer, cx, cy)).toBeGreaterThan(200);
   });
 });
 
@@ -308,10 +325,15 @@ describe("processApparelMotif", () => {
       }
     });
 
-    const result = await processApparelMotif(src, { useMlFallback: true, allowWhiteKey: true });
+    const result = await processApparelMotif(src, {
+      useMlFallback: true,
+      allowWhiteKey: true,
+      vectorize: false,
+    });
     expect(result.usedMlFallback).toBe(false);
-    expect(await alphaAt(result.buffer, 4, 4)).toBe(0);
-    expect(await alphaAt(result.buffer, 32, 32)).toBeGreaterThan(200);
+    const { cx, cy } = await bufferCenter(result.buffer);
+    expect(await alphaAt(result.buffer, 0, 0)).toBe(0);
+    expect(await alphaAt(result.buffer, cx, cy)).toBeGreaterThan(200);
   });
 });
 

@@ -79,7 +79,7 @@ After changing styles or matting code:
 | Variable | Default | Effect |
 |----------|---------|--------|
 | `APPAREL_ML_BG_FALLBACK` | `true` | Replicate saliency fallback when pink chroma clearly failed (not on white canvas) |
-| `APPAREL_VECTORIZE` | off | Post-matting SVG trace round-trip (Recraft or neplex) |
+| `APPAREL_VECTORIZE` | off | Post-matting Recraft/neplex trace; when on, **stores SVG** (no raster round-trip) |
 | `APPAREL_VECTORIZE_PROVIDER` | `recraft` | `recraft` (Replicate recraft-ai/recraft-vectorize, neplex fallback) or `neplex` only |
 | `REPLICATE_RECRAFT_VECTORIZE_VERSION` | pinned hash | Override Recraft model version on Replicate |
 | `REPLICATE_VECTORIZE_POLL_TIMEOUT_MS` | `120000` | Max wait for Recraft vectorize prediction |

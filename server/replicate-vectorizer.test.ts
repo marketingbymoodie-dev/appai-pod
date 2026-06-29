@@ -77,6 +77,16 @@ describe("Recraft vectorizer client", () => {
 
     expect(svg.toString("utf8")).toContain("<svg");
   });
+
+  it("sanitizeVectorSvg strips chroma-key pink fills", async () => {
+    const { sanitizeVectorSvg } = await import("./replicate-vectorizer");
+    const raw = Buffer.from(
+      '<svg><path fill="#FF00FF" d="M0 0"/><path fill="#000" d="M1 1"/></svg>',
+    );
+    const cleaned = sanitizeVectorSvg(raw).toString("utf8");
+    expect(cleaned).toContain('fill="none"');
+    expect(cleaned).toContain('fill="#000"');
+  });
 });
 
 function jsonResponse(body: unknown): Response {
