@@ -105,13 +105,16 @@
     if (mobileNativeScroll || !iframe) return;
     if (iframe.getAttribute('data-appai-wheel-forward') === '1') return;
     iframe.setAttribute('data-appai-wheel-forward', '1');
-    var attached = false;
     var tryAttach = function () {
-      if (attached) return;
       var doc;
       try { doc = iframe.contentDocument; } catch (e) { return; }
-      if (!doc) return;
-      attached = true;
+      if (!doc || !doc.documentElement) return;
+      if (doc.documentElement.getAttribute('data-appai-wheel-forward-doc') === '1') {
+        try { iframe.contentWindow.__APPAI_PARENT_WHEEL_FORWARD__ = true; } catch (e) {}
+        return;
+      }
+      doc.documentElement.setAttribute('data-appai-wheel-forward-doc', '1');
+      try { iframe.contentWindow.__APPAI_PARENT_WHEEL_FORWARD__ = true; } catch (e) {}
       doc.addEventListener('wheel', function (e) {
         var target = e.target;
         if (target && target.closest && target.closest(
@@ -124,7 +127,6 @@
       }, { passive: false, capture: true });
     };
     var retryAttach = function () {
-      attached = false;
       tryAttach();
     };
     if (!window.__appaiWheelRetryByIframe) window.__appaiWheelRetryByIframe = [];
@@ -327,12 +329,8 @@
       console.log('[AI Art Embed] Global listener received:', event.data.type, 'from:', event.origin);
     }
 
-    // Handle wheel forwarding from iframe (so parent page scrolls when mouse is over iframe)
-    if (event.data.type === 'ai-art-studio:wheel') {
-      appaiScrollParentPage(event.data.deltaX, event.data.deltaY, event.data.deltaMode);
-      return;
-    }
-    
+    // Wheel postMessage is handled once in createDesignStudio's trusted listener below.
+
     // Handle mockup updates from Railway app origin
     if (event.data.type === 'AI_ART_STUDIO_MOCKUPS') {
       // Security: only accept from Railway or localhost origins

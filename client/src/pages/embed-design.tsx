@@ -6188,7 +6188,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         if (innerScroll && canScrollInDirection(innerScroll, e)) {
           return;
         }
-        postWheelToParent(e);
+        // Parent theme JS attaches a capture-phase wheel listener on our document
+        // when same-origin; posting again scrolls the parent twice (jittery).
+        if (!(window as Window & { __APPAI_PARENT_WHEEL_FORWARD__?: boolean }).__APPAI_PARENT_WHEEL_FORWARD__) {
+          postWheelToParent(e);
+        }
         return;
       }
 

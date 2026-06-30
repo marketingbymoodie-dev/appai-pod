@@ -193,7 +193,12 @@
         }
         var tag = el.tagName ? el.tagName.toLowerCase() : '';
         if (tag === 'details') {
-          add({ root: el, kind: 'details' });
+          add({
+            root: el,
+            kind: 'details',
+            link: el.querySelector(':scope > summary, :scope > a, :scope > button'),
+            submenu: el.querySelector(':scope > ul, :scope > .menu-list__submenu, :scope > nav'),
+          });
           break;
         }
         if (tag === 'li' && el.querySelector('a[href*="/pages/"]')) {
@@ -224,14 +229,14 @@
       '  details[data-appai-nav-hover] { position: relative; }',
       '  details[data-appai-nav-hover] > summary { position: relative; }',
       '  details[data-appai-nav-hover] > summary::after {',
-      '    content: ""; position: absolute; left: -8px; right: -8px; top: 100%; height: 14px;',
+      '    content: ""; position: absolute; left: -8px; right: -8px; top: 100%; height: 32px;',
       '  }',
       '  /* Debut / Brooklyn: li > ul — bridge on trigger only, never force inner divs */',
       '  li[data-appai-nav-hover] > a, li[data-appai-nav-hover] > summary,',
       '  li[data-appai-nav-hover] > .menu-list__link { position: relative; }',
       '  li[data-appai-nav-hover] > a::after, li[data-appai-nav-hover] > summary::after,',
       '  li[data-appai-nav-hover] > .menu-list__link::after {',
-      '    content: ""; position: absolute; left: -8px; right: -8px; top: 100%; height: 16px;',
+      '    content: ""; position: absolute; left: -12px; right: -12px; top: 100%; height: 36px;',
       '  }',
       '  li[data-appai-nav-hover].appai-nav-hover-open > ul,',
       '  li[data-appai-nav-hover].appai-nav-hover-open > .site-nav__dropdown,',
@@ -279,6 +284,44 @@
     entry.root.addEventListener('focusout', function (e) {
       if (!entry.root.contains(e.relatedTarget)) closeFn();
     });
+  }
+
+  /**
+   * Open dropdown when pointer moves up from page content (e.g. iframe) through
+   * the column under the Customizer trigger — closed menus have no hit target there.
+   */
+  function bindApproachColumn(entry, openFn, closeFn) {
+    if (!entry.link) return;
+    var padX = 48;
+    var below = 520;
+    var above = 20;
+
+    function pointInColumn(x, y) {
+      if (!entry.link.isConnected) return false;
+      var r = entry.link.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) return false;
+      return (
+        x >= r.left - padX &&
+        x <= r.right + padX &&
+        y >= r.top - above &&
+        y <= r.bottom + below
+      );
+    }
+
+    function pointerOverMenu(e) {
+      if (entry.root.contains(e.target)) return true;
+      if (entry.submenu && entry.submenu.contains(e.target)) return true;
+      return false;
+    }
+
+    document.addEventListener('mousemove', function (e) {
+      if (!entry.root.isConnected) return;
+      if (pointInColumn(e.clientX, e.clientY) || pointerOverMenu(e)) {
+        openFn();
+      } else {
+        closeFn();
+      }
+    }, { passive: true });
   }
 
   /**
@@ -335,6 +378,7 @@
           if (!root.contains(e.relatedTarget)) scheduleClose();
         });
       }
+      bindApproachColumn(entry, openMenu, scheduleClose);
     }
   }
 
