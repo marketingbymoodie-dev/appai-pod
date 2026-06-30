@@ -315,8 +315,7 @@
     var r = trig.getBoundingClientRect();
     if (r.width < 1 || r.height < 1) return false;
 
-    // Directly over the trigger always counts.
-    if (x >= r.left - 8 && x <= r.right + 8 && y >= r.top - 8 && y <= r.bottom + 8) {
+    if (x >= r.left - 10 && x <= r.right + 10 && y >= r.top - 10 && y <= r.bottom + 10) {
       return true;
     }
 
@@ -326,17 +325,17 @@
       if (entry.submenu && entry.submenu.isConnected) {
         var sr = entry.submenu.getBoundingClientRect();
         if (sr.width > 0 && sr.height > 0) {
-          if (x >= sr.left - 12 && x <= sr.right + 12 &&
-              y >= sr.top - 12 && y <= sr.bottom + 12) return true;
-          // Bridge: vertical strip between trigger bottom and submenu top
-          // (covers the small gap themes leave between the two).
+          if (x >= sr.left - 14 && x <= sr.right + 14 &&
+              y >= sr.top - 14 && y <= sr.bottom + 14) return true;
+          // Bridge: rectangle spanning from trigger bottom to submenu top
+          // (covers the small gap themes leave between trigger and panel).
           var bridgeTop = Math.min(r.bottom, sr.top);
           var bridgeBottom = Math.max(r.bottom, sr.top);
-          if (bridgeBottom - bridgeTop > 0 && bridgeBottom - bridgeTop < 60) {
-            var bridgeLeft = Math.min(r.left, sr.left) - 8;
-            var bridgeRight = Math.max(r.right, sr.right) + 8;
+          if (bridgeBottom - bridgeTop > 0 && bridgeBottom - bridgeTop < 80) {
+            var bridgeLeft = Math.min(r.left, sr.left) - 12;
+            var bridgeRight = Math.max(r.right, sr.right) + 12;
             if (x >= bridgeLeft && x <= bridgeRight &&
-                y >= bridgeTop - 4 && y <= bridgeBottom + 4) return true;
+                y >= bridgeTop - 6 && y <= bridgeBottom + 6) return true;
           }
         }
       }
@@ -344,11 +343,10 @@
     }
 
     // Closed: open if pointer is in the trigger column AND in the upper
-    // header area of the viewport. This lets the dropdown open when the
-    // user moves up from below (iframe content) toward the trigger, while
-    // not staying open as the cursor roams arbitrary page content.
-    var colPad = 40;
-    var approachLimit = Math.max(150, r.bottom + 120);
+    // header area of the viewport. Generous horizontal padding so the
+    // upward approach from iframe content reliably catches the column.
+    var colPad = 90;
+    var approachLimit = Math.max(220, r.bottom + 180);
     if (
       x >= r.left - colPad && x <= r.right + colPad &&
       y >= 0 && y <= approachLimit
@@ -371,6 +369,20 @@
     }, { passive: true, capture: true });
   }
 
+  function dispatchNativeOpen(el) {
+    if (!el) return;
+    try { el.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true })); } catch (_) {}
+    try { el.dispatchEvent(new PointerEvent('pointerover', { bubbles: true })); } catch (_) {}
+    try { el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true })); } catch (_) {}
+    try { el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); } catch (_) {}
+  }
+
+  function dispatchNativeClose(el) {
+    if (!el) return;
+    try { el.dispatchEvent(new PointerEvent('pointerleave', { bubbles: true })); } catch (_) {}
+    try { el.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true })); } catch (_) {}
+  }
+
   /** Per-entry controller — proper closure scope (no var-in-loop bugs). */
   function bindEntry(entry) {
     var closeTimer = null;
@@ -391,6 +403,8 @@
       entry.root.classList.add('appai-nav-hover-open');
       entry.root.setAttribute('aria-expanded', 'true');
       if (entry.link) entry.link.setAttribute('aria-expanded', 'true');
+      dispatchNativeOpen(entry.link);
+      dispatchNativeOpen(entry.root);
     }
 
     function close() {
@@ -404,6 +418,8 @@
       entry.root.classList.remove('appai-nav-hover-open');
       entry.root.removeAttribute('aria-expanded');
       if (entry.link) entry.link.removeAttribute('aria-expanded');
+      dispatchNativeClose(entry.link);
+      dispatchNativeClose(entry.root);
     }
 
     function scheduleClose() {
@@ -412,6 +428,20 @@
         closeTimer = null;
         close();
       }, 260);
+    }
+
+    // Intercept clicks on the trigger when it has a submenu: many merchants
+    // configure "Customizer" as a parent link to a page that doesn't exist
+    // (blank page on click). Toggle the dropdown instead.
+    if (entry.link && entry.link.tagName && entry.link.tagName.toLowerCase() === 'a') {
+      entry.link.addEventListener('click', function (e) {
+        var hasItems = entry.submenu && entry.submenu.querySelector('a[href*="/pages/"], a[href*="/products/"], a[href*="/collections/"]');
+        if (!hasItems) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (isOpen) close();
+        else open();
+      });
     }
 
     // Keep open when focus moves into the menu (keyboard accessibility).
