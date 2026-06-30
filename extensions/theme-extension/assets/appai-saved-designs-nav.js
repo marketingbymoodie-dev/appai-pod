@@ -384,10 +384,10 @@
       for (var i = 0; i < anchors.length; i++) {
         var a = anchors[i];
         var href = a.getAttribute('href') || '';
-        if (!href || href === '#') {
-          // Allow the injected Saved Designs item (href=#) — detected below.
-        }
-        var label = ((a.innerText !== undefined ? a.innerText : a.textContent) || '').trim();
+        // textContent (NOT innerText) — innerText respects CSS visibility and
+        // returns "" once we've inline-hidden the submenu with display:none,
+        // which would filter out every real item and leave only Saved Designs.
+        var label = (a.textContent || '').trim();
         // Strip injected badge count (e.g. "Saved Designs 15" → "Saved Designs")
         label = label.replace(/\s+\d+$/, '').trim();
         if (!label) continue;
@@ -495,9 +495,13 @@
 
   function openOwnPanel(trigger, submenu) {
     if (!trigger) return;
-    cancelOwnPanelClose();
+    // Build items FIRST so a spurious mouseenter that produces zero items
+    // doesn't cancel an already-scheduled close. Previously this left the
+    // panel stuck open forever when MutationObserver-driven re-runs fired
+    // mouseenter after the cursor had moved away.
     var items = buildOwnPanelItems(submenu);
     if (!items.length) return;
+    cancelOwnPanelClose();
     __appaiOwnPanelTrigger = trigger;
     __appaiOwnPanelSubmenu = submenu;
     renderOwnPanel(items);
@@ -518,7 +522,11 @@
   }
 
   function scheduleOwnPanelClose() {
-    cancelOwnPanelClose();
+    // No-op if a close is already pending — important because the document
+    // mousemove safety-net calls this 60+ times per second while the cursor
+    // is off the panel. Without this guard, the 260ms timer would be
+    // perpetually reset and the panel would never actually close.
+    if (__appaiOwnPanelCloseTimer) return;
     __appaiOwnPanelCloseTimer = setTimeout(closeOwnPanel, 260);
   }
 
@@ -631,6 +639,45 @@
     };
     window.addEventListener('scroll', reposition, true);
     window.addEventListener('resize', reposition);
+
+    // ─── Safety-net close detector ──────────────────────────────────────
+    //
+    // mouseenter / mouseleave on the trigger and panel are unreliable across
+    // every theme — themes that rebuild the nav DOM, animate triggers, or
+    // wrap them in fragment containers can swallow these events. This
+    // document-level mousemove is the source of truth: while the panel is
+    // open, every mouse move that lands neither over the trigger (plus a
+    // 30px below band for the bridge) nor over the panel schedules a close;
+    // any move that does land over them cancels it. This guarantees close
+    // fires once the user has actually moved their cursor away, regardless
+    // of which events the theme is or isn't firing.
+    document.addEventListener('mousemove', function (e) {
+      if (!__appaiOwnPanelOpen) return;
+      var t = __appaiOwnPanelTrigger;
+      var p = __appaiOwnPanel;
+      if (!t || !p) return;
+      var inTrig = false, inPanel = false;
+      try {
+        var tr = t.getBoundingClientRect();
+        // Generous trigger box + a 30px tall "bridge" band immediately below
+        // so the cursor can travel from trigger to panel without flickering.
+        if (e.clientX >= tr.left - 8 && e.clientX <= tr.right + 8 &&
+            e.clientY >= tr.top - 8 && e.clientY <= tr.bottom + 30) {
+          inTrig = true;
+        }
+      } catch (_) {}
+      if (!inTrig) {
+        try {
+          var pr = p.getBoundingClientRect();
+          if (e.clientX >= pr.left - 8 && e.clientX <= pr.right + 8 &&
+              e.clientY >= pr.top - 8 && e.clientY <= pr.bottom + 8) {
+            inPanel = true;
+          }
+        } catch (_) {}
+      }
+      if (inTrig || inPanel) cancelOwnPanelClose();
+      else scheduleOwnPanelClose();
+    }, { passive: true });
   }
 
   /**
