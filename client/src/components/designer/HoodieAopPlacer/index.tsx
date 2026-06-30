@@ -1316,7 +1316,10 @@ export default function HoodieAopPlacer({
       </div>
 
       {/* Right: controls (mirrors legacy customizer's middle-column order) */}
-      <div className="w-full shrink-0 space-y-4 overflow-y-auto overscroll-contain lg:max-h-[min(88vh,960px)] lg:w-80">
+      <div
+        data-hoodie-aop-controls
+        className="w-full shrink-0 space-y-4 overflow-y-auto overscroll-contain lg:max-h-[min(88vh,960px)] lg:w-80"
+      >
         {/* Pattern / Place segmented toggle */}
         <div className="grid grid-cols-2 overflow-hidden rounded-md border border-border bg-card">
           {(["pattern", "place"] as const).map((m) => (

@@ -154,6 +154,122 @@
   }
 
   /**
+   * Find menu roots for the "Customizer" top-level nav item (details or li).
+   * Used to stabilize hover-open on desktop themes where a gap between the
+   * trigger and panel causes the dropdown to flicker closed.
+   */
+  function findCustomizerMenuRoots() {
+    var customizerNodes = [];
+    try {
+      var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+      var node;
+      while ((node = walker.nextNode())) {
+        if (node.nodeValue && node.nodeValue.trim() === CUSTOMIZER_LABEL) {
+          customizerNodes.push(node.parentElement);
+        }
+      }
+    } catch (_) {}
+
+    var roots = [];
+    var seen = [];
+
+    for (var i = 0; i < customizerNodes.length; i++) {
+      var candidate = customizerNodes[i];
+      if (!candidate || isInFooter(candidate)) continue;
+
+      var el = candidate;
+      var depth = 0;
+      while (el && el !== document.body && depth < 12) {
+        var tag = el.tagName ? el.tagName.toLowerCase() : '';
+        if (tag === 'details') {
+          if (seen.indexOf(el) === -1) {
+            seen.push(el);
+            roots.push({ root: el, kind: 'details' });
+          }
+          break;
+        }
+        if (tag === 'li' && el.querySelector('a[href*="/pages/"]')) {
+          if (seen.indexOf(el) === -1) {
+            seen.push(el);
+            roots.push({ root: el, kind: 'li' });
+          }
+          break;
+        }
+        el = el.parentElement;
+        depth++;
+      }
+    }
+
+    return roots;
+  }
+
+  function ensureNavHoverStyles() {
+    if (document.getElementById('appai-nav-hover-styles')) return;
+    var style = document.createElement('style');
+    style.id = 'appai-nav-hover-styles';
+    style.textContent = [
+      '@media (hover:hover) and (pointer:fine) {',
+      '  details[data-appai-nav-hover] { position: relative; }',
+      '  details[data-appai-nav-hover] > summary { position: relative; }',
+      '  /* Invisible bridge so moving from label to panel does not leave hover */',
+      '  details[data-appai-nav-hover] > summary::after {',
+      '    content: ""; position: absolute; left: -8px; right: -8px; top: 100%; height: 14px;',
+      '  }',
+      '  li[data-appai-nav-hover] { position: relative; }',
+      '  li[data-appai-nav-hover].appai-nav-hover-open > ul,',
+      '  li[data-appai-nav-hover].appai-nav-hover-open > div,',
+      '  li[data-appai-nav-hover].appai-nav-hover-open > nav {',
+      '    display: block !important; visibility: visible !important; opacity: 1 !important; pointer-events: auto !important;',
+      '  }',
+      '}',
+    ].join('');
+    document.head.appendChild(style);
+  }
+
+  /**
+   * Desktop-only: keep Customizer dropdown open while pointer travels from
+   * trigger to menu panel (Dawn details + classic li:hover themes).
+   */
+  function enhanceCustomizerNavHover() {
+    if (!window.matchMedia || !window.matchMedia('(hover: hover) and (pointer: fine)').matches) return;
+
+    ensureNavHoverStyles();
+
+    var menus = findCustomizerMenuRoots();
+    for (var i = 0; i < menus.length; i++) {
+      var entry = menus[i];
+      var root = entry.root;
+      if (!root || root.getAttribute('data-appai-nav-hover')) continue;
+      root.setAttribute('data-appai-nav-hover', '1');
+
+      var closeTimer = null;
+      var openMenu = function () {
+        if (closeTimer) {
+          clearTimeout(closeTimer);
+          closeTimer = null;
+        }
+        if (entry.kind === 'details') root.open = true;
+        root.classList.add('appai-nav-hover-open');
+      };
+      var scheduleClose = function () {
+        if (closeTimer) clearTimeout(closeTimer);
+        closeTimer = setTimeout(function () {
+          closeTimer = null;
+          if (entry.kind === 'details') root.open = false;
+          root.classList.remove('appai-nav-hover-open');
+        }, 200);
+      };
+
+      root.addEventListener('mouseenter', openMenu);
+      root.addEventListener('mouseleave', scheduleClose);
+      root.addEventListener('focusin', openMenu);
+      root.addEventListener('focusout', function (e) {
+        if (!root.contains(e.relatedTarget)) scheduleClose();
+      });
+    }
+  }
+
+  /**
    * Given an ancestor element that contains /pages/ links, find the most
    * specific container (<ul> or <div>) that directly wraps those links.
    */
@@ -589,6 +705,20 @@
 
   // ─── Main init ───────────────────────────────────────────────────────────
 
+  /** Stabilize Customizer dropdown hover on every page (desktop). */
+  function initCustomizerNavHover() {
+    function run() {
+      enhanceCustomizerNavHover();
+    }
+    run();
+    var attempts = 0;
+    var retry = setInterval(function () {
+      run();
+      attempts++;
+      if (attempts >= 8) clearInterval(retry);
+    }, 500);
+  }
+
   function init() {
     var customerId = getStoredCustomerId();
     if (!customerId) return;
@@ -615,6 +745,7 @@
           containers.forEach(function(container, idx) {
             injectNavItem(container, designs, idx === 0 ? '' : '-' + idx);
           });
+          enhanceCustomizerNavHover();
           return true;
         }
         return false;
@@ -644,18 +775,19 @@
       // history.replaceState (e.g. after add-to-cart resets the page URL),
       // which removes the injected nav item. Watch for this and re-inject.
       var reinjecting = false;
+      var reinjectTimer = null;
       var observer = new MutationObserver(function () {
-        // Check if any of our nav items have been removed
         var primaryItem = document.getElementById(NAV_ITEM_ID);
-        if (!primaryItem && !reinjecting) {
+        if (primaryItem || reinjecting) return;
+        if (reinjectTimer) clearTimeout(reinjectTimer);
+        reinjectTimer = setTimeout(function () {
+          reinjectTimer = null;
+          if (document.getElementById(NAV_ITEM_ID)) return;
           reinjecting = true;
-          // Small debounce to let the theme finish its DOM update
-          setTimeout(function () {
-            console.log('[AppAI Nav] Nav item removed from DOM — re-injecting...');
-            tryInject();
-            reinjecting = false;
-          }, 150);
-        }
+          console.log('[AppAI Nav] Nav item removed from DOM — re-injecting...');
+          tryInject();
+          reinjecting = false;
+        }, 200);
       });
 
       observer.observe(document.body, { childList: true, subtree: true });
@@ -687,8 +819,12 @@
   }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
+    document.addEventListener('DOMContentLoaded', function () {
+      initCustomizerNavHover();
+      init();
+    });
   } else {
+    initCustomizerNavHover();
     init();
   }
 

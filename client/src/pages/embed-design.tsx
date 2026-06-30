@@ -6156,51 +6156,56 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       }, '*');
     };
     const handleWheel = (e: WheelEvent) => {
-      const scrollParent = findScrollableAncestor(e.target as Element | null);
+      const target = e.target as Element | null;
+
+      // Let Radix portaled overlays scroll internally when the pointer is over them.
+      if (
+        target?.closest(
+          '[data-radix-select-content],[data-radix-popper-content-wrapper],[data-radix-dropdown-menu-content],[data-radix-popover-content]',
+        )
+      ) {
+        return;
+      }
+
+      // Desktop iframe embed: html/body overflow is hidden and the iframe auto-sizes
+      // to content — the Shopify parent page is the scroll container. Forward wheel
+      // unless the pointer is over a small opt-in inner-scroll panel.
+      if (!mobileNativeScroll) {
+        const innerScroll = target?.closest("[data-appai-inner-scroll]");
+        if (innerScroll && canScrollInDirection(innerScroll, e)) {
+          return;
+        }
+        postWheelToParent(e);
+        return;
+      }
+
+      const scrollParent = findScrollableAncestor(target);
       if (scrollParent && canScrollInDirection(scrollParent, e)) {
         return;
       }
 
-      // Check if a Radix dropdown/popover is currently open
-      const isRadixOpen = !!document.querySelector(
-        '[data-radix-select-content],[data-radix-popper-content-wrapper],[data-radix-dropdown-menu-content],[data-radix-popover-content]'
-      );
-      if (isRadixOpen) {
-        // A dropdown is open — check if the wheel target is INSIDE the dropdown
-        const target = e.target as Element | null;
-        const insideDropdown = target?.closest(
-          '[data-radix-select-content],[data-radix-popper-content-wrapper],[data-radix-dropdown-menu-content],[data-radix-popover-content]'
-        );
-        if (insideDropdown) return; // let the dropdown scroll naturally
-        // Mouse is outside the dropdown but a dropdown is open — still forward to parent
-        // so the background page can scroll while the dropdown is open
-      }
-      if (mobileNativeScroll) {
-        const scrollEl = document.scrollingElement || document.documentElement;
-        const beforeTop = scrollEl.scrollTop;
-        const beforeLeft = scrollEl.scrollLeft;
-        const deltaX = e.deltaX;
-        const deltaY = e.deltaY;
-        const deltaZ = e.deltaZ;
-        const deltaMode = e.deltaMode;
-        if (fallbackRaf) window.cancelAnimationFrame(fallbackRaf);
-        fallbackRaf = window.requestAnimationFrame(() => {
-          fallbackRaf = 0;
-          const topUnchanged = Math.abs(scrollEl.scrollTop - beforeTop) < 1;
-          const leftUnchanged = Math.abs(scrollEl.scrollLeft - beforeLeft) < 1;
-          if (topUnchanged && leftUnchanged) {
-            window.parent.postMessage({
-              type: 'ai-art-studio:wheel',
-              deltaX,
-              deltaY,
-              deltaZ,
-              deltaMode,
-            }, '*');
-          }
-        });
-        return;
-      }
-      postWheelToParent(e);
+      const scrollEl = document.scrollingElement || document.documentElement;
+      const beforeTop = scrollEl.scrollTop;
+      const beforeLeft = scrollEl.scrollLeft;
+      const deltaX = e.deltaX;
+      const deltaY = e.deltaY;
+      const deltaZ = e.deltaZ;
+      const deltaMode = e.deltaMode;
+      if (fallbackRaf) window.cancelAnimationFrame(fallbackRaf);
+      fallbackRaf = window.requestAnimationFrame(() => {
+        fallbackRaf = 0;
+        const topUnchanged = Math.abs(scrollEl.scrollTop - beforeTop) < 1;
+        const leftUnchanged = Math.abs(scrollEl.scrollLeft - beforeLeft) < 1;
+        if (topUnchanged && leftUnchanged) {
+          window.parent.postMessage({
+            type: 'ai-art-studio:wheel',
+            deltaX,
+            deltaY,
+            deltaZ,
+            deltaMode,
+          }, '*');
+        }
+      });
     };
     // Passive because we do not block native iframe scrolling.
     window.addEventListener('wheel', handleWheel, { passive: true });
@@ -7514,6 +7519,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                           <p className="text-sm text-muted-foreground py-2">No saved designs yet. Generate a design to see it here.</p>
                         ) : (
                           <div
+                            data-appai-inner-scroll
                             className="grid grid-cols-2 sm:grid-cols-3 gap-3 max-h-[360px] overflow-y-auto overscroll-contain pr-1"
                             onWheel={(e) => {
                               const el = e.currentTarget;

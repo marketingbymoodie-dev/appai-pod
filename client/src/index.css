@@ -476,6 +476,13 @@ html[data-appai-embed][data-appai-mobile-native-scroll] label {
   touch-action: manipulation;
 }
 
+/* Desktop embed: parent Shopify page owns scroll — iframe grows to content height. */
+html[data-appai-embed]:not([data-appai-mobile-native-scroll]) [data-hoodie-aop-controls] {
+  max-height: none !important;
+  overflow-y: visible !important;
+  overscroll-behavior: auto;
+}
+
 /* Don't apply touch-action: manipulation to the canvas / artwork drag surfaces
    — they handle their own multi-touch (rotate / pinch). They opt back in to
    default touch handling here. */
