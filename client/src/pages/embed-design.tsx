@@ -1729,6 +1729,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   ]);
   const useAopCustomizer =
     productTypeConfig?.useAopCustomizer ?? !!productTypeConfig?.isAllOverPrint;
+  /** Drag-to-scale artwork overlay — Printify mockup products only (not AOP/flat/mesh). */
+  const printifyTransformEligible = !!(
+    productTypeConfig?.hasPrintifyMockups &&
+    !useAopCustomizer &&
+    productTypeConfig?.onTheFlyTier !== "flat" &&
+    productTypeConfig?.onTheFlyTier !== "mesh"
+  );
   const toteFoldedLayout = productTypeConfig?.effectiveFulfillmentLayout === "tote_folded_v1";
   const defaultZoom = isApparel ? 135 : 100;
   const maxZoom = isApparel ? 135 : 200;
@@ -3590,6 +3597,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   // Mark mockups as stale when transform changes and mockups already exist
   useEffect(() => {
+    if (!printifyTransformEligible) return;
     if (
       (productTypeConfig?.onTheFlyTier === "flat" ||
         productTypeConfig?.onTheFlyTier === "mesh") &&
@@ -6147,12 +6155,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     };
 
     const postWheelToParent = (e: WheelEvent) => {
+      const normalizeDelta = (delta: number, mode: number, pageSize: number) => {
+        if (mode === 1) return delta * 16;
+        if (mode === 2) return delta * pageSize;
+        return delta;
+      };
       window.parent.postMessage({
         type: 'ai-art-studio:wheel',
-        deltaX: e.deltaX,
-        deltaY: e.deltaY,
+        deltaX: normalizeDelta(e.deltaX, e.deltaMode, window.innerWidth || 1200),
+        deltaY: normalizeDelta(e.deltaY, e.deltaMode, window.innerHeight || 800),
         deltaZ: e.deltaZ,
-        deltaMode: e.deltaMode,
+        deltaMode: 0,
       }, '*');
     };
     const handleWheel = (e: WheelEvent) => {
@@ -6207,11 +6220,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         }
       });
     };
-    // Passive because we do not block native iframe scrolling.
-    window.addEventListener('wheel', handleWheel, { passive: true });
+    // Capture phase so canvas/drag overlays cannot stop propagation before we forward.
+    window.addEventListener('wheel', handleWheel, { passive: true, capture: true });
     return () => {
       if (fallbackRaf) window.cancelAnimationFrame(fallbackRaf);
-      window.removeEventListener('wheel', handleWheel);
+      window.removeEventListener('wheel', handleWheel, { capture: true });
     };
   }, [isEmbedded, isStorefront, mobileNativeScroll]);
 
@@ -6887,6 +6900,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     getPreferredMockupUrl()
   );
   const canShowDragHint = !!(
+    printifyTransformEligible &&
     generatedDesign?.imageUrl &&
     selectedMockupIndex === 0 &&
     !showingMockupAtArtworkSlot
@@ -8671,7 +8685,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       selectedFrameColor={selectedFrameColorConfig}
                       transform={transform}
                       onTransformChange={setTransform}
-                      enableDrag={!!generatedDesign?.imageUrl && selectedMockupIndex === 0}
+                      enableDrag={!!generatedDesign?.imageUrl && selectedMockupIndex === 0 && printifyTransformEligible}
                       designerType={productTypeConfig?.designerType || "generic"}
                       printShape={productTypeConfig?.printShape || "rectangle"}
                       canvasConfig={productTypeConfig?.canvasConfig}
@@ -8746,7 +8760,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               })()}
 
               {/* Stale mockups overlay */}
-              {atcMockupsStaleBlocks && !mockupLoading && generatedDesign?.imageUrl && (
+              {atcHasMockups && atcMockupsStaleBlocks && !mockupLoading && generatedDesign?.imageUrl && (
                 <div className="absolute inset-0 flex items-end justify-center pb-3 pointer-events-none z-20">
                   <span className="text-white text-sm font-semibold bg-black/60 rounded-full px-3 py-1 animate-pulse">
                     Refresh your Mockups

@@ -188,13 +188,6 @@
           }
           break;
         }
-        if (tag === 'li' && el.querySelector('a[href*="/pages/"]')) {
-          if (seen.indexOf(el) === -1) {
-            seen.push(el);
-            roots.push({ root: el, kind: 'li' });
-          }
-          break;
-        }
         el = el.parentElement;
         depth++;
       }
@@ -214,12 +207,6 @@
       '  /* Invisible bridge so moving from label to panel does not leave hover */',
       '  details[data-appai-nav-hover] > summary::after {',
       '    content: ""; position: absolute; left: -8px; right: -8px; top: 100%; height: 14px;',
-      '  }',
-      '  li[data-appai-nav-hover] { position: relative; }',
-      '  li[data-appai-nav-hover].appai-nav-hover-open > ul,',
-      '  li[data-appai-nav-hover].appai-nav-hover-open > div,',
-      '  li[data-appai-nav-hover].appai-nav-hover-open > nav {',
-      '    display: block !important; visibility: visible !important; opacity: 1 !important; pointer-events: auto !important;',
       '  }',
       '}',
     ].join('');
@@ -249,14 +236,12 @@
           closeTimer = null;
         }
         if (entry.kind === 'details') root.open = true;
-        root.classList.add('appai-nav-hover-open');
       };
       var scheduleClose = function () {
         if (closeTimer) clearTimeout(closeTimer);
         closeTimer = setTimeout(function () {
           closeTimer = null;
           if (entry.kind === 'details') root.open = false;
-          root.classList.remove('appai-nav-hover-open');
         }, 200);
       };
 

@@ -27,6 +27,62 @@
     }
   }
 
+  /** Normalize WheelEvent deltaMode (line/page) to pixels for parent scroll. */
+  function appaiNormalizeWheelDelta(delta, deltaMode, pageSize) {
+    var value = delta || 0;
+    if (deltaMode === 1) return value * 16;
+    if (deltaMode === 2) return value * (pageSize || 800);
+    return value;
+  }
+
+  function appaiGetPageScrollElement() {
+    var el = document.scrollingElement || document.documentElement;
+    if (el && el.scrollHeight > el.clientHeight + 1) return el;
+    var selectors = ['#MainContent', 'main', '[role="main"]', '.content-for-layout'];
+    for (var i = 0; i < selectors.length; i++) {
+      try {
+        var node = document.querySelector(selectors[i]);
+        if (node && node.scrollHeight > node.clientHeight + 1) return node;
+      } catch (e) {}
+    }
+    return el;
+  }
+
+  function appaiScrollParentPage(deltaX, deltaY, deltaMode) {
+    try {
+      var scrollEl = appaiGetPageScrollElement();
+      scrollEl.scrollTop += appaiNormalizeWheelDelta(deltaY, deltaMode, window.innerHeight || 800);
+      scrollEl.scrollLeft += appaiNormalizeWheelDelta(deltaX, deltaMode, window.innerWidth || 1200);
+    } catch (e) {}
+  }
+
+  /** Same-origin app-proxy iframe: scroll parent directly (more reliable than postMessage). */
+  function appaiAttachIframeWheelForward(iframe, mobileNativeScroll) {
+    if (mobileNativeScroll || !iframe) return;
+    if (iframe.getAttribute('data-appai-wheel-forward') === '1') return;
+    iframe.setAttribute('data-appai-wheel-forward', '1');
+    var attached = false;
+    var tryAttach = function () {
+      if (attached) return;
+      var doc;
+      try { doc = iframe.contentDocument; } catch (e) { return; }
+      if (!doc) return;
+      attached = true;
+      doc.addEventListener('wheel', function (e) {
+        var target = e.target;
+        if (target && target.closest && target.closest(
+          '[data-appai-inner-scroll],[data-radix-select-content],[data-radix-popper-content-wrapper],[data-radix-dropdown-menu-content],[data-radix-popover-content]'
+        )) {
+          return;
+        }
+        appaiScrollParentPage(e.deltaX, e.deltaY, e.deltaMode);
+        e.preventDefault();
+      }, { passive: false, capture: true });
+    };
+    iframe.addEventListener('load', tryAttach);
+    tryAttach();
+  }
+
   function appaiStyleTransitionOverlay(overlay) {
     overlay.style.cssText = [
       'position:fixed',
@@ -213,7 +269,7 @@
 
     // Handle wheel forwarding from iframe (so parent page scrolls when mouse is over iframe)
     if (event.data.type === 'ai-art-studio:wheel') {
-      try { window.scrollBy({ top: event.data.deltaY || 0, left: event.data.deltaX || 0, behavior: 'auto' }); } catch(e) {}
+      appaiScrollParentPage(event.data.deltaX, event.data.deltaY, event.data.deltaMode);
       return;
     }
     
@@ -564,6 +620,7 @@
     iframe.onload = function() {
       // Loading screen is removed on BRIDGE_ACK (when React app is fully mounted),
       // not here — iframe.onload fires before the React app has rendered.
+      appaiAttachIframeWheelForward(iframe, mobileNativeScroll);
     };
     
     studioContainer.appendChild(iframe);
@@ -1347,11 +1404,7 @@
       // The iframe forwards wheel events so the parent page can scroll when
       // the mouse is over the iframe but not inside an open dropdown.
       if (data.type === 'ai-art-studio:wheel') {
-        try {
-          var _wEl = document.scrollingElement || document.documentElement;
-          _wEl.scrollTop += (data.deltaY || 0);
-          _wEl.scrollLeft += (data.deltaX || 0);
-        } catch(e) {}
+        appaiScrollParentPage(data.deltaX, data.deltaY, data.deltaMode);
         return;
       }
       // ===== TOUCH SCROLL FORWARDING + FLING (mobile) =====
@@ -1575,6 +1628,10 @@
         iframes[i].remove();
         console.log('[AI Art Embed] cleanupDuplicateGenerators: removed extra iframe from block container');
       }
+      if (iframes[0]) appaiAttachIframeWheelForward(iframes[0], false);
+    });
+    document.querySelectorAll('iframe[title="AI Art Design Studio"]').forEach(function(f) {
+      appaiAttachIframeWheelForward(f, false);
     });
   }
 
