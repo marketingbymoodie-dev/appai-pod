@@ -154,8 +154,14 @@
   }
 
   /**
-   * Find menu roots for the "Customizer" top-level nav item.
-   * Supports Dawn (details), Horizon (header-menu li), Debut/classic (li > ul).
+   * Find ALL Customizer nav entries across themes — fully generic.
+   *
+   * For every visible text node "Customizer" not in a footer, walks up to find:
+   *   - trigger: the clickable element holding the label (a, button, summary, .menu-list__link)
+   *   - root:    the smallest dropdown wrapper around trigger (li, details, header-menu li, custom-element)
+   *   - submenu: the nearest container (ul/div/nav) inside root that holds /pages/ links
+   *
+   * No theme-specific class names required. Returns one entry per distinct root.
    */
   function findCustomizerMenuRoots() {
     var customizerNodes = [];
@@ -169,54 +175,100 @@
       }
     } catch (_) {}
 
-    var roots = [];
+    var entries = [];
     var seen = [];
+    var triggerSel = 'a, button, summary, [role="button"], .menu-list__link';
 
-    function add(entry) {
-      if (!entry.root || seen.indexOf(entry.root) !== -1) return;
-      seen.push(entry.root);
-      roots.push(entry);
+    function nearestTrigger(start) {
+      var el = start;
+      var depth = 0;
+      while (el && el !== document.body && depth < 6) {
+        if (el.matches && el.matches(triggerSel)) return el;
+        el = el.parentElement;
+        depth++;
+      }
+      return start;
+    }
+
+    function findSubmenuInside(root, trigger) {
+      var pageLinks = root.querySelectorAll('a[href*="/pages/"]');
+      if (!pageLinks.length) return null;
+      var first = pageLinks[0];
+      var p = first.parentElement;
+      var hops = 0;
+      while (p && p !== root && hops < 6) {
+        if (trigger && (p === trigger || p.contains(trigger))) {
+          p = p.parentElement;
+          hops++;
+          continue;
+        }
+        var t = p.tagName ? p.tagName.toLowerCase() : '';
+        if (t === 'ul' || t === 'nav' || t === 'div' || t === 'section') return p;
+        p = p.parentElement;
+        hops++;
+      }
+      var candidates = root.querySelectorAll('ul, nav, div, section');
+      for (var i = 0; i < candidates.length; i++) {
+        var c = candidates[i];
+        if (trigger && (c.contains(trigger) || trigger.contains(c))) continue;
+        if (c.querySelector('a[href*="/pages/"]')) return c;
+      }
+      return null;
+    }
+
+    function isDropdownRoot(el) {
+      if (!el || !el.tagName) return false;
+      var tag = el.tagName.toLowerCase();
+      if (tag === 'details') return true;
+      if (tag === 'li') return true;
+      if (tag === 'header-menu') return true;
+      if (el.classList) {
+        if (el.classList.contains('menu-list__list-item')) return true;
+        if (el.classList.contains('has-dropdown')) return true;
+        if (el.classList.contains('header__menu-item')) return true;
+      }
+      if (tag.indexOf('-') !== -1) return true;
+      return false;
     }
 
     for (var i = 0; i < customizerNodes.length; i++) {
       var candidate = customizerNodes[i];
       if (!candidate || isInFooter(candidate)) continue;
 
-      var el = candidate;
+      var trigger = nearestTrigger(candidate);
+      var root = trigger;
       var depth = 0;
-      while (el && el !== document.body && depth < 14) {
-        if (el.classList && el.classList.contains('menu-list__list-item')) {
-          var hLink = el.querySelector('.menu-list__link, [ref="menuitem"]');
-          var hSub = el.querySelector('.menu-list__submenu, [ref="submenu[]"]');
-          add({ root: el, kind: 'horizon-item', link: hLink, submenu: hSub });
-          break;
-        }
-        var tag = el.tagName ? el.tagName.toLowerCase() : '';
-        if (tag === 'details') {
-          add({
-            root: el,
-            kind: 'details',
-            link: el.querySelector(':scope > summary, :scope > a, :scope > button'),
-            submenu: el.querySelector(':scope > ul, :scope > .menu-list__submenu, :scope > nav'),
-          });
-          break;
-        }
-        if (tag === 'li' && el.querySelector('a[href*="/pages/"]')) {
-          var trigger = el.querySelector(':scope > a, :scope > button, :scope > summary, :scope > .menu-list__link');
-          var submenu = el.querySelector(
-            ':scope > ul, :scope > .site-nav__dropdown, :scope > .menu-list__submenu, :scope > nav'
-          );
-          if (trigger && submenu) {
-            add({ root: el, kind: 'classic-li', link: trigger, submenu: submenu });
+      var chosenRoot = null;
+      while (root && root !== document.body && depth < 14) {
+        if (isDropdownRoot(root)) {
+          var sub = findSubmenuInside(root, trigger);
+          if (sub) {
+            chosenRoot = root;
+            break;
           }
-          break;
         }
-        el = el.parentElement;
+        root = root.parentElement;
         depth++;
       }
+      if (!chosenRoot) continue;
+      if (seen.indexOf(chosenRoot) !== -1) continue;
+      seen.push(chosenRoot);
+
+      var submenu = findSubmenuInside(chosenRoot, trigger);
+      if (!submenu) continue;
+
+      var rootTag = chosenRoot.tagName.toLowerCase();
+      var kind = rootTag === 'details' ? 'details' : 'generic';
+
+      entries.push({
+        root: chosenRoot,
+        kind: kind,
+        link: trigger,
+        submenu: submenu,
+      });
     }
 
-    return roots;
+    return entries;
   }
 
   function ensureNavHoverStyles() {
@@ -225,160 +277,165 @@
     style.id = 'appai-nav-hover-styles';
     style.textContent = [
       '@media (hover:hover) and (pointer:fine) {',
-      '  /* Dawn / Sense: details dropdown */',
-      '  details[data-appai-nav-hover] { position: relative; }',
-      '  details[data-appai-nav-hover] > summary { position: relative; }',
-      '  details[data-appai-nav-hover] > summary::after {',
-      '    content: ""; position: absolute; left: -8px; right: -8px; top: 100%; height: 32px;',
+      '  /* Bridge between trigger and submenu so mouse can travel without losing hover */',
+      '  [data-appai-nav-hover] { position: relative; }',
+      '  [data-appai-nav-trigger] { position: relative; }',
+      '  [data-appai-nav-trigger]::after {',
+      '    content: ""; position: absolute; left: -16px; right: -16px;',
+      '    top: 100%; height: 40px; pointer-events: auto;',
       '  }',
-      '  /* Debut / Brooklyn: li > ul — bridge on trigger only, never force inner divs */',
-      '  li[data-appai-nav-hover] > a, li[data-appai-nav-hover] > summary,',
-      '  li[data-appai-nav-hover] > .menu-list__link { position: relative; }',
-      '  li[data-appai-nav-hover] > a::after, li[data-appai-nav-hover] > summary::after,',
-      '  li[data-appai-nav-hover] > .menu-list__link::after {',
-      '    content: ""; position: absolute; left: -12px; right: -12px; top: 100%; height: 36px;',
+      '  /* Universal force-show: overrides display:none, visibility:hidden, opacity:0,',
+      '     max-height:0, transform translations, pointer-events:none on the submenu. */',
+      '  [data-appai-nav-show="1"] {',
+      '    display: block !important;',
+      '    visibility: visible !important;',
+      '    opacity: 1 !important;',
+      '    pointer-events: auto !important;',
+      '    transform: none !important;',
+      '    max-height: none !important;',
+      '    height: auto !important;',
+      '    clip: auto !important;',
+      '    clip-path: none !important;',
       '  }',
-      '  li[data-appai-nav-hover].appai-nav-hover-open > ul,',
-      '  li[data-appai-nav-hover].appai-nav-hover-open > .site-nav__dropdown,',
-      '  li[data-appai-nav-hover].appai-nav-hover-open > nav {',
-      '    display: block !important; visibility: visible !important;',
-      '    opacity: 1 !important; pointer-events: auto !important;',
-      '  }',
-      '  /* Horizon: mega menu list item */',
-      '  .menu-list__list-item[data-appai-nav-hover] .menu-list__link { position: relative; }',
       '}',
     ].join('');
     document.head.appendChild(style);
   }
 
-  function dispatchPointerEnter(el) {
-    if (!el) return;
-    try {
-      el.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true, cancelable: true }));
-    } catch (_) {
-      try {
-        el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, cancelable: true }));
-      } catch (__) {}
+  /** Single shared mousemove driver — checks all registered entries each frame. */
+  var __appaiNavEntries = [];
+  var __appaiNavMoveBound = false;
+  var __appaiLastMoveX = -9999;
+  var __appaiLastMoveY = -9999;
+  var __appaiMoveRAF = 0;
+
+  function appaiNavTick() {
+    __appaiMoveRAF = 0;
+    var x = __appaiLastMoveX;
+    var y = __appaiLastMoveY;
+    for (var i = 0; i < __appaiNavEntries.length; i++) {
+      var rec = __appaiNavEntries[i];
+      if (!rec || !rec.entry.root.isConnected) continue;
+      var hot = pointerInHotZone(rec, x, y);
+      if (hot) rec.open();
+      else rec.scheduleClose();
     }
   }
 
-  function dispatchPointerLeave(el) {
-    if (!el) return;
-    try {
-      el.dispatchEvent(new PointerEvent('pointerleave', { bubbles: true, cancelable: true }));
-    } catch (_) {
-      try {
-        el.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true, cancelable: true }));
-      } catch (__) {}
-    }
-  }
+  function pointerInHotZone(rec, x, y) {
+    var entry = rec.entry;
+    var trig = entry.link;
+    if (!trig || !trig.isConnected) return false;
+    var r = trig.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return false;
 
-  function bindHoverZone(entry, openFn, closeFn) {
-    var zones = [entry.root];
-    if (entry.submenu) zones.push(entry.submenu);
-    for (var z = 0; z < zones.length; z++) {
-      zones[z].addEventListener('mouseenter', openFn);
-      zones[z].addEventListener('mouseleave', closeFn);
-      zones[z].addEventListener('focusin', openFn);
-    }
-    entry.root.addEventListener('focusout', function (e) {
-      if (!entry.root.contains(e.relatedTarget)) closeFn();
-    });
-  }
+    // Always-on column under the trigger so upward approach from iframe opens menu
+    // even when submenu is display:none and has no hit target.
+    var colPad = 60;
+    var colBelow = 560;
+    if (
+      x >= r.left - colPad && x <= r.right + colPad &&
+      y >= r.top - 20 && y <= r.bottom + colBelow
+    ) return true;
 
-  /**
-   * Open dropdown when pointer moves up from page content (e.g. iframe) through
-   * the column under the Customizer trigger — closed menus have no hit target there.
-   */
-  function bindApproachColumn(entry, openFn, closeFn) {
-    if (!entry.link) return;
-    var padX = 48;
-    var below = 520;
-    var above = 20;
-
-    function pointInColumn(x, y) {
-      if (!entry.link.isConnected) return false;
-      var r = entry.link.getBoundingClientRect();
-      if (r.width < 1 || r.height < 1) return false;
-      return (
-        x >= r.left - padX &&
-        x <= r.right + padX &&
-        y >= r.top - above &&
-        y <= r.bottom + below
-      );
-    }
-
-    function pointerOverMenu(e) {
-      if (entry.root.contains(e.target)) return true;
-      if (entry.submenu && entry.submenu.contains(e.target)) return true;
-      return false;
-    }
-
-    document.addEventListener('mousemove', function (e) {
-      if (!entry.root.isConnected) return;
-      if (pointInColumn(e.clientX, e.clientY) || pointerOverMenu(e)) {
-        openFn();
-      } else {
-        closeFn();
+    // Once open, keep open while pointer is over submenu or root.
+    if (rec.isOpen) {
+      if (entry.root.contains(document.elementFromPoint(x, y))) return true;
+      if (entry.submenu && entry.submenu.isConnected) {
+        var sr = entry.submenu.getBoundingClientRect();
+        if (sr.width > 0 && sr.height > 0 &&
+            x >= sr.left - 8 && x <= sr.right + 8 &&
+            y >= sr.top - 8 && y <= sr.bottom + 8) return true;
       }
-    }, { passive: true });
+    }
+
+    return false;
+  }
+
+  function ensureNavMoveBound() {
+    if (__appaiNavMoveBound) return;
+    __appaiNavMoveBound = true;
+    document.addEventListener('mousemove', function (e) {
+      __appaiLastMoveX = e.clientX;
+      __appaiLastMoveY = e.clientY;
+      if (!__appaiMoveRAF) {
+        __appaiMoveRAF = window.requestAnimationFrame
+          ? window.requestAnimationFrame(appaiNavTick)
+          : window.setTimeout(appaiNavTick, 16);
+      }
+    }, { passive: true, capture: true });
+  }
+
+  /** Per-entry controller — proper closure scope (no var-in-loop bugs). */
+  function bindEntry(entry) {
+    var closeTimer = null;
+    var isOpen = false;
+
+    if (entry.submenu) entry.submenu.setAttribute('data-appai-nav-target', '1');
+    if (entry.link) entry.link.setAttribute('data-appai-nav-trigger', '1');
+
+    function open() {
+      if (closeTimer) { clearTimeout(closeTimer); closeTimer = null; }
+      if (isOpen) return;
+      isOpen = true;
+      rec.isOpen = true;
+      if (entry.kind === 'details') {
+        try { entry.root.open = true; } catch (_) {}
+      }
+      if (entry.submenu) entry.submenu.setAttribute('data-appai-nav-show', '1');
+      entry.root.classList.add('appai-nav-hover-open');
+      entry.root.setAttribute('aria-expanded', 'true');
+      if (entry.link) entry.link.setAttribute('aria-expanded', 'true');
+    }
+
+    function close() {
+      if (!isOpen) return;
+      isOpen = false;
+      rec.isOpen = false;
+      if (entry.kind === 'details') {
+        try { entry.root.open = false; } catch (_) {}
+      }
+      if (entry.submenu) entry.submenu.removeAttribute('data-appai-nav-show');
+      entry.root.classList.remove('appai-nav-hover-open');
+      entry.root.removeAttribute('aria-expanded');
+      if (entry.link) entry.link.removeAttribute('aria-expanded');
+    }
+
+    function scheduleClose() {
+      if (closeTimer) return;
+      closeTimer = setTimeout(function () {
+        closeTimer = null;
+        close();
+      }, 260);
+    }
+
+    // Keep open when focus moves into the menu (keyboard accessibility).
+    entry.root.addEventListener('focusin', open);
+    entry.root.addEventListener('focusout', function (e) {
+      if (!entry.root.contains(e.relatedTarget)) scheduleClose();
+    });
+
+    var rec = { entry: entry, open: open, close: close, scheduleClose: scheduleClose, isOpen: false };
+    __appaiNavEntries.push(rec);
+    return rec;
   }
 
   /**
    * Desktop-only: keep Customizer dropdown open while pointer travels from
-   * trigger to menu panel (Dawn details, Horizon header-menu, Debut li:hover).
+   * trigger to menu panel. Works generically across every theme.
    */
   function enhanceCustomizerNavHover() {
     if (!window.matchMedia || !window.matchMedia('(hover: hover) and (pointer: fine)').matches) return;
 
     ensureNavHoverStyles();
+    ensureNavMoveBound();
 
     var menus = findCustomizerMenuRoots();
     for (var i = 0; i < menus.length; i++) {
       var entry = menus[i];
-      var root = entry.root;
-      if (!root || root.getAttribute('data-appai-nav-hover')) continue;
-      root.setAttribute('data-appai-nav-hover', '1');
-
-      var closeTimer = null;
-      var openMenu = function () {
-        if (closeTimer) {
-          clearTimeout(closeTimer);
-          closeTimer = null;
-        }
-        if (entry.kind === 'details') {
-          root.open = true;
-        } else if (entry.kind === 'classic-li') {
-          root.classList.add('appai-nav-hover-open');
-        } else if (entry.kind === 'horizon-item') {
-          dispatchPointerEnter(entry.link);
-        }
-      };
-      var scheduleClose = function () {
-        if (closeTimer) clearTimeout(closeTimer);
-        closeTimer = setTimeout(function () {
-          closeTimer = null;
-          if (entry.kind === 'details') {
-            root.open = false;
-          } else if (entry.kind === 'classic-li') {
-            root.classList.remove('appai-nav-hover-open');
-          } else if (entry.kind === 'horizon-item') {
-            dispatchPointerLeave(entry.link);
-          }
-        }, 220);
-      };
-
-      if (entry.kind === 'horizon-item' || entry.kind === 'classic-li') {
-        bindHoverZone(entry, openMenu, scheduleClose);
-      } else {
-        root.addEventListener('mouseenter', openMenu);
-        root.addEventListener('mouseleave', scheduleClose);
-        root.addEventListener('focusin', openMenu);
-        root.addEventListener('focusout', function (e) {
-          if (!root.contains(e.relatedTarget)) scheduleClose();
-        });
-      }
-      bindApproachColumn(entry, openMenu, scheduleClose);
+      if (!entry.root || entry.root.getAttribute('data-appai-nav-hover')) continue;
+      entry.root.setAttribute('data-appai-nav-hover', '1');
+      bindEntry(entry);
     }
   }
 
