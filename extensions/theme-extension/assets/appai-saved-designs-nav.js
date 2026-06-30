@@ -342,6 +342,21 @@
         'content:"";position:absolute;left:-12px;right:-12px;',
         'top:100%;height:14px;pointer-events:auto;',
       '}',
+      // Force-hide the theme's native submenu we've bound to. We still parse
+      // items from it via querySelectorAll (DOM queries ignore CSS), but the
+      // theme can never paint a second dropdown on top of ours. Without this,
+      // themes that show their dropdown on :hover (Horizon mega menu, Dawn
+      // <details>, Impulse navmenu, etc.) end up rendering two menus.
+      '[data-appai-own-submenu="1"]{',
+        'display:none !important;',
+        'visibility:hidden !important;',
+        'opacity:0 !important;',
+        'pointer-events:none !important;',
+        'max-height:0 !important;',
+        'height:0 !important;',
+        'overflow:hidden !important;',
+        'transform:translateY(-9999px) !important;',
+      '}',
     ].join('');
     document.head.appendChild(style);
   }
@@ -514,11 +529,51 @@
     }
   }
 
+  /**
+   * Hide the theme's native submenu element via inline !important styles.
+   * Inline !important can't be defeated by any theme CSS regardless of
+   * selector specificity, which is the only way to guarantee the theme's
+   * native dropdown never paints alongside ours (e.g. Horizon mega menu
+   * positions its native dropdown far from the trigger and was showing
+   * beside our panel). DOM queries (querySelectorAll) still see the items,
+   * so buildOwnPanelItems works fine.
+   */
+  function hideThemeSubmenu(submenu) {
+    if (!submenu || !submenu.style || !submenu.style.setProperty) return;
+    submenu.setAttribute('data-appai-own-submenu', '1');
+    try {
+      submenu.style.setProperty('display', 'none', 'important');
+      submenu.style.setProperty('visibility', 'hidden', 'important');
+      submenu.style.setProperty('opacity', '0', 'important');
+      submenu.style.setProperty('pointer-events', 'none', 'important');
+      submenu.style.setProperty('max-height', '0', 'important');
+      submenu.style.setProperty('height', '0', 'important');
+      submenu.style.setProperty('overflow', 'hidden', 'important');
+    } catch (_) {}
+  }
+
   function bindOwnTrigger(entry) {
     var trigger = entry.link;
     var submenu = entry.submenu;
     if (!trigger || trigger.getAttribute('data-appai-own-trigger') === '1') return;
     trigger.setAttribute('data-appai-own-trigger', '1');
+
+    // Suppress the theme's native dropdown forever — we render our own panel.
+    hideThemeSubmenu(submenu);
+
+    // If theme JS rewrites the submenu style on hover (e.g. inline
+    // display:block clobbers our !important), re-hide it. Disconnect-then-
+    // reconnect avoids the re-entrancy loop our own setProperty would cause.
+    if (window.MutationObserver && submenu) {
+      var mo;
+      var rehide = function () {
+        if (mo) try { mo.disconnect(); } catch (_) {}
+        hideThemeSubmenu(submenu);
+        if (mo) try { mo.observe(submenu, { attributes: true, attributeFilter: ['style', 'class'] }); } catch (_) {}
+      };
+      mo = new MutationObserver(rehide);
+      try { mo.observe(submenu, { attributes: true, attributeFilter: ['style', 'class'] }); } catch (_) {}
+    }
 
     // Capture-phase click — intercepts before theme handlers / native nav.
     // Always opens our panel; never lets the theme navigate to a possibly
@@ -540,15 +595,13 @@
     });
     trigger.addEventListener('mouseleave', scheduleOwnPanelClose);
 
-    // Stop the theme's native dropdown from showing when we own the
-    // interaction — themes that use <details><summary> will still toggle by
-    // default unless we kill the click. Our preventDefault above handles it,
-    // but for keyboard activation on <summary> we also override toggle.
+    // <details><summary> themes (Dawn/Sense/Craft): if the theme toggles
+    // <details open>, the submenu's display would be the only thing painted —
+    // but we've inline-hidden the submenu, so this is a belt-and-suspenders
+    // close that prevents a flash of stale browser default rendering.
     if (entry.kind === 'details') {
       entry.root.addEventListener('toggle', function () {
-        // If theme expanded the details, our panel handles display.
-        // Force it back closed so we don't show two menus.
-        try { if (entry.root.open && !__appaiOwnPanelOpen) entry.root.open = false; } catch (_) {}
+        try { if (entry.root.open) entry.root.open = false; } catch (_) {}
       });
     }
   }
