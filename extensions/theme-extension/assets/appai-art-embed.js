@@ -38,7 +38,10 @@
   function appaiGetPageScrollElement() {
     var el = document.scrollingElement || document.documentElement;
     if (el && el.scrollHeight > el.clientHeight + 1) return el;
-    var selectors = ['#MainContent', 'main', '[role="main"]', '.content-for-layout'];
+    var selectors = [
+      '#MainContent', 'main', '[role="main"]', '.content-for-layout',
+      '#PageContainer', '.shopify-section-group-main',
+    ];
     for (var i = 0; i < selectors.length; i++) {
       try {
         var node = document.querySelector(selectors[i]);
@@ -48,11 +51,52 @@
     return el;
   }
 
+  /** If the theme scrolls a wrapper around the embed (some Horizon layouts), find it. */
+  function appaiScrollRootForEmbedIframe() {
+    var iframe = document.querySelector('iframe[title="AI Art Design Studio"]');
+    if (!iframe) return null;
+    var node = iframe.parentElement;
+    var depth = 0;
+    while (node && node !== document.documentElement && depth < 16) {
+      try {
+        var st = window.getComputedStyle(node);
+        var oy = st.overflowY;
+        if (
+          (oy === 'auto' || oy === 'scroll' || oy === 'overlay') &&
+          node.scrollHeight > node.clientHeight + 1
+        ) {
+          return node;
+        }
+      } catch (e) {}
+      node = node.parentElement;
+      depth++;
+    }
+    return null;
+  }
+
   function appaiScrollParentPage(deltaX, deltaY, deltaMode) {
+    var dy = appaiNormalizeWheelDelta(deltaY, deltaMode, window.innerHeight || 800);
+    var dx = appaiNormalizeWheelDelta(deltaX, deltaMode, window.innerWidth || 1200);
+    if (Math.abs(dy) < 0.01 && Math.abs(dx) < 0.01) return;
+
+    var embedRoot = appaiScrollRootForEmbedIframe();
+    if (embedRoot) {
+      try {
+        embedRoot.scrollTop += dy;
+        embedRoot.scrollLeft += dx;
+        return;
+      } catch (e) {}
+    }
+
+    try {
+      window.scrollBy({ top: dy, left: dx, behavior: 'auto' });
+      return;
+    } catch (e) {}
+
     try {
       var scrollEl = appaiGetPageScrollElement();
-      scrollEl.scrollTop += appaiNormalizeWheelDelta(deltaY, deltaMode, window.innerHeight || 800);
-      scrollEl.scrollLeft += appaiNormalizeWheelDelta(deltaX, deltaMode, window.innerWidth || 1200);
+      scrollEl.scrollTop += dy;
+      scrollEl.scrollLeft += dx;
     } catch (e) {}
   }
 
@@ -79,6 +123,22 @@
         e.preventDefault();
       }, { passive: false, capture: true });
     };
+    var retryAttach = function () {
+      attached = false;
+      tryAttach();
+    };
+    if (!window.__appaiWheelRetryByIframe) window.__appaiWheelRetryByIframe = [];
+    window.__appaiWheelRetryByIframe.push({ iframe: iframe, retry: retryAttach });
+    if (!window.__appaiWheelBridgeListener) {
+      window.__appaiWheelBridgeListener = true;
+      window.addEventListener('message', function (e) {
+        if (!e.data || e.data.type !== 'AI_ART_STUDIO_BRIDGE_ACK') return;
+        var list = window.__appaiWheelRetryByIframe || [];
+        for (var i = 0; i < list.length; i++) {
+          if (list[i] && list[i].retry) list[i].retry();
+        }
+      });
+    }
     iframe.addEventListener('load', tryAttach);
     tryAttach();
   }

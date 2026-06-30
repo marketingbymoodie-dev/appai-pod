@@ -486,9 +486,11 @@ html[data-appai-embed]:not([data-appai-mobile-native-scroll]) [data-hoodie-aop-c
 /* Never use touch-action:pan-y on large preview surfaces in desktop embed — Chrome
    may consume wheel at the compositor before JS can forward to the parent page. */
 html[data-appai-embed]:not([data-appai-mobile-native-scroll]) [data-appai-wheel-forward],
+html[data-appai-embed]:not([data-appai-mobile-native-scroll]) [data-appai-pc],
 html[data-appai-embed]:not([data-appai-mobile-native-scroll]) [data-testid="container-mockup"],
 html[data-appai-embed]:not([data-appai-mobile-native-scroll]) [data-testid="product-mockup"],
-html[data-appai-embed]:not([data-appai-mobile-native-scroll]) [data-testid="hoodie-aop-canvas-area"] {
+html[data-appai-embed]:not([data-appai-mobile-native-scroll]) [data-testid="hoodie-aop-canvas-area"],
+html[data-appai-embed]:not([data-appai-mobile-native-scroll]) [data-testid="hoodie-aop-placer-canvas"] {
   touch-action: auto !important;
 }
 

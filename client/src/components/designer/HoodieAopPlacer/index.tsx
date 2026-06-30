@@ -1280,6 +1280,7 @@ export default function HoodieAopPlacer({
               ref={canvasRef}
               className="max-h-[50vh] max-w-full rounded object-contain lg:max-h-[78vh]"
               data-testid="hoodie-aop-placer-canvas"
+              data-appai-wheel-forward="true"
             />
             {showOverlay && overlayVisible && mockup && artworkImg && (
               <DesignRectHandlesOverlay

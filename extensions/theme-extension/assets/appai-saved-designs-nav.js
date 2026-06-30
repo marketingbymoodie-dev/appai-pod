@@ -154,9 +154,8 @@
   }
 
   /**
-   * Find menu roots for the "Customizer" top-level nav item (details or li).
-   * Used to stabilize hover-open on desktop themes where a gap between the
-   * trigger and panel causes the dropdown to flicker closed.
+   * Find menu roots for the "Customizer" top-level nav item.
+   * Supports Dawn (details), Horizon (header-menu li), Debut/classic (li > ul).
    */
   function findCustomizerMenuRoots() {
     var customizerNodes = [];
@@ -173,18 +172,37 @@
     var roots = [];
     var seen = [];
 
+    function add(entry) {
+      if (!entry.root || seen.indexOf(entry.root) !== -1) return;
+      seen.push(entry.root);
+      roots.push(entry);
+    }
+
     for (var i = 0; i < customizerNodes.length; i++) {
       var candidate = customizerNodes[i];
       if (!candidate || isInFooter(candidate)) continue;
 
       var el = candidate;
       var depth = 0;
-      while (el && el !== document.body && depth < 12) {
+      while (el && el !== document.body && depth < 14) {
+        if (el.classList && el.classList.contains('menu-list__list-item')) {
+          var hLink = el.querySelector('.menu-list__link, [ref="menuitem"]');
+          var hSub = el.querySelector('.menu-list__submenu, [ref="submenu[]"]');
+          add({ root: el, kind: 'horizon-item', link: hLink, submenu: hSub });
+          break;
+        }
         var tag = el.tagName ? el.tagName.toLowerCase() : '';
         if (tag === 'details') {
-          if (seen.indexOf(el) === -1) {
-            seen.push(el);
-            roots.push({ root: el, kind: 'details' });
+          add({ root: el, kind: 'details' });
+          break;
+        }
+        if (tag === 'li' && el.querySelector('a[href*="/pages/"]')) {
+          var trigger = el.querySelector(':scope > a, :scope > button, :scope > summary, :scope > .menu-list__link');
+          var submenu = el.querySelector(
+            ':scope > ul, :scope > .site-nav__dropdown, :scope > .menu-list__submenu, :scope > nav'
+          );
+          if (trigger && submenu) {
+            add({ root: el, kind: 'classic-li', link: trigger, submenu: submenu });
           }
           break;
         }
@@ -202,20 +220,70 @@
     style.id = 'appai-nav-hover-styles';
     style.textContent = [
       '@media (hover:hover) and (pointer:fine) {',
+      '  /* Dawn / Sense: details dropdown */',
       '  details[data-appai-nav-hover] { position: relative; }',
       '  details[data-appai-nav-hover] > summary { position: relative; }',
-      '  /* Invisible bridge so moving from label to panel does not leave hover */',
       '  details[data-appai-nav-hover] > summary::after {',
       '    content: ""; position: absolute; left: -8px; right: -8px; top: 100%; height: 14px;',
       '  }',
+      '  /* Debut / Brooklyn: li > ul — bridge on trigger only, never force inner divs */',
+      '  li[data-appai-nav-hover] > a, li[data-appai-nav-hover] > summary,',
+      '  li[data-appai-nav-hover] > .menu-list__link { position: relative; }',
+      '  li[data-appai-nav-hover] > a::after, li[data-appai-nav-hover] > summary::after,',
+      '  li[data-appai-nav-hover] > .menu-list__link::after {',
+      '    content: ""; position: absolute; left: -8px; right: -8px; top: 100%; height: 16px;',
+      '  }',
+      '  li[data-appai-nav-hover].appai-nav-hover-open > ul,',
+      '  li[data-appai-nav-hover].appai-nav-hover-open > .site-nav__dropdown,',
+      '  li[data-appai-nav-hover].appai-nav-hover-open > nav {',
+      '    display: block !important; visibility: visible !important;',
+      '    opacity: 1 !important; pointer-events: auto !important;',
+      '  }',
+      '  /* Horizon: mega menu list item */',
+      '  .menu-list__list-item[data-appai-nav-hover] .menu-list__link { position: relative; }',
       '}',
     ].join('');
     document.head.appendChild(style);
   }
 
+  function dispatchPointerEnter(el) {
+    if (!el) return;
+    try {
+      el.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true, cancelable: true }));
+    } catch (_) {
+      try {
+        el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, cancelable: true }));
+      } catch (__) {}
+    }
+  }
+
+  function dispatchPointerLeave(el) {
+    if (!el) return;
+    try {
+      el.dispatchEvent(new PointerEvent('pointerleave', { bubbles: true, cancelable: true }));
+    } catch (_) {
+      try {
+        el.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true, cancelable: true }));
+      } catch (__) {}
+    }
+  }
+
+  function bindHoverZone(entry, openFn, closeFn) {
+    var zones = [entry.root];
+    if (entry.submenu) zones.push(entry.submenu);
+    for (var z = 0; z < zones.length; z++) {
+      zones[z].addEventListener('mouseenter', openFn);
+      zones[z].addEventListener('mouseleave', closeFn);
+      zones[z].addEventListener('focusin', openFn);
+    }
+    entry.root.addEventListener('focusout', function (e) {
+      if (!entry.root.contains(e.relatedTarget)) closeFn();
+    });
+  }
+
   /**
    * Desktop-only: keep Customizer dropdown open while pointer travels from
-   * trigger to menu panel (Dawn details + classic li:hover themes).
+   * trigger to menu panel (Dawn details, Horizon header-menu, Debut li:hover).
    */
   function enhanceCustomizerNavHover() {
     if (!window.matchMedia || !window.matchMedia('(hover: hover) and (pointer: fine)').matches) return;
@@ -235,22 +303,38 @@
           clearTimeout(closeTimer);
           closeTimer = null;
         }
-        if (entry.kind === 'details') root.open = true;
+        if (entry.kind === 'details') {
+          root.open = true;
+        } else if (entry.kind === 'classic-li') {
+          root.classList.add('appai-nav-hover-open');
+        } else if (entry.kind === 'horizon-item') {
+          dispatchPointerEnter(entry.link);
+        }
       };
       var scheduleClose = function () {
         if (closeTimer) clearTimeout(closeTimer);
         closeTimer = setTimeout(function () {
           closeTimer = null;
-          if (entry.kind === 'details') root.open = false;
-        }, 200);
+          if (entry.kind === 'details') {
+            root.open = false;
+          } else if (entry.kind === 'classic-li') {
+            root.classList.remove('appai-nav-hover-open');
+          } else if (entry.kind === 'horizon-item') {
+            dispatchPointerLeave(entry.link);
+          }
+        }, 220);
       };
 
-      root.addEventListener('mouseenter', openMenu);
-      root.addEventListener('mouseleave', scheduleClose);
-      root.addEventListener('focusin', openMenu);
-      root.addEventListener('focusout', function (e) {
-        if (!root.contains(e.relatedTarget)) scheduleClose();
-      });
+      if (entry.kind === 'horizon-item' || entry.kind === 'classic-li') {
+        bindHoverZone(entry, openMenu, scheduleClose);
+      } else {
+        root.addEventListener('mouseenter', openMenu);
+        root.addEventListener('mouseleave', scheduleClose);
+        root.addEventListener('focusin', openMenu);
+        root.addEventListener('focusout', function (e) {
+          if (!root.contains(e.relatedTarget)) scheduleClose();
+        });
+      }
     }
   }
 
