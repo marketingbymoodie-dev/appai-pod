@@ -216,46 +216,32 @@
       return null;
     }
 
-    function isDropdownRoot(el) {
-      if (!el || !el.tagName) return false;
-      var tag = el.tagName.toLowerCase();
-      if (tag === 'details') return true;
-      if (tag === 'li') return true;
-      if (tag === 'header-menu') return true;
-      if (el.classList) {
-        if (el.classList.contains('menu-list__list-item')) return true;
-        if (el.classList.contains('has-dropdown')) return true;
-        if (el.classList.contains('header__menu-item')) return true;
-      }
-      if (tag.indexOf('-') !== -1) return true;
-      return false;
-    }
-
     for (var i = 0; i < customizerNodes.length; i++) {
       var candidate = customizerNodes[i];
       if (!candidate || isInFooter(candidate)) continue;
 
       var trigger = nearestTrigger(candidate);
-      var root = trigger;
+
+      // Walk up from trigger to find the smallest ancestor that ALSO contains
+      // a /pages/ link not inside the trigger itself — that ancestor is the
+      // dropdown wrapper (works for parent-child AND sibling-based layouts).
+      var ancestor = trigger.parentElement;
       var depth = 0;
       var chosenRoot = null;
-      while (root && root !== document.body && depth < 14) {
-        if (isDropdownRoot(root)) {
-          var sub = findSubmenuInside(root, trigger);
-          if (sub) {
-            chosenRoot = root;
-            break;
-          }
+      var chosenSubmenu = null;
+      while (ancestor && ancestor !== document.body && depth < 14) {
+        var sub = findSubmenuInside(ancestor, trigger);
+        if (sub && !trigger.contains(sub) && sub !== trigger) {
+          chosenRoot = ancestor;
+          chosenSubmenu = sub;
+          break;
         }
-        root = root.parentElement;
+        ancestor = ancestor.parentElement;
         depth++;
       }
       if (!chosenRoot) continue;
       if (seen.indexOf(chosenRoot) !== -1) continue;
       seen.push(chosenRoot);
-
-      var submenu = findSubmenuInside(chosenRoot, trigger);
-      if (!submenu) continue;
 
       var rootTag = chosenRoot.tagName.toLowerCase();
       var kind = rootTag === 'details' ? 'details' : 'generic';
@@ -264,7 +250,7 @@
         root: chosenRoot,
         kind: kind,
         link: trigger,
-        submenu: submenu,
+        submenu: chosenSubmenu,
       });
     }
 
@@ -329,25 +315,44 @@
     var r = trig.getBoundingClientRect();
     if (r.width < 1 || r.height < 1) return false;
 
-    // Always-on column under the trigger so upward approach from iframe opens menu
-    // even when submenu is display:none and has no hit target.
-    var colPad = 60;
-    var colBelow = 560;
-    if (
-      x >= r.left - colPad && x <= r.right + colPad &&
-      y >= r.top - 20 && y <= r.bottom + colBelow
-    ) return true;
+    // Directly over the trigger always counts.
+    if (x >= r.left - 8 && x <= r.right + 8 && y >= r.top - 8 && y <= r.bottom + 8) {
+      return true;
+    }
 
-    // Once open, keep open while pointer is over submenu or root.
     if (rec.isOpen) {
-      if (entry.root.contains(document.elementFromPoint(x, y))) return true;
+      // While open: keep open over the submenu and over the bridge between
+      // trigger and submenu (so the mouse can travel without losing hover).
       if (entry.submenu && entry.submenu.isConnected) {
         var sr = entry.submenu.getBoundingClientRect();
-        if (sr.width > 0 && sr.height > 0 &&
-            x >= sr.left - 8 && x <= sr.right + 8 &&
-            y >= sr.top - 8 && y <= sr.bottom + 8) return true;
+        if (sr.width > 0 && sr.height > 0) {
+          if (x >= sr.left - 12 && x <= sr.right + 12 &&
+              y >= sr.top - 12 && y <= sr.bottom + 12) return true;
+          // Bridge: vertical strip between trigger bottom and submenu top
+          // (covers the small gap themes leave between the two).
+          var bridgeTop = Math.min(r.bottom, sr.top);
+          var bridgeBottom = Math.max(r.bottom, sr.top);
+          if (bridgeBottom - bridgeTop > 0 && bridgeBottom - bridgeTop < 60) {
+            var bridgeLeft = Math.min(r.left, sr.left) - 8;
+            var bridgeRight = Math.max(r.right, sr.right) + 8;
+            if (x >= bridgeLeft && x <= bridgeRight &&
+                y >= bridgeTop - 4 && y <= bridgeBottom + 4) return true;
+          }
+        }
       }
+      return false;
     }
+
+    // Closed: open if pointer is in the trigger column AND in the upper
+    // header area of the viewport. This lets the dropdown open when the
+    // user moves up from below (iframe content) toward the trigger, while
+    // not staying open as the cursor roams arbitrary page content.
+    var colPad = 40;
+    var approachLimit = Math.max(150, r.bottom + 120);
+    if (
+      x >= r.left - colPad && x <= r.right + colPad &&
+      y >= 0 && y <= approachLimit
+    ) return true;
 
     return false;
   }
