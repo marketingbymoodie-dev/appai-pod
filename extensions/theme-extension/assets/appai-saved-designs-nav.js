@@ -273,239 +273,324 @@
     return entries;
   }
 
-  function ensureNavHoverStyles() {
-    if (document.getElementById('appai-nav-hover-styles')) return;
+  // ─── Our own dropdown panel (universal, theme-independent) ──────────────
+  //
+  // RATIONALE
+  // ─────────
+  // Trying to make the theme's native dropdown behave reliably across every
+  // Shopify theme is unwinnable — themes vary in DOM, CSS, JS, hide
+  // mechanisms (display, visibility, transform, clip-path, max-height, etc.),
+  // animation timing, and event handling. We previously tried force-show CSS
+  // + hot-zone math + native event dispatch and it still failed on some
+  // themes because each theme has its own quirks.
+  //
+  // The new approach: stop fighting the theme. We render OUR OWN panel,
+  // fixed-position, anchored to the theme's Customizer trigger. We parse the
+  // same items the theme would show from its submenu and render them in our
+  // panel with our own styling. Because we control the panel DOM, CSS, and
+  // event handlers end-to-end, it works on every theme.
+  //
+  // We also intercept the trigger's click (capture-phase, preventDefault) so
+  // themes whose "Customizer" links to a non-existent /pages/customizer page
+  // never navigate to a blank page — clicking the trigger toggles our panel.
+
+  var __appaiOwnPanel = null;
+  var __appaiOwnPanelTrigger = null;
+  var __appaiOwnPanelSubmenu = null;
+  var __appaiOwnPanelOpen = false;
+  var __appaiOwnPanelCloseTimer = null;
+
+  function ensureOwnPanelStyles() {
+    if (document.getElementById('appai-own-panel-styles')) return;
     var style = document.createElement('style');
-    style.id = 'appai-nav-hover-styles';
+    style.id = 'appai-own-panel-styles';
     style.textContent = [
-      '@media (hover:hover) and (pointer:fine) {',
-      '  /* Bridge between trigger and submenu so mouse can travel without losing hover */',
-      '  [data-appai-nav-hover] { position: relative; }',
-      '  [data-appai-nav-trigger] { position: relative; }',
-      '  [data-appai-nav-trigger]::after {',
-      '    content: ""; position: absolute; left: -16px; right: -16px;',
-      '    top: 100%; height: 40px; pointer-events: auto;',
-      '  }',
-      '  /* Universal force-show: overrides display:none, visibility:hidden, opacity:0,',
-      '     max-height:0, transform translations, pointer-events:none on the submenu. */',
-      '  [data-appai-nav-show="1"] {',
-      '    display: block !important;',
-      '    visibility: visible !important;',
-      '    opacity: 1 !important;',
-      '    pointer-events: auto !important;',
-      '    transform: none !important;',
-      '    max-height: none !important;',
-      '    height: auto !important;',
-      '    clip: auto !important;',
-      '    clip-path: none !important;',
-      '  }',
+      '#appai-own-panel{',
+        'position:fixed;display:none;',
+        'background:#ffffff;color:#111827;',
+        'border-radius:10px;',
+        'box-shadow:0 10px 32px rgba(0,0,0,0.18),0 2px 6px rgba(0,0,0,0.06);',
+        'border:1px solid rgba(0,0,0,0.06);',
+        'min-width:220px;max-width:340px;padding:6px 0;margin:0;',
+        'z-index:2147483645;',
+        'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;',
+        'font-size:14px;line-height:1.4;',
+        'list-style:none;',
+      '}',
+      '#appai-own-panel.appai-open{display:block;}',
+      '#appai-own-panel a.appai-own-item{',
+        'display:flex;align-items:center;gap:10px;',
+        'padding:10px 16px;color:#111827;text-decoration:none;',
+        'background:transparent;border:none;width:100%;text-align:left;',
+        'cursor:pointer;font-weight:500;font-size:14px;line-height:1.4;',
+        'transition:background 120ms ease;box-sizing:border-box;',
+      '}',
+      '#appai-own-panel a.appai-own-item:hover,',
+      '#appai-own-panel a.appai-own-item:focus{',
+        'background:#f3f4f6;color:#111827;text-decoration:none;outline:none;',
+      '}',
+      '#appai-own-panel .appai-own-icon{flex-shrink:0;opacity:0.7;}',
+      '#appai-own-panel .appai-own-badge{',
+        'margin-left:auto;background:#e5e7eb;color:#111827;',
+        'border-radius:999px;padding:2px 8px;font-size:11px;font-weight:700;',
+        'line-height:1;',
+      '}',
+      // Invisible bridge below the trigger so the cursor doesn't lose hover
+      // while travelling from trigger to panel (panel sits 6px below trigger).
+      '[data-appai-own-trigger]{position:relative;}',
+      '[data-appai-own-trigger]::after{',
+        'content:"";position:absolute;left:-12px;right:-12px;',
+        'top:100%;height:14px;pointer-events:auto;',
       '}',
     ].join('');
     document.head.appendChild(style);
   }
 
-  /** Single shared mousemove driver — checks all registered entries each frame. */
-  var __appaiNavEntries = [];
-  var __appaiNavMoveBound = false;
-  var __appaiLastMoveX = -9999;
-  var __appaiLastMoveY = -9999;
-  var __appaiMoveRAF = 0;
-
-  function appaiNavTick() {
-    __appaiMoveRAF = 0;
-    var x = __appaiLastMoveX;
-    var y = __appaiLastMoveY;
-    for (var i = 0; i < __appaiNavEntries.length; i++) {
-      var rec = __appaiNavEntries[i];
-      if (!rec || !rec.entry.root.isConnected) continue;
-      var hot = pointerInHotZone(rec, x, y);
-      if (hot) rec.open();
-      else rec.scheduleClose();
-    }
+  function ensureOwnPanel() {
+    if (__appaiOwnPanel && __appaiOwnPanel.isConnected) return __appaiOwnPanel;
+    ensureOwnPanelStyles();
+    var panel = document.createElement('div');
+    panel.id = 'appai-own-panel';
+    panel.setAttribute('role', 'menu');
+    panel.setAttribute('aria-label', 'Customizer menu');
+    panel.addEventListener('mouseenter', cancelOwnPanelClose);
+    panel.addEventListener('mouseleave', scheduleOwnPanelClose);
+    document.body.appendChild(panel);
+    __appaiOwnPanel = panel;
+    return panel;
   }
 
-  /**
-   * Header-band model: any cursor activity in a horizontal strip from y=0 to
-   * a bit below the trigger opens the dropdown. This is the strip the user
-   * crosses whether they approach from above (browser chrome) or from below
-   * (iframe content). The strip is wide enough that we don't need to compute
-   * a "column under trigger" — we just react when the mouse is in the nav row.
-   *
-   * Once open, we keep open while pointer is over the trigger, the submenu,
-   * or the bridge gap between them, and close when it leaves all of those.
-   */
-  function pointerInHotZone(rec, x, y) {
-    var entry = rec.entry;
-    var trig = entry.link;
-    if (!trig || !trig.isConnected) return false;
-    var r = trig.getBoundingClientRect();
-    if (r.width < 1 || r.height < 1) return false;
+  function buildOwnPanelItems(submenu) {
+    var items = [];
+    var seen = {};
 
-    // 1. Directly over (or right next to) the trigger.
-    if (x >= r.left - 12 && x <= r.right + 12 && y >= r.top - 12 && y <= r.bottom + 12) {
-      return true;
-    }
-
-    // 2. Over the submenu while open.
-    var sr = null;
-    if (rec.isOpen && entry.submenu && entry.submenu.isConnected) {
-      sr = entry.submenu.getBoundingClientRect();
-      if (sr.width > 0 && sr.height > 0) {
-        if (x >= sr.left - 16 && x <= sr.right + 16 &&
-            y >= sr.top - 16 && y <= sr.bottom + 16) return true;
-        var bridgeTop = Math.min(r.bottom, sr.top);
-        var bridgeBottom = Math.max(r.bottom, sr.top);
-        if (bridgeBottom - bridgeTop > 0 && bridgeBottom - bridgeTop < 90) {
-          var bridgeLeft = Math.min(r.left, sr.left) - 16;
-          var bridgeRight = Math.max(r.right, sr.right) + 16;
-          if (x >= bridgeLeft && x <= bridgeRight &&
-              y >= bridgeTop - 8 && y <= bridgeBottom + 8) return true;
+    if (submenu) {
+      var anchors = submenu.querySelectorAll('a[href]');
+      for (var i = 0; i < anchors.length; i++) {
+        var a = anchors[i];
+        var href = a.getAttribute('href') || '';
+        if (!href || href === '#') {
+          // Allow the injected Saved Designs item (href=#) — detected below.
         }
+        var label = ((a.innerText !== undefined ? a.innerText : a.textContent) || '').trim();
+        // Strip injected badge count (e.g. "Saved Designs 15" → "Saved Designs")
+        label = label.replace(/\s+\d+$/, '').trim();
+        if (!label) continue;
+        var savedAncestor = null;
+        try { savedAncestor = a.closest('[id^="appai-saved-designs-nav-item"]'); } catch (_) {}
+        var isSavedDesigns = !!savedAncestor;
+        var key = (isSavedDesigns ? 'saved' : href) + '|' + label.toLowerCase();
+        if (seen[key]) continue;
+        seen[key] = true;
+        items.push({ href: href, label: label, isSavedDesigns: isSavedDesigns });
       }
     }
 
-    // 3. Header band — anywhere in the strip from viewport top to a generous
-    // limit below the trigger, in the trigger's horizontal vicinity. We use
-    // max(trigger.bottom + 120, 25% of viewport height) so even stores with
-    // tall headers / announcement bars / mega banners have a band that
-    // reliably catches the cursor as it crosses out of the iframe upward.
-    var bandBottom = Math.max(r.bottom + 120, Math.floor(window.innerHeight * 0.25));
-    var bandLeft = r.left - 220;
-    var bandRight = r.right + 220;
-    if (y >= 0 && y <= bandBottom && x >= bandLeft && x <= bandRight) {
-      return true;
-    }
-
-    return false;
-  }
-
-  function ensureNavMoveBound() {
-    if (__appaiNavMoveBound) return;
-    __appaiNavMoveBound = true;
-    document.addEventListener('mousemove', function (e) {
-      __appaiLastMoveX = e.clientX;
-      __appaiLastMoveY = e.clientY;
-      if (!__appaiMoveRAF) {
-        __appaiMoveRAF = window.requestAnimationFrame
-          ? window.requestAnimationFrame(appaiNavTick)
-          : window.setTimeout(appaiNavTick, 16);
+    // Always ensure Saved Designs sits at the top when the customer has any.
+    var designs = window.__APPAI_SAVED_DESIGNS__ || [];
+    if (designs.length > 0) {
+      var existingIdx = -1;
+      for (var j = 0; j < items.length; j++) {
+        if (items[j].isSavedDesigns) { existingIdx = j; break; }
       }
-    }, { passive: true, capture: true });
-  }
-
-  function dispatchNativeOpen(el) {
-    if (!el) return;
-    try { el.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true })); } catch (_) {}
-    try { el.dispatchEvent(new PointerEvent('pointerover', { bubbles: true })); } catch (_) {}
-    try { el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true })); } catch (_) {}
-    try { el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); } catch (_) {}
-  }
-
-  function dispatchNativeClose(el) {
-    if (!el) return;
-    try { el.dispatchEvent(new PointerEvent('pointerleave', { bubbles: true })); } catch (_) {}
-    try { el.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true })); } catch (_) {}
-  }
-
-  /** Per-entry controller — proper closure scope (no var-in-loop bugs). */
-  function bindEntry(entry) {
-    var closeTimer = null;
-    var isOpen = false;
-
-    if (entry.submenu) entry.submenu.setAttribute('data-appai-nav-target', '1');
-    if (entry.link) entry.link.setAttribute('data-appai-nav-trigger', '1');
-
-    function open() {
-      if (closeTimer) { clearTimeout(closeTimer); closeTimer = null; }
-      if (isOpen) return;
-      isOpen = true;
-      rec.isOpen = true;
-      if (entry.kind === 'details') {
-        try { entry.root.open = true; } catch (_) {}
+      if (existingIdx === -1) {
+        items.unshift({ href: '#saved-designs', label: 'Saved Designs', isSavedDesigns: true });
+      } else if (existingIdx !== 0) {
+        var moved = items.splice(existingIdx, 1)[0];
+        items.unshift(moved);
       }
-      if (entry.submenu) entry.submenu.setAttribute('data-appai-nav-show', '1');
-      entry.root.classList.add('appai-nav-hover-open');
-      entry.root.setAttribute('aria-expanded', 'true');
-      if (entry.link) entry.link.setAttribute('aria-expanded', 'true');
-      dispatchNativeOpen(entry.link);
-      dispatchNativeOpen(entry.root);
     }
 
-    function close() {
-      if (!isOpen) return;
-      isOpen = false;
-      rec.isOpen = false;
-      if (entry.kind === 'details') {
-        try { entry.root.open = false; } catch (_) {}
-      }
-      if (entry.submenu) entry.submenu.removeAttribute('data-appai-nav-show');
-      entry.root.classList.remove('appai-nav-hover-open');
-      entry.root.removeAttribute('aria-expanded');
-      if (entry.link) entry.link.removeAttribute('aria-expanded');
-      dispatchNativeClose(entry.link);
-      dispatchNativeClose(entry.root);
-    }
+    return items;
+  }
 
-    function scheduleClose() {
-      if (closeTimer) return;
-      closeTimer = setTimeout(function () {
-        closeTimer = null;
-        close();
-      }, 260);
-    }
+  function renderOwnPanel(items) {
+    var panel = ensureOwnPanel();
+    panel.innerHTML = '';
+    for (var i = 0; i < items.length; i++) {
+      var item = items[i];
+      var a = document.createElement('a');
+      a.className = 'appai-own-item';
+      a.setAttribute('role', 'menuitem');
 
-    // Click-to-toggle on the trigger — always-reliable path regardless of theme.
-    // For <a> triggers we also prevent navigation to a possibly-blank parent page.
-    if (entry.link) {
-      entry.link.addEventListener('click', function (e) {
-        var hasItems = entry.submenu && entry.submenu.querySelector('a[href]');
-        if (!hasItems) return;
-        var tag = entry.link.tagName ? entry.link.tagName.toLowerCase() : '';
-        if (tag === 'a' || tag === 'summary' || tag === 'button') {
+      if (item.isSavedDesigns) {
+        a.href = '#';
+        var designs = window.__APPAI_SAVED_DESIGNS__ || [];
+        a.innerHTML =
+          '<svg class="appai-own-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" ' +
+            'fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+            '<path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>' +
+          '<span>Saved Designs</span>' +
+          (designs.length ? '<span class="appai-own-badge">' + designs.length + '</span>' : '');
+        a.addEventListener('click', function (e) {
           e.preventDefault();
           e.stopPropagation();
-          if (isOpen) close();
-          else open();
-        }
-      });
+          closeOwnPanel();
+          try { openDrawer(); } catch (_) {}
+        });
+      } else {
+        a.href = item.href;
+        a.textContent = item.label;
+        a.addEventListener('click', function () {
+          // Let the browser navigate normally; just hide the panel first so
+          // it doesn't flash during the page transition.
+          closeOwnPanel();
+        });
+      }
+
+      panel.appendChild(a);
+    }
+  }
+
+  function positionOwnPanel(trigger) {
+    if (!__appaiOwnPanel || !trigger) return;
+    var rect = trigger.getBoundingClientRect();
+    var panel = __appaiOwnPanel;
+
+    // Measure with display:block but invisible (avoids flicker).
+    var wasOpen = panel.classList.contains('appai-open');
+    panel.style.visibility = 'hidden';
+    panel.style.display = 'block';
+    var pw = panel.offsetWidth;
+    var ph = panel.offsetHeight;
+    if (!wasOpen) panel.style.display = '';
+    panel.style.visibility = '';
+
+    var vw = window.innerWidth;
+    var vh = window.innerHeight;
+
+    var top = rect.bottom + 6;
+    // If panel would overflow bottom, flip above the trigger.
+    if (top + ph > vh - 8 && rect.top - 6 - ph >= 8) {
+      top = rect.top - 6 - ph;
     }
 
-    // Close when clicking anywhere outside (trigger or submenu).
-    document.addEventListener('click', function (e) {
-      if (!isOpen) return;
-      var t = e.target;
-      if (entry.root.contains(t)) return;
-      if (entry.submenu && entry.submenu.contains(t)) return;
-      close();
+    var left = rect.left;
+    if (left + pw > vw - 8) left = vw - pw - 8;
+    if (left < 8) left = 8;
+
+    panel.style.top = Math.max(8, top) + 'px';
+    panel.style.left = left + 'px';
+    if (rect.width > 220) {
+      panel.style.minWidth = Math.min(rect.width + 40, 340) + 'px';
+    } else {
+      panel.style.minWidth = '220px';
+    }
+  }
+
+  function openOwnPanel(trigger, submenu) {
+    if (!trigger) return;
+    cancelOwnPanelClose();
+    var items = buildOwnPanelItems(submenu);
+    if (!items.length) return;
+    __appaiOwnPanelTrigger = trigger;
+    __appaiOwnPanelSubmenu = submenu;
+    renderOwnPanel(items);
+    var panel = ensureOwnPanel();
+    panel.classList.add('appai-open');
+    positionOwnPanel(trigger);
+    __appaiOwnPanelOpen = true;
+    try { trigger.setAttribute('aria-expanded', 'true'); } catch (_) {}
+  }
+
+  function closeOwnPanel() {
+    if (!__appaiOwnPanel) return;
+    __appaiOwnPanel.classList.remove('appai-open');
+    __appaiOwnPanelOpen = false;
+    if (__appaiOwnPanelTrigger) {
+      try { __appaiOwnPanelTrigger.removeAttribute('aria-expanded'); } catch (_) {}
+    }
+  }
+
+  function scheduleOwnPanelClose() {
+    cancelOwnPanelClose();
+    __appaiOwnPanelCloseTimer = setTimeout(closeOwnPanel, 260);
+  }
+
+  function cancelOwnPanelClose() {
+    if (__appaiOwnPanelCloseTimer) {
+      clearTimeout(__appaiOwnPanelCloseTimer);
+      __appaiOwnPanelCloseTimer = null;
+    }
+  }
+
+  function bindOwnTrigger(entry) {
+    var trigger = entry.link;
+    var submenu = entry.submenu;
+    if (!trigger || trigger.getAttribute('data-appai-own-trigger') === '1') return;
+    trigger.setAttribute('data-appai-own-trigger', '1');
+
+    // Capture-phase click — intercepts before theme handlers / native nav.
+    // Always opens our panel; never lets the theme navigate to a possibly
+    // blank /pages/customizer page.
+    trigger.addEventListener('click', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (__appaiOwnPanelOpen && __appaiOwnPanelTrigger === trigger) {
+        closeOwnPanel();
+      } else {
+        openOwnPanel(trigger, submenu);
+      }
     }, true);
 
-    // Keep open when focus moves into the menu (keyboard accessibility).
-    entry.root.addEventListener('focusin', open);
-    entry.root.addEventListener('focusout', function (e) {
-      if (!entry.root.contains(e.relatedTarget)) scheduleClose();
+    // Hover-to-open on the trigger. The invisible bridge below the trigger
+    // (CSS pseudo-element) prevents losing hover while travelling to panel.
+    trigger.addEventListener('mouseenter', function () {
+      openOwnPanel(trigger, submenu);
+    });
+    trigger.addEventListener('mouseleave', scheduleOwnPanelClose);
+
+    // Stop the theme's native dropdown from showing when we own the
+    // interaction — themes that use <details><summary> will still toggle by
+    // default unless we kill the click. Our preventDefault above handles it,
+    // but for keyboard activation on <summary> we also override toggle.
+    if (entry.kind === 'details') {
+      entry.root.addEventListener('toggle', function () {
+        // If theme expanded the details, our panel handles display.
+        // Force it back closed so we don't show two menus.
+        try { if (entry.root.open && !__appaiOwnPanelOpen) entry.root.open = false; } catch (_) {}
+      });
+    }
+  }
+
+  function ensureOwnPanelGlobalHandlers() {
+    if (window.__appaiOwnPanelGlobals) return;
+    window.__appaiOwnPanelGlobals = true;
+
+    // Click outside the panel + trigger closes.
+    document.addEventListener('click', function (e) {
+      if (!__appaiOwnPanelOpen) return;
+      var t = e.target;
+      if (__appaiOwnPanel && __appaiOwnPanel.contains(t)) return;
+      if (__appaiOwnPanelTrigger && __appaiOwnPanelTrigger.contains && __appaiOwnPanelTrigger.contains(t)) return;
+      closeOwnPanel();
+    }, true);
+
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && __appaiOwnPanelOpen) closeOwnPanel();
     });
 
-    var rec = { entry: entry, open: open, close: close, scheduleClose: scheduleClose, isOpen: false };
-    __appaiNavEntries.push(rec);
-    return rec;
+    // Reposition while open if layout shifts.
+    var reposition = function () {
+      if (__appaiOwnPanelOpen && __appaiOwnPanelTrigger) {
+        positionOwnPanel(__appaiOwnPanelTrigger);
+      }
+    };
+    window.addEventListener('scroll', reposition, true);
+    window.addEventListener('resize', reposition);
   }
 
   /**
-   * Desktop-only: keep Customizer dropdown open while pointer travels from
-   * trigger to menu panel. Works generically across every theme.
+   * Bind our own panel to every Customizer trigger we can find.
+   * Safe to call repeatedly — each trigger is bound only once.
    */
   function enhanceCustomizerNavHover() {
-    if (!window.matchMedia || !window.matchMedia('(hover: hover) and (pointer: fine)').matches) return;
-
-    ensureNavHoverStyles();
-    ensureNavMoveBound();
+    ensureOwnPanelStyles();
+    ensureOwnPanelGlobalHandlers();
 
     var menus = findCustomizerMenuRoots();
     for (var i = 0; i < menus.length; i++) {
-      var entry = menus[i];
-      if (!entry.root || entry.root.getAttribute('data-appai-nav-hover')) continue;
-      entry.root.setAttribute('data-appai-nav-hover', '1');
-      bindEntry(entry);
+      bindOwnTrigger(menus[i]);
     }
   }
 
@@ -945,18 +1030,43 @@
 
   // ─── Main init ───────────────────────────────────────────────────────────
 
-  /** Stabilize Customizer dropdown hover on every page (desktop). */
+  /**
+   * Bind our own dropdown panel to every Customizer trigger on the page.
+   * Runs on every storefront page (not gated on customer login) so themes
+   * with a non-existent /pages/customizer link never produce blank pages,
+   * even for logged-out visitors.
+   *
+   * Retried for ~6s to cover themes that render the nav asynchronously
+   * (SPA-style sections, mobile menu fade-in, etc.). Each trigger is
+   * marked with data-appai-own-trigger so we never double-bind.
+   *
+   * SPA re-renders (e.g. after add-to-cart's history.replaceState) are
+   * picked up by the MutationObserver in init() for logged-in customers,
+   * and by the retry loop here for all visitors.
+   */
   function initCustomizerNavHover() {
     function run() {
-      enhanceCustomizerNavHover();
+      try { enhanceCustomizerNavHover(); } catch (e) {
+        console.warn('[AppAI Nav] enhanceCustomizerNavHover failed:', e);
+      }
     }
     run();
     var attempts = 0;
     var retry = setInterval(function () {
       run();
       attempts++;
-      if (attempts >= 8) clearInterval(retry);
+      if (attempts >= 12) clearInterval(retry);
     }, 500);
+    // Also re-bind when the DOM is mutated (covers themes that lazily
+    // render the header nav after first paint or rewire it on route change).
+    if (window.MutationObserver) {
+      var debounce = null;
+      var mo = new MutationObserver(function () {
+        if (debounce) return;
+        debounce = setTimeout(function () { debounce = null; run(); }, 250);
+      });
+      try { mo.observe(document.body, { childList: true, subtree: true }); } catch (_) {}
+    }
   }
 
   function init() {
