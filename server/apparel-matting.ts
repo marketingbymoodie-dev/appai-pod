@@ -24,6 +24,12 @@ export {
 
 export const CHROMA_KEY = { r: 255, g: 0, b: 255 } as const;
 
+/** Manhattan distance to #FF00FF — tight enough to avoid purple design colors. */
+export const DEFAULT_CHROMA_TOLERANCE = 28;
+/** Slightly wider for AI off-pink canvas drift; used on retry + border flood only. */
+export const EXPANDED_CHROMA_TOLERANCE = 55;
+const CHROMA_DESPILL_TOLERANCE = 35;
+
 export type AlphaQualityMetrics = {
   softAlphaRatio: number;
   cornerBgOpaqueRatio: number;
@@ -246,21 +252,14 @@ export function isMagentaCanvasCorner(sample: CornerColorSample): boolean {
   return avgR >= 140 && avgB >= 140 && avgG <= 140 && magenta >= 40;
 }
 
-/** Whether an RGB pixel looks like chroma-key background (incl. off-pink AI output). */
+/** Whether an RGB pixel matches the chroma-key color within tolerance (no purple-family heuristic). */
 export function isChromaBackgroundColor(
   r: number,
   g: number,
   b: number,
-  tolerance: number = 85,
+  tolerance: number = DEFAULT_CHROMA_TOLERANCE,
 ): boolean {
-  if (colorDistance(r, g, b, CHROMA_KEY.r, CHROMA_KEY.g, CHROMA_KEY.b) <= tolerance) {
-    return true;
-  }
-  const magenta = Math.min(r, b) - g;
-  if (r >= 130 && b >= 130 && g <= 150 && magenta >= 35) {
-    return colorDistance(r, g, b, CHROMA_KEY.r, CHROMA_KEY.g, CHROMA_KEY.b) <= tolerance + 40;
-  }
-  return false;
+  return colorDistance(r, g, b, CHROMA_KEY.r, CHROMA_KEY.g, CHROMA_KEY.b) <= tolerance;
 }
 
 /**
@@ -422,7 +421,7 @@ export async function parseRemoveBgResult(removeBgResult: RemoveBgResult): Promi
 }
 
 /**
- * Chroma keying (pink → corner → connected white/grey mat → chroma sweep).
+ * Chroma keying: tight #FF00FF match, optional white-mat flood, border-connected chroma flood.
  */
 export async function removeChromaKeyBackground(
   buffer: Buffer,
@@ -460,13 +459,12 @@ export async function removeChromaKeyBackground(
   const cornerIsLightCanvas = isLightCanvasCorner(corners);
   const cornerIsMagentaCanvas = isMagentaCanvasCorner(corners);
 
-  const chromaTolerance =
-    opts?.tolerance ??
-    (cornerIsMagentaCanvas ? 110 : cornerIsLightCanvas ? 85 : 85);
-  const cornerTolerance = opts?.cornerTolerance ?? (cornerIsMagentaCanvas ? 75 : 55);
-  const chromaFloodTolerance = cornerIsMagentaCanvas ? 120 : 95;
+  const chromaTolerance = opts?.tolerance ?? DEFAULT_CHROMA_TOLERANCE;
+  const cornerTolerance = opts?.cornerTolerance ?? 55;
+  /** Border flood uses wider tolerance for AI off-pink canvas; connectivity keeps interior purple safe. */
+  const chromaFloodTolerance = EXPANDED_CHROMA_TOLERANCE;
 
-  // Pass A: #FF00FF chroma key (+ off-pink magenta variants)
+  // Pass A: global tight match — removes exact/off-pink key incl. enclosed holes in the subject
   let pinkRemoved = 0;
   for (let i = 0; i < pixels.length; i += channels) {
     const r = pixels[i];
@@ -480,19 +478,21 @@ export async function removeChromaKeyBackground(
   const chromaRemovedPct = (pinkRemoved / total) * 100;
   console.log(`[Chroma Key] Pink pass: ${chromaRemovedPct.toFixed(1)}%`);
 
-  // Pass B: corner-detected background (on original RGB, apply to current alpha)
+  // Pass B: corner-detected background — only when AI used a white/grey canvas (not hot pink)
   const { avgR, avgG, avgB } = corners;
 
   let cornerRemoved = 0;
-  for (let i = 0; i < pixels.length; i += channels) {
-    const r = pixels[i];
-    const g = pixels[i + 1];
-    const b = pixels[i + 2];
-    if (pixels[i + 3] === 0) continue;
-    const dist = colorDistance(r, g, b, avgR, avgG, avgB);
-    if (dist <= cornerTolerance) {
-      pixels[i + 3] = 0;
-      cornerRemoved++;
+  if (cornerIsLightCanvas) {
+    for (let i = 0; i < pixels.length; i += channels) {
+      const r = pixels[i];
+      const g = pixels[i + 1];
+      const b = pixels[i + 2];
+      if (pixels[i + 3] === 0) continue;
+      const dist = colorDistance(r, g, b, avgR, avgG, avgB);
+      if (dist <= cornerTolerance) {
+        pixels[i + 3] = 0;
+        cornerRemoved++;
+      }
     }
   }
   const cornerRemovedPct = (cornerRemoved / total) * 100;
@@ -516,20 +516,10 @@ export async function removeChromaKeyBackground(
     );
   }
 
-  // Pass F: global + border flood for remaining chroma/magenta background
+  // Pass F: border-connected chroma flood only (never global purple-family sweep)
   let magentaFloodRemoved = 0;
   if (chromaFloodFill) {
-    for (let i = 0; i < pixels.length; i += channels) {
-      if (pixels[i + 3] === 0) continue;
-      const r = pixels[i];
-      const g = pixels[i + 1];
-      const b = pixels[i + 2];
-      if (isChromaBackgroundColor(r, g, b, chromaFloodTolerance)) {
-        pixels[i + 3] = 0;
-        magentaFloodRemoved++;
-      }
-    }
-    magentaFloodRemoved += applyBorderFloodFillChromaMat(
+    magentaFloodRemoved = applyBorderFloodFillChromaMat(
       pixels,
       source,
       width,
@@ -538,7 +528,7 @@ export async function removeChromaKeyBackground(
       chromaFloodTolerance,
     );
     console.log(
-      `[Chroma Key] Magenta/chroma sweep: ${((magentaFloodRemoved / total) * 100).toFixed(1)}%`,
+      `[Chroma Key] Border chroma flood: ${((magentaFloodRemoved / total) * 100).toFixed(1)}%`,
     );
   }
 
@@ -566,17 +556,13 @@ async function despillEdgeColors(data: Uint8Array, ch: number): Promise<void> {
     const a = data[i + 3];
     if (a === 0) continue;
 
-    const magenta = Math.min(r, b) - g;
-    if (magenta > 10) {
+    const keyDist = colorDistance(r, g, b, CHROMA_KEY.r, CHROMA_KEY.g, CHROMA_KEY.b);
+    if (keyDist <= CHROMA_DESPILL_TOLERANCE) {
       if (a < 255) {
-        if (magenta > 40 && g <= 140) {
-          data[i + 3] = 0;
-        } else {
-          data[i] = g;
-          data[i + 2] = g;
-        }
-      } else if (r > 130 && b > 130 && g <= 150 && magenta > 35) {
         data[i + 3] = 0;
+      } else if (g > 0) {
+        data[i] = g;
+        data[i + 2] = g;
       }
       continue;
     }
@@ -989,13 +975,12 @@ export async function processApparelMotif(
     chromaFloodFill: true,
   });
 
-  // Retry with higher tolerance when AI used magenta canvas but pass A removed little
+  // Retry with slightly wider key tolerance when AI used off-pink magenta canvas
   if (cornerIsMagentaCanvas && chroma.chromaRemovedPct < 20) {
     console.log("[Apparel Matting] Magenta canvas — retrying chroma with expanded tolerance");
     chroma = await removeChromaKeyBackground(sourceBuffer, {
       allowWhiteKey,
-      tolerance: 130,
-      cornerTolerance: 90,
+      tolerance: EXPANDED_CHROMA_TOLERANCE,
       aggressiveWhiteKey: useAggressiveWhiteKey,
       borderFloodFill: true,
       chromaFloodFill: true,
@@ -1025,8 +1010,7 @@ export async function processApparelMotif(
       );
       const rechroma = await removeChromaKeyBackground(mlBuffer, {
         allowWhiteKey,
-        tolerance: 120,
-        cornerTolerance: 85,
+        tolerance: EXPANDED_CHROMA_TOLERANCE,
         aggressiveWhiteKey: useAggressiveWhiteKey,
         borderFloodFill: true,
         chromaFloodFill: true,
@@ -1059,8 +1043,7 @@ export async function processApparelMotif(
     );
     const finalChroma = await removeChromaKeyBackground(buffer, {
       allowWhiteKey,
-      tolerance: 130,
-      cornerTolerance: 90,
+      tolerance: EXPANDED_CHROMA_TOLERANCE,
       borderFloodFill: true,
       chromaFloodFill: true,
     });

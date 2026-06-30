@@ -269,6 +269,75 @@ describe("removeChromaKeyBackground", () => {
     expect(await alphaAt(buffer, 40, 40)).toBeGreaterThan(200);
   });
 
+  it("preserves interior purple design colors on magenta canvas", async () => {
+    const src = await rgbaBuffer(100, 100, (x, y, row, o) => {
+      const inFlower = (x - 50) ** 2 + (y - 50) ** 2 <= 18 ** 2;
+      const inPetal = (x - 38) ** 2 + (y - 42) ** 2 <= 6 ** 2;
+      if (inPetal) {
+        // Purple petal — must not be keyed (old heuristic treated this as background)
+        row[o] = 180;
+        row[o + 1] = 40;
+        row[o + 2] = 200;
+      } else if (inFlower) {
+        row[o] = 80;
+        row[o + 1] = 30;
+        row[o + 2] = 120;
+      } else {
+        row[o] = CHROMA_KEY.r;
+        row[o + 1] = CHROMA_KEY.g;
+        row[o + 2] = CHROMA_KEY.b;
+      }
+    });
+
+    const { buffer } = await removeChromaKeyBackground(src);
+    expect(await alphaAt(buffer, 5, 5)).toBe(0);
+    expect(await alphaAt(buffer, 38, 42)).toBeGreaterThan(200);
+    expect(await alphaAt(buffer, 50, 50)).toBeGreaterThan(200);
+  });
+
+  it("processApparelMotif preserves purple after cleanup and despill", async () => {
+    const src = await rgbaBuffer(100, 100, (x, y, row, o) => {
+      const inSkull = (x - 50) ** 2 + (y - 50) ** 2 <= 20 ** 2;
+      const inPurpleAccent = x >= 58 && x <= 68 && y >= 44 && y <= 54;
+      if (inPurpleAccent) {
+        row[o] = 200;
+        row[o + 1] = 60;
+        row[o + 2] = 210;
+      } else if (inSkull) {
+        row[o] = 40;
+        row[o + 1] = 120;
+        row[o + 2] = 160;
+      } else {
+        row[o] = CHROMA_KEY.r;
+        row[o + 1] = CHROMA_KEY.g;
+        row[o + 2] = CHROMA_KEY.b;
+      }
+    });
+
+    const result = await processApparelMotif(src, {
+      useMlFallback: false,
+      allowWhiteKey: true,
+      vectorize: false,
+    });
+    const { data, info } = await sharp(result.buffer)
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    let purpleAccentOpaque = 0;
+    for (let y = 0; y < info.height; y++) {
+      for (let x = 0; x < info.width; x++) {
+        const idx = (y * info.width + x) * info.channels;
+        const a = data[idx + 3];
+        const r = data[idx];
+        const g = data[idx + 1];
+        const b = data[idx + 2];
+        if (a > 200 && r > 150 && b > 150 && g < 100) purpleAccentOpaque++;
+      }
+    }
+    expect(purpleAccentOpaque).toBeGreaterThan(20);
+    expect(await alphaAt(result.buffer, 0, 0)).toBe(0);
+  });
+
   it("processApparelMotif removes full hot pink plate for Illustrated Motif case", async () => {
     const src = await rgbaBuffer(100, 100, (x, y, row, o) => {
       const inPlate = x >= 15 && x <= 85 && y >= 15 && y <= 85;

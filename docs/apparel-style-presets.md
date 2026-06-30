@@ -52,7 +52,7 @@ White inside the subject (teeth, eyes) is OK; hot pink is not.
 
 1. Edit **Illustrated Motif** prompt in Admin; generate — prompt in logs should match your edit.
 2. Generate on **dark** hoodie color — should use dark prefix field.
-3. Artwork must not contain #FF00FF in the subject (tongue, gums, accents).
+3. Artwork must not contain #FF00FF in the subject (tongue, gums, accents). Matting uses a **tight distance match** to `#FF00FF` plus border-connected flood only — interior purple/violet design colors are preserved.
 4. Stored apparel art with `APPAREL_VECTORIZE=true` should be `.svg`.
 
 ## Related env flags
