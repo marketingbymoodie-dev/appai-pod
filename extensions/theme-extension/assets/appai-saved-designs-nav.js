@@ -216,11 +216,27 @@
       return null;
     }
 
+    function isVisible(el) {
+      if (!el || !el.isConnected) return false;
+      var node = el;
+      while (node && node !== document.documentElement) {
+        var cs = window.getComputedStyle(node);
+        if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+        node = node.parentElement;
+      }
+      var r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    }
+
     for (var i = 0; i < customizerNodes.length; i++) {
       var candidate = customizerNodes[i];
       if (!candidate || isInFooter(candidate)) continue;
 
       var trigger = nearestTrigger(candidate);
+
+      // Skip mobile drawer duplicates: trigger inside a hidden container has
+      // zero/garbage geometry that breaks hot-zone math.
+      if (!isVisible(trigger)) continue;
 
       // Walk up from trigger to find the smallest ancestor that ALSO contains
       // a /pages/ link not inside the trigger itself — that ancestor is the
@@ -308,6 +324,16 @@
     }
   }
 
+  /**
+   * Header-band model: any cursor activity in a horizontal strip from y=0 to
+   * a bit below the trigger opens the dropdown. This is the strip the user
+   * crosses whether they approach from above (browser chrome) or from below
+   * (iframe content). The strip is wide enough that we don't need to compute
+   * a "column under trigger" — we just react when the mouse is in the nav row.
+   *
+   * Once open, we keep open while pointer is over the trigger, the submenu,
+   * or the bridge gap between them, and close when it leaves all of those.
+   */
   function pointerInHotZone(rec, x, y) {
     var entry = rec.entry;
     var trig = entry.link;
@@ -315,42 +341,40 @@
     var r = trig.getBoundingClientRect();
     if (r.width < 1 || r.height < 1) return false;
 
-    if (x >= r.left - 10 && x <= r.right + 10 && y >= r.top - 10 && y <= r.bottom + 10) {
+    // 1. Directly over (or right next to) the trigger.
+    if (x >= r.left - 12 && x <= r.right + 12 && y >= r.top - 12 && y <= r.bottom + 12) {
       return true;
     }
 
-    if (rec.isOpen) {
-      // While open: keep open over the submenu and over the bridge between
-      // trigger and submenu (so the mouse can travel without losing hover).
-      if (entry.submenu && entry.submenu.isConnected) {
-        var sr = entry.submenu.getBoundingClientRect();
-        if (sr.width > 0 && sr.height > 0) {
-          if (x >= sr.left - 14 && x <= sr.right + 14 &&
-              y >= sr.top - 14 && y <= sr.bottom + 14) return true;
-          // Bridge: rectangle spanning from trigger bottom to submenu top
-          // (covers the small gap themes leave between trigger and panel).
-          var bridgeTop = Math.min(r.bottom, sr.top);
-          var bridgeBottom = Math.max(r.bottom, sr.top);
-          if (bridgeBottom - bridgeTop > 0 && bridgeBottom - bridgeTop < 80) {
-            var bridgeLeft = Math.min(r.left, sr.left) - 12;
-            var bridgeRight = Math.max(r.right, sr.right) + 12;
-            if (x >= bridgeLeft && x <= bridgeRight &&
-                y >= bridgeTop - 6 && y <= bridgeBottom + 6) return true;
-          }
+    // 2. Over the submenu while open.
+    var sr = null;
+    if (rec.isOpen && entry.submenu && entry.submenu.isConnected) {
+      sr = entry.submenu.getBoundingClientRect();
+      if (sr.width > 0 && sr.height > 0) {
+        if (x >= sr.left - 16 && x <= sr.right + 16 &&
+            y >= sr.top - 16 && y <= sr.bottom + 16) return true;
+        var bridgeTop = Math.min(r.bottom, sr.top);
+        var bridgeBottom = Math.max(r.bottom, sr.top);
+        if (bridgeBottom - bridgeTop > 0 && bridgeBottom - bridgeTop < 90) {
+          var bridgeLeft = Math.min(r.left, sr.left) - 16;
+          var bridgeRight = Math.max(r.right, sr.right) + 16;
+          if (x >= bridgeLeft && x <= bridgeRight &&
+              y >= bridgeTop - 8 && y <= bridgeBottom + 8) return true;
         }
       }
-      return false;
     }
 
-    // Closed: open if pointer is in the trigger column AND in the upper
-    // header area of the viewport. Generous horizontal padding so the
-    // upward approach from iframe content reliably catches the column.
-    var colPad = 90;
-    var approachLimit = Math.max(220, r.bottom + 180);
-    if (
-      x >= r.left - colPad && x <= r.right + colPad &&
-      y >= 0 && y <= approachLimit
-    ) return true;
+    // 3. Header band — anywhere in the strip from viewport top to a generous
+    // limit below the trigger, in the trigger's horizontal vicinity. We use
+    // max(trigger.bottom + 120, 25% of viewport height) so even stores with
+    // tall headers / announcement bars / mega banners have a band that
+    // reliably catches the cursor as it crosses out of the iframe upward.
+    var bandBottom = Math.max(r.bottom + 120, Math.floor(window.innerHeight * 0.25));
+    var bandLeft = r.left - 220;
+    var bandRight = r.right + 220;
+    if (y >= 0 && y <= bandBottom && x >= bandLeft && x <= bandRight) {
+      return true;
+    }
 
     return false;
   }
@@ -430,19 +454,30 @@
       }, 260);
     }
 
-    // Intercept clicks on the trigger when it has a submenu: many merchants
-    // configure "Customizer" as a parent link to a page that doesn't exist
-    // (blank page on click). Toggle the dropdown instead.
-    if (entry.link && entry.link.tagName && entry.link.tagName.toLowerCase() === 'a') {
+    // Click-to-toggle on the trigger — always-reliable path regardless of theme.
+    // For <a> triggers we also prevent navigation to a possibly-blank parent page.
+    if (entry.link) {
       entry.link.addEventListener('click', function (e) {
-        var hasItems = entry.submenu && entry.submenu.querySelector('a[href*="/pages/"], a[href*="/products/"], a[href*="/collections/"]');
+        var hasItems = entry.submenu && entry.submenu.querySelector('a[href]');
         if (!hasItems) return;
-        e.preventDefault();
-        e.stopPropagation();
-        if (isOpen) close();
-        else open();
+        var tag = entry.link.tagName ? entry.link.tagName.toLowerCase() : '';
+        if (tag === 'a' || tag === 'summary' || tag === 'button') {
+          e.preventDefault();
+          e.stopPropagation();
+          if (isOpen) close();
+          else open();
+        }
       });
     }
+
+    // Close when clicking anywhere outside (trigger or submenu).
+    document.addEventListener('click', function (e) {
+      if (!isOpen) return;
+      var t = e.target;
+      if (entry.root.contains(t)) return;
+      if (entry.submenu && entry.submenu.contains(t)) return;
+      close();
+    }, true);
 
     // Keep open when focus moves into the menu (keyboard accessibility).
     entry.root.addEventListener('focusin', open);
