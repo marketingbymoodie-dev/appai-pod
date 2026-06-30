@@ -514,6 +514,10 @@
 
   function closeOwnPanel() {
     if (!__appaiOwnPanel) return;
+    if (__appaiOwnPanelCloseTimer) {
+      clearTimeout(__appaiOwnPanelCloseTimer);
+      __appaiOwnPanelCloseTimer = null;
+    }
     __appaiOwnPanel.classList.remove('appai-open');
     __appaiOwnPanelOpen = false;
     if (__appaiOwnPanelTrigger) {
@@ -527,7 +531,10 @@
     // is off the panel. Without this guard, the 260ms timer would be
     // perpetually reset and the panel would never actually close.
     if (__appaiOwnPanelCloseTimer) return;
-    __appaiOwnPanelCloseTimer = setTimeout(closeOwnPanel, 260);
+    __appaiOwnPanelCloseTimer = setTimeout(function () {
+      __appaiOwnPanelCloseTimer = null;
+      closeOwnPanel();
+    }, 260);
   }
 
   function cancelOwnPanelClose() {
@@ -535,6 +542,39 @@
       clearTimeout(__appaiOwnPanelCloseTimer);
       __appaiOwnPanelCloseTimer = null;
     }
+  }
+
+  function pointerInsideOwnPanelArea(x, y) {
+    if (!__appaiOwnPanelOpen) return false;
+    var t = __appaiOwnPanelTrigger;
+    var p = __appaiOwnPanel;
+    if (!t || !p) return false;
+
+    try {
+      var tr = t.getBoundingClientRect();
+      // Trigger plus bridge band down to the panel so moving from the nav
+      // item to the menu doesn't flicker-close.
+      if (x >= tr.left - 10 && x <= tr.right + 10 &&
+          y >= tr.top - 10 && y <= tr.bottom + 34) {
+        return true;
+      }
+    } catch (_) {}
+
+    try {
+      var pr = p.getBoundingClientRect();
+      if (x >= pr.left - 10 && x <= pr.right + 10 &&
+          y >= pr.top - 10 && y <= pr.bottom + 10) {
+        return true;
+      }
+    } catch (_) {}
+
+    return false;
+  }
+
+  function updateOwnPanelCloseFromPoint(x, y) {
+    if (!__appaiOwnPanelOpen) return;
+    if (pointerInsideOwnPanelArea(x, y)) cancelOwnPanelClose();
+    else scheduleOwnPanelClose();
   }
 
   /**
@@ -643,41 +683,50 @@
     // ─── Safety-net close detector ──────────────────────────────────────
     //
     // mouseenter / mouseleave on the trigger and panel are unreliable across
-    // every theme — themes that rebuild the nav DOM, animate triggers, or
-    // wrap them in fragment containers can swallow these events. This
-    // document-level mousemove is the source of truth: while the panel is
-    // open, every mouse move that lands neither over the trigger (plus a
-    // 30px below band for the bridge) nor over the panel schedules a close;
-    // any move that does land over them cancels it. This guarantees close
-    // fires once the user has actually moved their cursor away, regardless
-    // of which events the theme is or isn't firing.
-    document.addEventListener('mousemove', function (e) {
+    // every theme, and when the cursor crosses into the AppAI iframe the
+    // parent page stops receiving normal movement events. These global
+    // handlers use pure geometry as the source of truth: if the pointer is
+    // not over the trigger/bridge/panel, close.
+    var trackPointer = function (e) {
+      updateOwnPanelCloseFromPoint(e.clientX, e.clientY);
+    };
+    document.addEventListener('mousemove', trackPointer, { passive: true, capture: true });
+    document.addEventListener('pointermove', trackPointer, { passive: true, capture: true });
+    document.addEventListener('mouseover', trackPointer, { passive: true, capture: true });
+    document.addEventListener('mouseout', function (e) {
       if (!__appaiOwnPanelOpen) return;
-      var t = __appaiOwnPanelTrigger;
-      var p = __appaiOwnPanel;
-      if (!t || !p) return;
-      var inTrig = false, inPanel = false;
+      // If the next element is outside our panel area (or null because the
+      // pointer entered an iframe/window edge), close from the last known
+      // parent-page point.
+      if (e.relatedTarget && (__appaiOwnPanel && __appaiOwnPanel.contains(e.relatedTarget))) return;
+      if (e.relatedTarget && (__appaiOwnPanelTrigger && __appaiOwnPanelTrigger.contains && __appaiOwnPanelTrigger.contains(e.relatedTarget))) return;
+      updateOwnPanelCloseFromPoint(e.clientX, e.clientY);
+      if (!e.relatedTarget) scheduleOwnPanelClose();
+    }, true);
+  }
+
+  function bindIframeCloseHandlers() {
+    var iframes = document.querySelectorAll('iframe');
+    for (var i = 0; i < iframes.length; i++) {
+      var iframe = iframes[i];
+      if (iframe.getAttribute('data-appai-own-close-bound') === '1') continue;
+      iframe.setAttribute('data-appai-own-close-bound', '1');
+      var closeForIframe = function () {
+        if (__appaiOwnPanelOpen) scheduleOwnPanelClose();
+      };
+      iframe.addEventListener('mouseenter', closeForIframe);
+      iframe.addEventListener('mouseover', closeForIframe);
+      iframe.addEventListener('pointerenter', closeForIframe);
+      iframe.addEventListener('focus', closeForIframe);
       try {
-        var tr = t.getBoundingClientRect();
-        // Generous trigger box + a 30px tall "bridge" band immediately below
-        // so the cursor can travel from trigger to panel without flickering.
-        if (e.clientX >= tr.left - 8 && e.clientX <= tr.right + 8 &&
-            e.clientY >= tr.top - 8 && e.clientY <= tr.bottom + 30) {
-          inTrig = true;
+        var doc = iframe.contentDocument;
+        if (doc && doc.documentElement && doc.documentElement.getAttribute('data-appai-own-close-bound') !== '1') {
+          doc.documentElement.setAttribute('data-appai-own-close-bound', '1');
+          doc.addEventListener('mousemove', closeForIframe, { passive: true, capture: true });
+          doc.addEventListener('pointermove', closeForIframe, { passive: true, capture: true });
         }
       } catch (_) {}
-      if (!inTrig) {
-        try {
-          var pr = p.getBoundingClientRect();
-          if (e.clientX >= pr.left - 8 && e.clientX <= pr.right + 8 &&
-              e.clientY >= pr.top - 8 && e.clientY <= pr.bottom + 8) {
-            inPanel = true;
-          }
-        } catch (_) {}
-      }
-      if (inTrig || inPanel) cancelOwnPanelClose();
-      else scheduleOwnPanelClose();
-    }, { passive: true });
+    }
   }
 
   /**
@@ -687,6 +736,7 @@
   function enhanceCustomizerNavHover() {
     ensureOwnPanelStyles();
     ensureOwnPanelGlobalHandlers();
+    bindIframeCloseHandlers();
 
     var menus = findCustomizerMenuRoots();
     for (var i = 0; i < menus.length; i++) {
