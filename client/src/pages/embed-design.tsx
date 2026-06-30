@@ -8629,6 +8629,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 maxHeight: "520px",
               }}
               data-testid="container-mockup"
+              data-appai-wheel-forward="true"
             >
               <div className="absolute inset-0">
                 {(() => {

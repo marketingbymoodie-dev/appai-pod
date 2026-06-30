@@ -483,6 +483,15 @@ html[data-appai-embed]:not([data-appai-mobile-native-scroll]) [data-hoodie-aop-c
   overscroll-behavior: auto;
 }
 
+/* Never use touch-action:pan-y on large preview surfaces in desktop embed — Chrome
+   may consume wheel at the compositor before JS can forward to the parent page. */
+html[data-appai-embed]:not([data-appai-mobile-native-scroll]) [data-appai-wheel-forward],
+html[data-appai-embed]:not([data-appai-mobile-native-scroll]) [data-testid="container-mockup"],
+html[data-appai-embed]:not([data-appai-mobile-native-scroll]) [data-testid="product-mockup"],
+html[data-appai-embed]:not([data-appai-mobile-native-scroll]) [data-testid="hoodie-aop-canvas-area"] {
+  touch-action: auto !important;
+}
+
 /* Don't apply touch-action: manipulation to the canvas / artwork drag surfaces
    — they handle their own multi-touch (rotate / pinch). They opt back in to
    default touch handling here. */

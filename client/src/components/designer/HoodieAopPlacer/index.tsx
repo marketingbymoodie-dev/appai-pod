@@ -1273,6 +1273,7 @@ export default function HoodieAopPlacer({
           className="relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 lg:max-h-none lg:aspect-square lg:p-4"
           onClick={handleCanvasBackdropClick}
           data-testid="hoodie-aop-canvas-area"
+          data-appai-wheel-forward="true"
         >
           <div className="relative max-h-full max-w-full">
             <canvas
