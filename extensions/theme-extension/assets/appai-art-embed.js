@@ -74,13 +74,38 @@
     return null;
   }
 
+  /** Can this element still scroll in the given wheel direction? */
+  function appaiCanScroll(el, dy, dx) {
+    if (!el) return false;
+    if (dy < 0 && el.scrollTop > 0) return true;
+    if (dy > 0 && el.scrollTop + el.clientHeight < el.scrollHeight - 1) return true;
+    if (dx < 0 && el.scrollLeft > 0) return true;
+    if (dx > 0 && el.scrollLeft + el.clientWidth < el.scrollWidth - 1) return true;
+    return false;
+  }
+
   function appaiScrollParentPage(deltaX, deltaY, deltaMode) {
     var dy = appaiNormalizeWheelDelta(deltaY, deltaMode, window.innerHeight || 800);
     var dx = appaiNormalizeWheelDelta(deltaX, deltaMode, window.innerWidth || 1200);
     if (Math.abs(dy) < 0.01 && Math.abs(dx) < 0.01) return;
 
+    // Prefer the MAIN page scroller so scrolling over the iframe feels exactly
+    // like scrolling over normal page content (1:1 native speed). Writing
+    // scrollTop directly bypasses any theme CSS scroll-behavior:smooth, which
+    // would otherwise animate/lag each tick. Only fall back to a wrapper
+    // scroller around the iframe when the page itself cannot move in the wheel
+    // direction (themes that scroll an inner container instead of <html>).
+    var pageEl = appaiGetPageScrollElement();
+    if (appaiCanScroll(pageEl, dy, dx)) {
+      try {
+        pageEl.scrollTop += dy;
+        pageEl.scrollLeft += dx;
+        return;
+      } catch (e) {}
+    }
+
     var embedRoot = appaiScrollRootForEmbedIframe();
-    if (embedRoot) {
+    if (embedRoot && appaiCanScroll(embedRoot, dy, dx)) {
       try {
         embedRoot.scrollTop += dy;
         embedRoot.scrollLeft += dx;
@@ -88,15 +113,15 @@
       } catch (e) {}
     }
 
+    // Last resort: window.scrollBy (covers edge cases where scrollingElement
+    // math is off) then a direct write to whatever scroller we resolved.
     try {
       window.scrollBy({ top: dy, left: dx, behavior: 'auto' });
       return;
     } catch (e) {}
-
     try {
-      var scrollEl = appaiGetPageScrollElement();
-      scrollEl.scrollTop += dy;
-      scrollEl.scrollLeft += dx;
+      pageEl.scrollTop += dy;
+      pageEl.scrollLeft += dx;
     } catch (e) {}
   }
 
