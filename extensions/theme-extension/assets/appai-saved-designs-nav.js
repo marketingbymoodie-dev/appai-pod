@@ -190,153 +190,6 @@
     return ancestor;
   }
 
-  // ─── Native dropdown hover assist ────────────────────────────────────────
-  //
-  // WHY THIS EXISTS
-  // ───────────────
-  // The studio iframe sits BELOW the nav. While the cursor is over the iframe
-  // the parent page receives NO mouse events (the iframe is a separate
-  // document that swallows them). So a theme that opens its menu on hover can
-  // start opening as the cursor approaches from ABOVE (it crosses the header
-  // first) but NOT as it approaches from BELOW — the theme can't react to a
-  // cursor it can't see until it's already on the link. That is the classic
-  // "only opens from above" symptom, and it can't be solved with pure CSS.
-  //
-  // The fix is a minimal nudge: the instant the cursor actually reaches the
-  // "Customizer" trigger (from ANY direction) we open the theme's OWN dropdown
-  // and close it when the pointer leaves the menu. We only drive the theme's
-  // native open/close state (details.open, aria-expanded, and the same hover
-  // events the theme already listens for) — no custom panel, no hot zones.
-
-  function appaiIsVisible(el) {
-    if (!el || !el.isConnected) return false;
-    var r = el.getBoundingClientRect();
-    if (r.width <= 0 || r.height <= 0) return false;
-    try {
-      var cs = window.getComputedStyle(el);
-      if (cs.display === 'none' || cs.visibility === 'hidden') return false;
-    } catch (_) {}
-    return true;
-  }
-
-  /**
-   * Find every visible "Customizer" dropdown trigger together with the menu
-   * root that wraps both the trigger and its submenu. One entry per trigger.
-   */
-  function findCustomizerTriggers() {
-    var entries = [];
-    var seenTriggers = [];
-    var nodes = [];
-    try {
-      var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
-      var n;
-      while ((n = walker.nextNode())) {
-        if (n.nodeValue && n.nodeValue.trim() === CUSTOMIZER_LABEL) nodes.push(n.parentElement);
-      }
-    } catch (_) {}
-
-    for (var i = 0; i < nodes.length; i++) {
-      var labelEl = nodes[i];
-      if (!labelEl || isInFooter(labelEl)) continue;
-
-      var trigger = (labelEl.closest && labelEl.closest('a, button, summary, [role="button"]')) || labelEl;
-      if (!appaiIsVisible(trigger)) continue; // skip hidden mobile-drawer duplicates
-      if (seenTriggers.indexOf(trigger) !== -1) continue;
-
-      // Walk up to the smallest ancestor that also holds a submenu of /pages/
-      // links not inside the trigger — that ancestor is the dropdown root.
-      var root = null, submenu = null, anc = trigger.parentElement, depth = 0;
-      while (anc && anc !== document.body && depth < 12) {
-        var links = anc.querySelectorAll('a[href*="/pages/"]');
-        if (links.length) {
-          var candidate = findBestContainer(anc, links);
-          if (candidate && !trigger.contains(candidate) && candidate !== trigger) {
-            root = anc; submenu = candidate; break;
-          }
-        }
-        anc = anc.parentElement; depth++;
-      }
-      if (!root) continue;
-
-      seenTriggers.push(trigger);
-      var details = (trigger.closest && trigger.closest('details')) ||
-        (root.tagName && root.tagName.toLowerCase() === 'details' ? root : null);
-      entries.push({ trigger: trigger, root: root, submenu: submenu, details: details });
-    }
-    return entries;
-  }
-
-  function appaiDispatchHover(el, types) {
-    for (var i = 0; i < types.length; i++) {
-      try {
-        el.dispatchEvent(new MouseEvent(types[i], { bubbles: false, cancelable: true, view: window }));
-      } catch (_) {}
-    }
-  }
-
-  function openThemeMenu(entry) {
-    try { if (entry.details && !entry.details.open) entry.details.open = true; } catch (_) {}
-    try { if (entry.trigger.setAttribute) entry.trigger.setAttribute('aria-expanded', 'true'); } catch (_) {}
-    // Fire the same enter events the theme's own hover handlers listen for.
-    appaiDispatchHover(entry.trigger, ['pointerenter', 'mouseenter', 'mouseover']);
-  }
-
-  function closeThemeMenu(entry) {
-    try { if (entry.details && entry.details.open) entry.details.open = false; } catch (_) {}
-    try { if (entry.trigger.setAttribute) entry.trigger.setAttribute('aria-expanded', 'false'); } catch (_) {}
-    appaiDispatchHover(entry.trigger, ['pointerleave', 'mouseleave', 'mouseout']);
-  }
-
-  function bindNativeHover(entry) {
-    var t = entry.trigger;
-    if (!t || t.getAttribute('data-appai-hover-bound') === '1') return;
-    t.setAttribute('data-appai-hover-bound', '1');
-
-    // Open the theme's own dropdown the instant the cursor reaches the trigger
-    // — reliable from any approach direction, unlike theme CSS :hover which
-    // never fires while the cursor is still over the iframe below.
-    t.addEventListener('pointerenter', function () { openThemeMenu(entry); });
-    t.addEventListener('mouseenter', function () { openThemeMenu(entry); });
-
-    // Close when the pointer leaves the whole menu root (trigger + submenu),
-    // so moving down into the submenu keeps it open but leaving retracts it.
-    entry.root.addEventListener('pointerleave', function () { closeThemeMenu(entry); });
-    entry.root.addEventListener('mouseleave', function () { closeThemeMenu(entry); });
-  }
-
-  function initNativeHoverAssist() {
-    var run = function () {
-      try {
-        var entries = findCustomizerTriggers();
-        for (var i = 0; i < entries.length; i++) bindNativeHover(entries[i]);
-      } catch (_) {}
-    };
-    run();
-    // Retry briefly for themes that render the header nav after first paint.
-    var attempts = 0;
-    var retry = setInterval(function () {
-      run();
-      if (++attempts >= 10) clearInterval(retry);
-    }, 500);
-    // Re-bind if the theme re-renders the nav (route change / lazy header).
-    if (window.MutationObserver) {
-      var debounce = null;
-      var mo = new MutationObserver(function () {
-        if (debounce) return;
-        debounce = setTimeout(function () { debounce = null; run(); }, 300);
-      });
-      try { mo.observe(document.body, { childList: true, subtree: true }); } catch (_) {}
-    }
-    // Close on Escape and on click outside any bound menu root.
-    document.addEventListener('keydown', function (e) {
-      if (e.key !== 'Escape') return;
-      try {
-        var entries = findCustomizerTriggers();
-        for (var i = 0; i < entries.length; i++) closeThemeMenu(entries[i]);
-      } catch (_) {}
-    });
-  }
-
   // ─── Nav item injection ──────────────────────────────────────────────────
 
   function injectNavItem(container, designs, suffix) {
@@ -836,11 +689,9 @@
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', function () {
-      initNativeHoverAssist();
       init();
     });
   } else {
-    initNativeHoverAssist();
     init();
   }
 
