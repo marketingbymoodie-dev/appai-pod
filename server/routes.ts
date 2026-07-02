@@ -1087,46 +1087,25 @@ async function findCustomizerParent(
 }
 
 function buildCustomizerBootHtml(): string {
+  // IMPORTANT: #appai-boot is a fixed, full-viewport OVERLAY (like the
+  // #appai-nav-transition overlay used elsewhere), not a CSS rule that hides
+  // the theme's real header/nav/footer. Earlier this used
+  // `body:has(#appai-boot) header { display:none }` — but if the config fetch
+  // ever hangs (e.g. a slow/cold backend), #appai-boot never gets removed, and
+  // that CSS permanently nukes the header/nav (breaking the dropdown) and caps
+  // the page to viewport height (breaking scroll), even after the fallback UI
+  // below appears. An overlay avoids that failure mode entirely: the header/nav
+  // are NEVER touched by CSS, only visually covered while this div exists.
   return `
 <style id="appai-boot-style">
   @keyframes appai-boot-title-shimmer {
     0% { background-position: 200% center; }
     100% { background-position: -200% center; }
   }
-  html:has(#appai-boot),
-  body:has(#appai-boot) {
-    scrollbar-gutter: stable both-edges;
-  }
-  html:has(#appai-boot) {
-    overflow-y: scroll;
-  }
-  body:has(#appai-boot) header,
-  body:has(#appai-boot) .shopify-section-group-header-group,
-  body:has(#appai-boot) .shopify-section-header,
-  body:has(#appai-boot) .section-header,
-  body:has(#appai-boot) .header-wrapper,
-  body:has(#appai-boot) .header,
-  body:has(#appai-boot) .site-header,
-  body:has(#appai-boot) .announcement-bar,
-  body:has(#appai-boot) .utility-bar,
-  body:has(#appai-boot) nav,
-  body:has(#appai-boot) main h1,
-  body:has(#appai-boot) main h2,
-  body:has(#appai-boot) .page-title,
-  body:has(#appai-boot) .title,
-  body:has(#appai-boot) .title--primary,
-  body:has(#appai-boot) .main-page-title,
-  body:has(#appai-boot) .rte > :not(#appai-boot):not(#appai-boot-style),
-  body:has(#appai-boot) .page__content > :not(#appai-boot):not(#appai-boot-style),
-  body:has(#appai-boot) footer,
-  body:has(#appai-boot) .shopify-section-group-footer-group {
-    display: none !important;
-  }
-  body:has(#appai-boot) {
-    background: #f4f4f5;
-    overflow-y: scroll;
-  }
   #appai-boot {
+    position: fixed;
+    inset: 0;
+    z-index: 2147483647;
     min-height: 100vh;
     display: flex;
     align-items: center;
@@ -1162,9 +1141,11 @@ function buildCustomizerBootHtml(): string {
 <link rel="stylesheet" href="/apps/appai/theme-asset/appai-art-embed.css">
 <script>
 (function(){
-  // Stuck-loading safety net: if the studio iframe has not appeared after 20s
-  // (e.g. the app never sent BRIDGE_ACK), surface a Reload instead of an
-  // infinite "Loading AI Art Studio" shimmer.
+  // Stuck-loading safety net: if the studio iframe has not appeared after 25s
+  // (e.g. the config fetch/retry both hung, or BRIDGE_ACK never arrived),
+  // surface a Reload instead of an infinite "Loading AI Art Studio" shimmer.
+  // 25s gives appaiFetchCustomizerConfig's own 10s+10s timeout/retry room to
+  // finish and show its own error UI first in the common case.
   setTimeout(function(){
     var el = document.getElementById('appai-boot');
     if (!el) return;
@@ -1176,7 +1157,7 @@ function buildCustomizerBootHtml(): string {
       + '</div>';
     var b = document.getElementById('appai-boot-retry');
     if (b) b.onclick = function(){ location.reload(); };
-  }, 20000);
+  }, 25000);
 })();
 </script>
 <script src="/apps/appai/theme-asset/appai-art-embed.js" defer></script>`.trim();

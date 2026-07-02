@@ -2187,11 +2187,37 @@
     setTimeout(cleanupDuplicateGenerators, 1500);
   }
 
+  /**
+   * Fetch with a hard timeout + one retry. The backend occasionally has
+   * cold-start-style latency spikes (observed: some requests hang 15-20s+ or
+   * 502, then subsequent requests are fast) — without a timeout, a single
+   * slow request leaves the customer stuck on the loading screen forever with
+   * no error and no retry. Aborting after 10s and retrying once turns that
+   * into a ~20s worst case that still surfaces the existing error/retry UI.
+   */
+  function appaiFetchWithTimeout(url, options, timeoutMs) {
+    var controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    var timer = controller ? setTimeout(function() { controller.abort(); }, timeoutMs) : null;
+    return fetch(url, Object.assign({}, options, controller ? { signal: controller.signal } : {}))
+      .finally(function() { if (timer) clearTimeout(timer); });
+  }
+  function appaiFetchCustomizerConfig(handle, attempt) {
+    return appaiFetchWithTimeout(
+      '/apps/appai/customizer-page?handle=' + encodeURIComponent(handle),
+      { credentials: 'same-origin' },
+      10000
+    ).catch(function(e) {
+      if (attempt >= 1) throw e;
+      console.warn('[AI Art Embed] customizer-page fetch attempt', attempt, 'failed, retrying:', e && e.message);
+      return appaiFetchCustomizerConfig(handle, attempt + 1);
+    });
+  }
+
   function initCustomizerPage(handle, opts) {
     opts = opts || {};
     console.log('[AI Art Embed] STATE=CONFIG_LOADING handle=' + handle);
 
-    fetch('/apps/appai/customizer-page?handle=' + encodeURIComponent(handle), { credentials: 'same-origin' })
+    appaiFetchCustomizerConfig(handle, 0)
       .then(function(r) { return r.ok ? r.json() : null; })
       .then(function(config) {
         if (!config) {
