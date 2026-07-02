@@ -1158,7 +1158,28 @@ function buildCustomizerBootHtml(): string {
 </style>
 <div id="appai-boot" aria-live="polite" aria-busy="true">
   <div class="appai-boot-title">Loading AI Art Studio</div>
-</div>`.trim();
+</div>
+<link rel="stylesheet" href="/apps/appai/theme-asset/appai-art-embed.css">
+<script>
+(function(){
+  // Stuck-loading safety net: if the studio iframe has not appeared after 20s
+  // (e.g. the app never sent BRIDGE_ACK), surface a Reload instead of an
+  // infinite "Loading AI Art Studio" shimmer.
+  setTimeout(function(){
+    var el = document.getElementById('appai-boot');
+    if (!el) return;
+    if (document.querySelector('iframe[title="AI Art Design Studio"]')) return;
+    el.innerHTML = '<div style="text-align:center;font-family:system-ui,-apple-system,sans-serif;color:#374151;max-width:420px;padding:24px;">'
+      + '<p style="font-size:18px;font-weight:700;margin:0 0 6px;">Still loading</p>'
+      + '<p style="font-size:14px;margin:0 0 16px;color:#6b7280;">The studio is taking longer than usual to open. Please reload the page.</p>'
+      + '<button type="button" id="appai-boot-retry" style="border:none;background:#111827;color:#fff;font-size:15px;font-weight:600;padding:10px 20px;border-radius:8px;cursor:pointer;">Reload</button>'
+      + '</div>';
+    var b = document.getElementById('appai-boot-retry');
+    if (b) b.onclick = function(){ location.reload(); };
+  }, 20000);
+})();
+</script>
+<script src="/apps/appai/theme-asset/appai-art-embed.js" defer></script>`.trim();
 }
 
 const customizerBootBackfillCache = new Set<string>();
@@ -15844,6 +15865,16 @@ ${textEdgeRestrictions}
       console.warn("[backfill] Some backfill tasks rejected unexpectedly");
     }
 
+    // Refresh each active page's body_html to the latest boot loader so existing
+    // pages pick up the self-bootstrapping <script> that mounts the studio even
+    // on themes where the "AI Art Studio" app embed is turned off. Fire-and-forget;
+    // ensureCustomizerBootHtml is cached per deploy so this is cheap on repeat loads.
+    Promise.allSettled(
+      pages
+        .filter((p) => p.status === "active" && p.shopifyPageId)
+        .map((p) => ensureCustomizerBootHtml(shop, installation.accessToken, p.shopifyPageId))
+    ).catch(() => {});
+
     const plan = getEffectivePlan(installation as any, shop);
 
     return res.json({
@@ -17056,6 +17087,49 @@ ${textEdgeRestrictions}
     (req as any).proxyShop = query.shop ?? "";
     next();
   }
+
+  /**
+   * GET /api/proxy/theme-asset/:name — serve the theme-extension asset files
+   * (the same JS/CSS shipped in the app embed) through the App Proxy.
+   *
+   * Why: the "AI Art Studio" app embed (target: body) is per-theme and OFF by
+   * default, so switching themes silently disables the customizer page. The
+   * customizer page's body_html loads appai-art-embed.js from here so the page
+   * mounts, scrolls, and works on ANY theme regardless of the embed toggle.
+   * appai-art-embed.js self-guards (__APPAI_CUSTOMIZER_INIT__), so if the embed
+   * is also on it simply no-ops the second copy — no double mount.
+   *
+   * Public asset (no secrets); no proxy signature required. Served same-origin
+   * via /apps/appai/theme-asset/... so no CORS or hardcoded app URL is needed.
+   */
+  const THEME_ASSET_ALLOWLIST = new Set([
+    "appai-art-embed.js",
+    "appai-art-embed.css",
+    "appai-saved-designs-nav.js",
+    "appai-customizer-embed.js",
+    "appai-cart-guard.js",
+    "appai-cart-images.js",
+  ]);
+  app.get("/api/proxy/theme-asset/:name", (req: Request, res: Response) => {
+    const name = String(req.params.name || "");
+    if (!THEME_ASSET_ALLOWLIST.has(name)) {
+      return res.status(404).type("text/plain").send("Not found");
+    }
+    const filePath = path.join(process.cwd(), "extensions", "theme-extension", "assets", name);
+    const contentType = name.endsWith(".css")
+      ? "text/css; charset=utf-8"
+      : "application/javascript; charset=utf-8";
+    fs.readFile(filePath, (err, buf) => {
+      if (err) {
+        console.error(`[theme-asset] failed to read ${name}:`, err?.message || err);
+        return res.status(404).type("text/plain").send("Not found");
+      }
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Cache-Control", "public, max-age=300");
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      return res.send(buf);
+    });
+  });
 
   /** GET /api/proxy/customizer-pages — returns all pages for this shop (active + disabled) plus fallbackUrl */
   app.get("/api/proxy/customizer-pages", proxyAuth, async (req: Request, res: Response) => {
