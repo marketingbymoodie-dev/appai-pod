@@ -309,22 +309,43 @@
   // password-protected/preview stores) so the button is never hidden by it.
 
   /**
-   * Bottom edge of whatever header chrome is currently pinned to the top of
-   * the viewport. Checks ALL header candidates, not just the first match:
-   * on Dawn-family themes the section wrapper scrolls away while an inner
-   * <sticky-header>/<header> stays pinned — measuring only the wrapper would
-   * report "header gone" and drop the button underneath the sticky header.
+   * Bottom edge of the theme's header chrome (announcement bar + menu bar)
+   * currently occupying the top of the viewport. The button must NEVER sit
+   * over the menu bar, so this is deliberately generous:
+   *
+   * - Checks ALL candidates and takes the MAX bottom, so announcement bars
+   *   above the menu don't shadow it (requiring top≈0 broke Tinker/Horizon,
+   *   whose headers start below an announcement bar).
+   * - Includes every section inside the header group — Horizon-family themes
+   *   wrap sections in zero-height custom elements, so the outer wrapper can
+   *   measure 0 while the inner sections measure fine.
+   * - Anchors on the header cart icon as a selector-proof fallback: whatever
+   *   ancestor section contains it IS the menu bar, on any theme.
    */
   function visibleHeaderBottom() {
-    var els = document.querySelectorAll(
-      '.shopify-section-group-header-group, [id^="shopify-section"][id*="header"], ' +
-      'header.header, .site-header, header'
+    var els = [];
+    var found = document.querySelectorAll(
+      '.shopify-section-group-header-group, .shopify-section-group-header-group [id^="shopify-section"], ' +
+      '[id^="shopify-section"][id*="header"], [id^="shopify-section"][id*="announcement"], ' +
+      'header.header, .header-wrapper, .site-header, sticky-header, header-component, header'
     );
+    for (var i = 0; i < found.length; i++) els.push(found[i]);
+    try {
+      // First /cart link in DOM order is the header's cart icon on virtually
+      // every theme (footer/drawer links come later in the document).
+      var cart = document.querySelector('a[href*="/cart"]');
+      var anchor = cart && cart.closest ? cart.closest('[id^="shopify-section"], header, .shopify-section') : null;
+      if (anchor) els.push(anchor);
+    } catch (_) {}
+
     var bottom = 0;
-    for (var i = 0; i < els.length; i++) {
-      var r = els[i].getBoundingClientRect();
-      // Count it only while it's actually occupying the top of the viewport.
-      if (r.height > 0 && r.top < 8 && r.bottom > 0 && r.bottom < window.innerHeight * 0.6) {
+    var vh = window.innerHeight;
+    for (var j = 0; j < els.length; j++) {
+      var r = els[j].getBoundingClientRect();
+      // Visible, starts in the upper third of the viewport, and is plausibly
+      // header chrome (bottom in the upper 60%) — hero/content sections that
+      // happen to match the selectors fail these bounds.
+      if (r.height > 0 && r.width > 0 && r.top < vh / 3 && r.bottom > 0 && r.bottom < vh * 0.6) {
         if (r.bottom > bottom) bottom = r.bottom;
       }
     }
@@ -336,6 +357,10 @@
     if (!btn) return;
     if (settings.position.indexOf('top') === 0) {
       var headerBottom = visibleHeaderBottom();
+      // At page top with no measurable header (very custom theme markup),
+      // assume a typical header height — overlapping the menu bar is the one
+      // thing this button must never do. 16px only applies once scrolled.
+      if (headerBottom === 0 && (window.scrollY || window.pageYOffset || 0) < 40) headerBottom = 72;
       var top = headerBottom > 0 ? headerBottom + 14 : 16;
       btn.style.setProperty('--appai-tray-top', Math.round(top) + 'px');
     } else {
