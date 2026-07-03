@@ -49,8 +49,9 @@
 <script type="application/json" id="appai-tray-settings">
 {
   "enabled": {{ block.settings.tray_enabled | json }},
-  "label": {{ block.settings.tray_label | default: "Customize" | json }},
-  "position": {{ block.settings.tray_position | default: "bottom-right" | json }}
+  "label": {{ block.settings.tray_label | default: "Product Customizer" | json }},
+  "position": {{ block.settings.tray_position | default: "top-left" | json }},
+  "shimmer": {{ block.settings.tray_shimmer | json }}
 }
 </script>
 <script src="{{ 'appai-customizer-tray.js' | asset_url }}" defer></script>
@@ -76,17 +77,27 @@
       "type": "text",
       "id": "tray_label",
       "label": "Button label",
-      "default": "Customize"
+      "default": "Product Customizer"
     },
     {
-      "type": "select",
+      "type": "radio",
       "id": "tray_position",
       "label": "Button position",
+      "info": "Top positions sit just below your menu bar.",
       "options": [
-        { "value": "bottom-right", "label": "Bottom right" },
-        { "value": "bottom-left", "label": "Bottom left" }
+        { "value": "top-left", "label": "Top left" },
+        { "value": "top-right", "label": "Top right" },
+        { "value": "bottom-left", "label": "Bottom left" },
+        { "value": "bottom-right", "label": "Bottom right" }
       ],
-      "default": "bottom-right"
+      "default": "top-left"
+    },
+    {
+      "type": "checkbox",
+      "id": "tray_shimmer",
+      "label": "Shimmer effect on button label",
+      "info": "A subtle animated shine across the button text.",
+      "default": true
     }
   ]
 }

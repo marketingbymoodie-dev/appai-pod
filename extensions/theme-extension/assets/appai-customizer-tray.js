@@ -33,7 +33,7 @@
  * ─────────
  * Merchant-configurable via the app embed (theme editor):
  *   <script type="application/json" id="appai-tray-settings">
- *     { "enabled": true, "label": "Customize", "position": "bottom-right" }
+ *     { "enabled": true, "label": "Product Customizer", "position": "top-left", "shimmer": true }
  *   </script>
  * Absent settings (e.g. on self-bootstrapped customizer pages) = defaults.
  */
@@ -50,8 +50,10 @@
 
   // ─── Settings ─────────────────────────────────────────────────────────
 
+  var POSITIONS = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
+
   function readSettings() {
-    var defaults = { enabled: true, label: 'Customize', position: 'bottom-right' };
+    var defaults = { enabled: true, label: 'Product Customizer', position: 'top-left', shimmer: true };
     try {
       var el = document.getElementById('appai-tray-settings');
       if (!el) return defaults;
@@ -59,7 +61,8 @@
       return {
         enabled: parsed.enabled !== false,
         label: (typeof parsed.label === 'string' && parsed.label.trim()) ? parsed.label.trim() : defaults.label,
-        position: parsed.position === 'bottom-left' ? 'bottom-left' : 'bottom-right',
+        position: POSITIONS.indexOf(parsed.position) !== -1 ? parsed.position : defaults.position,
+        shimmer: parsed.shimmer !== false,
       };
     } catch (_) {
       return defaults;
@@ -132,6 +135,7 @@
   // ─── Data ─────────────────────────────────────────────────────────────
 
   var _pages = null; // active pages [{handle,title,baseProductTitle}]
+  var _settings = null; // resolved settings from readSettings()
 
   function fetchPages() {
     return fetch(PROXY + '/customizer-pages', { credentials: 'same-origin' })
@@ -145,14 +149,29 @@
 
   // ─── DOM: styles ──────────────────────────────────────────────────────
 
+  /** rgba() version of a computed color, for the shimmer sweep highlight. */
+  function colorWithAlpha(color, alpha) {
+    var m = (color || '').match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+    if (m) return 'rgba(' + m[1] + ',' + m[2] + ',' + m[3] + ',' + alpha + ')';
+    return 'rgba(255,255,255,' + alpha + ')';
+  }
+
   function ensureStyles(theme, settings) {
     if (document.getElementById('appai-tray-styles')) return;
-    var side = settings.position === 'bottom-left' ? 'left' : 'right';
+    var side = settings.position.indexOf('left') !== -1 ? 'left' : 'right';
+    var isTop = settings.position.indexOf('top') === 0;
+    // Vertical placement uses CSS vars kept up to date by
+    // updateLauncherOffsets(): top positions track the theme header's bottom
+    // edge (sticky headers included); bottom positions clear Shopify's
+    // preview bar iframe on password-protected/preview stores.
+    var vertical = isTop
+      ? 'top:var(--appai-tray-top,16px);'
+      : 'bottom:calc(var(--appai-tray-bottom,20px) + env(safe-area-inset-bottom,0px));';
     var style = document.createElement('style');
     style.id = 'appai-tray-styles';
     style.textContent = [
       '#' + BTN_ID + '{',
-        'position:fixed;bottom:calc(20px + env(safe-area-inset-bottom,0px));' + side + ':20px;',
+        'position:fixed;' + vertical + side + ':20px;',
         'z-index:2147483640;',
         'display:flex;align-items:center;gap:8px;',
         'padding:12px 18px;border:none;cursor:pointer;',
@@ -161,13 +180,26 @@
         'font-family:' + theme.buttonFontFamily + ';',
         'font-size:14.5px;font-weight:600;line-height:1;letter-spacing:0.01em;',
         'box-shadow:0 4px 16px rgba(0,0,0,0.22);',
-        'transition:transform 160ms ease,box-shadow 160ms ease,opacity 200ms ease;',
+        'transition:transform 160ms ease,box-shadow 160ms ease,opacity 200ms ease,top 200ms ease;',
         'opacity:0;transform:translateY(8px);',
       '}',
       '#' + BTN_ID + '.appai-visible{opacity:1;transform:translateY(0);}',
       '#' + BTN_ID + ':hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(0,0,0,0.28);}',
       '#' + BTN_ID + ':active{transform:translateY(0);}',
       '#' + BTN_ID + ' svg{flex-shrink:0;}',
+      // Same shimmer treatment as the "Loading AI Art Studio" boot title,
+      // recolored to sweep the theme's button text color.
+      settings.shimmer ? [
+        '@keyframes appai-tray-shimmer{0%{background-position:200% center;}100%{background-position:-200% center;}}',
+        '#' + BTN_ID + ' .appai-tray-label{',
+          'background:linear-gradient(90deg,' + theme.buttonColor + ' 0%,' + theme.buttonColor + ' 35%,' +
+            colorWithAlpha(theme.buttonColor, 0.35) + ' 50%,' + theme.buttonColor + ' 65%,' + theme.buttonColor + ' 100%);',
+          'background-size:200% auto;',
+          '-webkit-background-clip:text;background-clip:text;',
+          '-webkit-text-fill-color:transparent;color:transparent;',
+          'animation:appai-tray-shimmer 2.4s linear infinite;',
+        '}',
+      ].join('') : '',
       '#' + OVERLAY_ID + '{',
         'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:2147483641;',
         'opacity:0;transition:opacity 250ms ease;pointer-events:none;',
@@ -257,15 +289,87 @@
     btn.setAttribute('aria-haspopup', 'dialog');
     btn.setAttribute('aria-label', settings.label + ' — open product customizer menu');
     var labelSpan = document.createElement('span');
+    labelSpan.className = 'appai-tray-label';
     labelSpan.textContent = settings.label;
     btn.innerHTML = ICON_SPARK;
     btn.appendChild(labelSpan);
     btn.addEventListener('click', openTray);
     document.body.appendChild(btn);
+    startOffsetTracking(settings);
     // Fade in after append so the transition runs.
     requestAnimationFrame(function () {
       requestAnimationFrame(function () { btn.classList.add('appai-visible'); });
     });
+  }
+
+  // ─── Vertical offset tracking ─────────────────────────────────────────
+  // Top positions: sit just below the theme's header/menu bar, following it
+  // when sticky and gliding up to 16px when the header scrolls out of view.
+  // Bottom positions: clear Shopify's preview bar iframe (only present on
+  // password-protected/preview stores) so the button is never hidden by it.
+
+  /**
+   * Bottom edge of whatever header chrome is currently pinned to the top of
+   * the viewport. Checks ALL header candidates, not just the first match:
+   * on Dawn-family themes the section wrapper scrolls away while an inner
+   * <sticky-header>/<header> stays pinned — measuring only the wrapper would
+   * report "header gone" and drop the button underneath the sticky header.
+   */
+  function visibleHeaderBottom() {
+    var els = document.querySelectorAll(
+      '.shopify-section-group-header-group, [id^="shopify-section"][id*="header"], ' +
+      'header.header, .site-header, header'
+    );
+    var bottom = 0;
+    for (var i = 0; i < els.length; i++) {
+      var r = els[i].getBoundingClientRect();
+      // Count it only while it's actually occupying the top of the viewport.
+      if (r.height > 0 && r.top < 8 && r.bottom > 0 && r.bottom < window.innerHeight * 0.6) {
+        if (r.bottom > bottom) bottom = r.bottom;
+      }
+    }
+    return bottom;
+  }
+
+  function updateLauncherOffsets(settings) {
+    var btn = document.getElementById(BTN_ID);
+    if (!btn) return;
+    if (settings.position.indexOf('top') === 0) {
+      var headerBottom = visibleHeaderBottom();
+      var top = headerBottom > 0 ? headerBottom + 14 : 16;
+      btn.style.setProperty('--appai-tray-top', Math.round(top) + 'px');
+    } else {
+      var bottom = 20;
+      var bar = document.querySelector(
+        '#preview-bar-iframe, #PBarNextFrame, iframe[src*="preview_bar"], iframe[src*="/tools/preview"]'
+      );
+      if (bar) {
+        var br = bar.getBoundingClientRect();
+        if (br.height > 0 && br.height < 200) bottom = Math.round(br.height) + 16;
+      }
+      btn.style.setProperty('--appai-tray-bottom', Math.round(bottom) + 'px');
+    }
+  }
+
+  function startOffsetTracking(settings) {
+    updateLauncherOffsets(settings);
+    var ticking = false;
+    var onScrollResize = function () {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(function () {
+        ticking = false;
+        updateLauncherOffsets(settings);
+      });
+    };
+    if (settings.position.indexOf('top') === 0) {
+      window.addEventListener('scroll', onScrollResize, { passive: true });
+    }
+    window.addEventListener('resize', onScrollResize);
+    // The preview bar iframe (and some sticky headers) mount late — re-check
+    // a few times after load rather than observing the whole DOM forever.
+    setTimeout(function () { updateLauncherOffsets(settings); }, 1000);
+    setTimeout(function () { updateLauncherOffsets(settings); }, 3000);
   }
 
   function buildTray() {
@@ -287,7 +391,7 @@
     header.id = 'appai-tray-header';
     var title = document.createElement('h2');
     title.id = 'appai-tray-title';
-    title.textContent = 'Customizer';
+    title.textContent = (_settings && _settings.label) || 'Product Customizer';
     var closeBtn = document.createElement('button');
     closeBtn.id = 'appai-tray-close';
     closeBtn.type = 'button';
@@ -321,6 +425,50 @@
 
     var pages = _pages || [];
     var here = currentPageHandle();
+
+    // Saved designs first — only when the existing drawer is available
+    // (customer logged in with >=1 design). Re-checked on every render
+    // because the saved-designs script initialises asynchronously.
+    if (typeof window.__APPAI_OPEN_SAVED_DESIGNS_DRAWER__ === 'function') {
+      var savedLabel = document.createElement('div');
+      savedLabel.className = 'appai-tray-section-label';
+      savedLabel.textContent = 'Your designs';
+      body.appendChild(savedLabel);
+
+      var savedBtn = document.createElement('button');
+      savedBtn.type = 'button';
+      savedBtn.className = 'appai-tray-item';
+
+      var sIcon = document.createElement('span');
+      sIcon.className = 'appai-tray-item-icon';
+      sIcon.innerHTML = ICON_BOOKMARK;
+
+      var sText = document.createElement('span');
+      sText.className = 'appai-tray-item-text';
+      var sTitle = document.createElement('span');
+      sTitle.className = 'appai-tray-item-title';
+      sTitle.textContent = 'Saved Designs';
+      sText.appendChild(sTitle);
+      var count = (window.__APPAI_SAVED_DESIGNS__ || []).length;
+      if (count > 0) {
+        var sSub = document.createElement('span');
+        sSub.className = 'appai-tray-item-sub';
+        sSub.textContent = count + (count === 1 ? ' design' : ' designs');
+        sText.appendChild(sSub);
+      }
+
+      savedBtn.appendChild(sIcon);
+      savedBtn.appendChild(sText);
+      savedBtn.insertAdjacentHTML('beforeend', ICON_CHEVRON);
+      savedBtn.addEventListener('click', function () {
+        closeTray();
+        // Give the tray's close animation a beat so the drawer slides over cleanly.
+        setTimeout(function () {
+          try { window.__APPAI_OPEN_SAVED_DESIGNS_DRAWER__(); } catch (_) {}
+        }, 120);
+      });
+      body.appendChild(savedBtn);
+    }
 
     if (pages.length > 0) {
       var pagesLabel = document.createElement('div');
@@ -367,50 +515,6 @@
       empty.textContent = 'No customizer pages are available right now.';
       body.appendChild(empty);
     }
-
-    // Saved designs — only when the existing drawer is available (customer
-    // logged in with >=1 design). Re-checked on every render because the
-    // saved-designs script initialises asynchronously.
-    if (typeof window.__APPAI_OPEN_SAVED_DESIGNS_DRAWER__ === 'function') {
-      var savedLabel = document.createElement('div');
-      savedLabel.className = 'appai-tray-section-label';
-      savedLabel.textContent = 'Your designs';
-      body.appendChild(savedLabel);
-
-      var savedBtn = document.createElement('button');
-      savedBtn.type = 'button';
-      savedBtn.className = 'appai-tray-item';
-
-      var sIcon = document.createElement('span');
-      sIcon.className = 'appai-tray-item-icon';
-      sIcon.innerHTML = ICON_BOOKMARK;
-
-      var sText = document.createElement('span');
-      sText.className = 'appai-tray-item-text';
-      var sTitle = document.createElement('span');
-      sTitle.className = 'appai-tray-item-title';
-      sTitle.textContent = 'Saved Designs';
-      sText.appendChild(sTitle);
-      var count = (window.__APPAI_SAVED_DESIGNS__ || []).length;
-      if (count > 0) {
-        var sSub = document.createElement('span');
-        sSub.className = 'appai-tray-item-sub';
-        sSub.textContent = count + (count === 1 ? ' design' : ' designs');
-        sText.appendChild(sSub);
-      }
-
-      savedBtn.appendChild(sIcon);
-      savedBtn.appendChild(sText);
-      savedBtn.insertAdjacentHTML('beforeend', ICON_CHEVRON);
-      savedBtn.addEventListener('click', function () {
-        closeTray();
-        // Give the tray's close animation a beat so the drawer slides over cleanly.
-        setTimeout(function () {
-          try { window.__APPAI_OPEN_SAVED_DESIGNS_DRAWER__(); } catch (_) {}
-        }, 120);
-      });
-      body.appendChild(savedBtn);
-    }
   }
 
   function openTray() {
@@ -454,6 +558,7 @@
 
   function init() {
     var settings = readSettings();
+    _settings = settings;
     if (!settings.enabled) return;
 
     fetchPages().then(function (pages) {

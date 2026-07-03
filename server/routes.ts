@@ -1434,6 +1434,78 @@ async function removeNavigationLink(
 }
 
 /**
+ * One-time cleanup: removes the app-created "Customizer" dropdown from the
+ * main menu. The floating tray launcher (appai-customizer-tray.js) replaced
+ * theme-menu navigation entirely — theme dropdowns proved unreliable across
+ * themes (hover-from-below bugs, blank-page clicks), so the app no longer
+ * creates or maintains menu links.
+ *
+ * Conservative: only removes child links that point to known customizer
+ * pages, and removes the parent itself only when nothing else is left under
+ * it (a merchant may have added their own links under the parent manually).
+ */
+const customizerNavCleanupCache = new Set<string>();
+
+async function removeCustomizerNavParent(
+  shop: string,
+  accessToken: string,
+): Promise<void> {
+  if (customizerNavCleanupCache.has(shop)) return;
+  try {
+    const menu = await getMainMenu(shop, accessToken);
+    if (!menu?.id) { customizerNavCleanupCache.add(shop); return; }
+
+    const knownPages = await storage.listCustomizerPages(shop);
+    const knownHandles = knownPages.map((p: any) => p.handle);
+    const customizerParent = await findCustomizerParent(menu.items ?? [], knownHandles);
+    if (!customizerParent) { customizerNavCleanupCache.add(shop); return; }
+
+    const isCustomizerLink = (sub: any) =>
+      knownHandles.some((h: string) => sub.url === `/pages/${h}` || sub.url?.endsWith(`/pages/${h}`));
+    const remainingSubItems = (customizerParent.items ?? []).filter((sub: any) => !isCustomizerLink(sub));
+
+    let newMenuItems: any[];
+    if (remainingSubItems.length === 0) {
+      newMenuItems = (menu.items ?? [])
+        .filter((item: any) => item.id !== customizerParent.id)
+        .map(menuItemToInput);
+      console.log(`[nav] Cleanup: removing "${customizerParent.title}" parent from main-menu for ${shop}`);
+    } else {
+      newMenuItems = (menu.items ?? []).map((item: any) => {
+        if (item.id === customizerParent.id) {
+          return {
+            title: item.title,
+            type: "HTTP",
+            url: item.url ?? "/",
+            items: remainingSubItems.map(menuItemToInput),
+          };
+        }
+        return menuItemToInput(item);
+      });
+      console.log(`[nav] Cleanup: removing customizer links from "${customizerParent.title}" (keeping ${remainingSubItems.length} merchant item(s)) for ${shop}`);
+    }
+
+    const updateRes = await shopifyGraphQL(shop, accessToken, `
+      mutation UpdateMenu($id: ID!, $title: String!, $items: [MenuItemUpdateInput!]!) {
+        menuUpdate(id: $id, title: $title, items: $items) {
+          menu { id }
+          userErrors { field message }
+        }
+      }
+    `, { id: menu.id, title: menu.title, items: newMenuItems });
+
+    const userErrors = updateRes?.data?.menuUpdate?.userErrors ?? [];
+    if (userErrors.length > 0) {
+      console.warn(`[nav] Cleanup menuUpdate userErrors for ${shop}: ${userErrors.map((e: any) => e.message).join("; ")}`);
+      return; // do not cache — retry on next admin load
+    }
+    customizerNavCleanupCache.add(shop);
+  } catch (err: any) {
+    console.warn(`[nav] removeCustomizerNavParent failed for ${shop}: ${err.message}`);
+  }
+}
+
+/**
  * Storefront scripts often send `window.Shopify.shop` as a short handle (`my-store`).
  * Installations and Admin URLs require `my-store.myshopify.com`.
  */
@@ -15858,6 +15930,11 @@ ${textEdgeRestrictions}
         .map((p) => ensureCustomizerBootHtml(shop, installation.accessToken, p.shopifyPageId))
     ).catch(() => {});
 
+    // Sweep the legacy "Customizer" dropdown out of the theme main menu — the
+    // floating tray launcher replaced theme-menu navigation. Fire-and-forget,
+    // cached per shop per deploy.
+    removeCustomizerNavParent(shop, installation.accessToken).catch(() => {});
+
     const plan = getEffectivePlan(installation as any, shop);
 
     return res.json({
@@ -16357,22 +16434,13 @@ ${textEdgeRestrictions}
       }
     }
 
-    // ── Add navigation menu link (only if active) ──────────────────────────────
-    let navWarning: string | null = null;
-    if (initialStatus === "active") {
-      try {
-        const navResult = await ensureNavigationLink(shop, installation.accessToken, handle.trim(), title.trim());
-        if (navResult.warning) navWarning = navResult.warning;
-      } catch (navErr: any) {
-        navWarning = navErr.message ?? "Navigation link could not be added";
-        console.warn(`[customizer-pages] Nav link step failed: ${navWarning}`);
-      }
-    }
-
+    // Note: no theme-menu navigation link is created. The floating tray
+    // launcher (appai-customizer-tray.js) lists all active customizer pages,
+    // replacing the unreliable theme dropdown entirely.
     return res.status(201).json({
       page,
       storefrontUrl: `/pages/${page.handle}`,
-      navWarning,
+      navWarning: null,
     });
   }));
 
@@ -16510,17 +16578,10 @@ ${textEdgeRestrictions}
         .catch((e: Error) => console.warn("[PATCH customizer-page] Could not backfill boot HTML:", e.message));
     }
 
-    // Manage navigation menu link on status change (best-effort)
-    if (updates.status === "disabled" && dbPage.status === "active") {
-      // Page is being disabled — remove from menu
-      await removeNavigationLink(shop, installation.accessToken, dbPage.handle)
-        .catch((e: Error) => console.warn("[PATCH customizer-page] Could not remove nav link:", e.message));
-    } else if (updates.status === "active" && dbPage.status === "disabled") {
-      // Page is being re-enabled — add back to menu
-      const pageTitle = updates.title ?? dbPage.title;
-      await ensureNavigationLink(shop, installation.accessToken, dbPage.handle, pageTitle)
-        .catch((e: Error) => console.warn("[PATCH customizer-page] Could not re-add nav link:", e.message));
-    }
+    // Theme-menu links are no longer managed — the floating tray launcher
+    // handles storefront navigation. Disabled pages already redirect to the
+    // fallback hub via appai-customizer-embed.js, and the tray only lists
+    // active pages. Stale links (if any) are swept by removeCustomizerNavParent.
 
     const updated = await storage.updateCustomizerPage(dbPage.id, updates);
     return res.json({ page: updated });
