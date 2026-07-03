@@ -962,6 +962,23 @@ export interface EmbedDesignProps {
   };
 }
 
+/**
+ * Persisted-storage mirror of `storefrontLoggedIn`
+ * (`customer?.isLoggedIn ?? !!storefrontCustomerId`). IMPORTANT: the anonymous
+ * identity bootstrap ALSO writes `appai_customer_id` (and `appai_customer`
+ * with `isLoggedIn: false`), so id presence alone does NOT mean signed in.
+ */
+function hasStoredLoggedInIdentity(): boolean {
+  try {
+    const raw = localStorage.getItem('appai_customer');
+    if (raw) {
+      const c = JSON.parse(raw);
+      if (c && typeof c.isLoggedIn === 'boolean') return c.isLoggedIn;
+    }
+  } catch {}
+  try { return !!localStorage.getItem('appai_customer_id'); } catch { return false; }
+}
+
 export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) {
   const searchParams = new URLSearchParams(window.location.search);
 
@@ -1341,10 +1358,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // openSignIn=1 is set by the customizer tray's "Sign in" item when it
   // navigates here from a page without a designer iframe; skip when a stored
   // identity already exists (the panel would be redundant next to "Sign out").
-  const [showOtpLogin, setShowOtpLogin] = useState(() => {
-    if (searchParams.get('openSignIn') !== '1') return false;
-    try { return !localStorage.getItem('appai_customer_id'); } catch { return true; }
-  });
+  const [showOtpLogin, setShowOtpLogin] = useState(
+    () => searchParams.get('openSignIn') === '1' && !hasStoredLoggedInIdentity(),
+  );
   const [otpEmail, setOtpEmail] = useState(() => {
     try { return localStorage.getItem('appai_otp_email') || ''; } catch { return ''; }
   });
@@ -6031,13 +6047,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       }
 
       // Customizer tray "Sign in" item (parent page) — open the OTP panel.
-      // Read localStorage directly instead of React state: this handler's
-      // closure can be stale, and localStorage is the same source
-      // storefrontCustomerId restores from.
+      // Read localStorage (via hasStoredLoggedInIdentity) instead of React
+      // state: this handler's closure can be stale. Do NOT check only
+      // appai_customer_id — the anonymous bootstrap writes that too, which
+      // silently swallowed this message for any visitor who had already
+      // loaded the designer once.
       if (type === "ai-art-studio:open-sign-in") {
-        let hasIdentity = false;
-        try { hasIdentity = !!localStorage.getItem('appai_customer_id'); } catch {}
-        if (!hasIdentity) {
+        if (!hasStoredLoggedInIdentity()) {
           setShowOtpLogin(true);
           setTimeout(() => {
             document.querySelector('[data-testid="text-login-prompt"]')

@@ -184,6 +184,12 @@
         'opacity:0;transform:translateY(8px);',
       '}',
       '#' + BTN_ID + '.appai-visible{opacity:1;transform:translateY(0);}',
+      // Hidden while a theme drawer/menu/dialog is open (see
+      // startOverlaySuppression) — drawers cover the full viewport height on
+      // mobile, so there is no "below the menu" to move to; fading out and
+      // back (like chat widgets do) is the only placement that never fights
+      // the theme's overlay.
+      '#' + BTN_ID + '.appai-suppressed{opacity:0 !important;pointer-events:none;transform:translateY(8px);}',
       '#' + BTN_ID + ':hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(0,0,0,0.28);}',
       '#' + BTN_ID + ':active{transform:translateY(0);}',
       '#' + BTN_ID + ' svg{flex-shrink:0;}',
@@ -301,6 +307,7 @@
     btn.addEventListener('click', openTray);
     document.body.appendChild(btn);
     startOffsetTracking(settings);
+    startOverlaySuppression();
     // Fade in after append so the transition runs.
     requestAnimationFrame(function () {
       requestAnimationFrame(function () { btn.classList.add('appai-visible'); });
@@ -438,6 +445,74 @@
       }
       btn.style.setProperty('--appai-tray-bottom', Math.round(bottom) + 'px');
     }
+  }
+
+  // ─── Theme overlay suppression ────────────────────────────────────────
+  // When the theme opens its own nav drawer / mega menu / modal, the launcher
+  // (z-index above everything) would float over the menu items. Drawers cover
+  // the full viewport height on mobile, so "push the button below them" has
+  // no answer — instead fade the button out while any theme overlay is open
+  // and restore it on close (same pattern as chat widgets).
+
+  function themeOverlayOpen() {
+    try {
+      var vh = window.innerHeight;
+      // Native <dialog> overlays (Horizon-family menu/cart drawers).
+      var dialogs = document.querySelectorAll('dialog[open]');
+      for (var i = 0; i < dialogs.length; i++) {
+        var d = dialogs[i];
+        if (d.id === TRAY_ID || (d.closest && d.closest('#' + TRAY_ID))) continue;
+        var r = d.getBoundingClientRect();
+        if (r.width > 0 && r.height > vh * 0.35) return true;
+      }
+      // <details open> drawers / mega menus, only inside header chrome —
+      // content accordions (FAQ etc.) also use details and must not count.
+      var det = document.querySelectorAll('details[open]');
+      for (var j = 0; j < det.length; j++) {
+        if (!isHeaderChrome(det[j])) continue;
+        var panel = null;
+        try { panel = det[j].querySelector(':scope > *:not(summary)'); } catch (_) {}
+        if (!panel) {
+          var kids = det[j].children;
+          for (var c = 0; c < kids.length; c++) {
+            if (kids[c].tagName !== 'SUMMARY') { panel = kids[c]; break; }
+          }
+        }
+        if (!panel) continue;
+        var pr = panel.getBoundingClientRect();
+        if (pr.width > 0 && pr.height > 80) return true;
+      }
+      // Expanded header toggles (burger buttons) controlling a visible panel.
+      var burgers = document.querySelectorAll('[aria-expanded="true"][aria-controls]');
+      for (var k = 0; k < burgers.length; k++) {
+        if (!isHeaderChrome(burgers[k])) continue;
+        var target = document.getElementById(burgers[k].getAttribute('aria-controls'));
+        if (!target) continue;
+        var tr = target.getBoundingClientRect();
+        if (tr.width > 0 && tr.height > vh * 0.35) return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  function startOverlaySuppression() {
+    var applyState = function () {
+      var btn = document.getElementById(BTN_ID);
+      if (!btn) return;
+      if (themeOverlayOpen()) btn.classList.add('appai-suppressed');
+      else btn.classList.remove('appai-suppressed');
+    };
+    // Menus open/close via click or keyboard; re-check immediately and after
+    // typical drawer open/close animations settle. No permanent
+    // MutationObserver — these timed rechecks are cheap and theme-agnostic.
+    var schedule = function () {
+      applyState();
+      setTimeout(applyState, 250);
+      setTimeout(applyState, 650);
+    };
+    document.addEventListener('click', schedule, { capture: true, passive: true });
+    document.addEventListener('keyup', schedule, { capture: true, passive: true });
+    window.addEventListener('resize', schedule);
   }
 
   function startOffsetTracking(settings) {
