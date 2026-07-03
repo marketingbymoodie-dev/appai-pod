@@ -74,6 +74,31 @@
     return null;
   }
 
+  /**
+   * Write a scroll delta INSTANTLY, overriding the theme's CSS
+   * `scroll-behavior: smooth` (Savor/Horizon/Ritual set it on the page
+   * scroller). Per CSSOM, `el.scrollTop = x` respects that CSS and starts a
+   * ~300ms smooth animation instead of jumping; writing every wheel tick (or
+   * every animation frame) cancels-and-restarts that animation from a barely
+   * moved position, so the page looks completely frozen. `behavior:'instant'`
+   * explicitly bypasses the CSS.
+   */
+  function appaiInstantScrollBy(el, dy, dx) {
+    try {
+      el.scrollBy({ top: dy, left: dx, behavior: 'instant' });
+      return;
+    } catch (e) {}
+    try {
+      // Fallback for engines without 'instant': inline style beats the
+      // theme's stylesheet, making the plain write land immediately.
+      var prev = el.style.scrollBehavior;
+      el.style.scrollBehavior = 'auto';
+      el.scrollTop += dy;
+      el.scrollLeft += dx;
+      el.style.scrollBehavior = prev;
+    } catch (e) {}
+  }
+
   /** Can this element still scroll in the given wheel direction? */
   function appaiCanScroll(el, dy, dx) {
     if (!el) return false;
@@ -106,14 +131,7 @@
       if (!a.el) return;
       var moveY = Math.abs(a.remY) <= 1 ? a.remY : a.remY * 0.35;
       var moveX = Math.abs(a.remX) <= 1 ? a.remX : a.remX * 0.35;
-      try {
-        a.el.scrollTop += moveY;
-        a.el.scrollLeft += moveX;
-      } catch (e) {
-        a.remY = 0;
-        a.remX = 0;
-        return;
-      }
+      appaiInstantScrollBy(a.el, moveY, moveX);
       a.remY -= moveY;
       a.remX -= moveX;
       if (Math.abs(a.remY) >= 0.5 || Math.abs(a.remX) >= 0.5) {
@@ -152,27 +170,21 @@
     }
 
     if (targetEl) {
-      try {
-        if (smooth) {
-          appaiAnimateWheelScroll(targetEl, dy, dx);
-        } else {
-          targetEl.scrollTop += dy;
-          targetEl.scrollLeft += dx;
-        }
-        return;
-      } catch (e) {}
+      if (smooth) {
+        appaiAnimateWheelScroll(targetEl, dy, dx);
+      } else {
+        appaiInstantScrollBy(targetEl, dy, dx);
+      }
+      return;
     }
 
     // Last resort: window.scrollBy (covers edge cases where scrollingElement
     // math is off) then a direct write to whatever scroller we resolved.
     try {
-      window.scrollBy({ top: dy, left: dx, behavior: smooth ? 'smooth' : 'auto' });
+      window.scrollBy({ top: dy, left: dx, behavior: smooth ? 'smooth' : 'instant' });
       return;
     } catch (e) {}
-    try {
-      pageEl.scrollTop += dy;
-      pageEl.scrollLeft += dx;
-    } catch (e) {}
+    appaiInstantScrollBy(pageEl, dy, dx);
   }
 
   /** Same-origin app-proxy iframe: scroll parent directly (more reliable than postMessage). */
@@ -1558,14 +1570,23 @@
       // touchfling:  momentum animation after finger lifts (inertia).
       // touchcancel: cancel any in-flight fling (new touch started).
       //
-      // IMPORTANT: We write scrollTop directly (not window.scrollBy/scrollTo) to
-      // bypass any CSS scroll-behavior:smooth on the theme. smooth + rapid calls
-      // = overlapping CSS animations = the "glitchy / bouncing back" symptom.
-      // document.scrollingElement is cross-browser (documentElement fallback).
-      var _scrollEl = document.scrollingElement || document.documentElement;
+      // IMPORTANT: writes go through appaiInstantScrollBy — themes that set
+      // CSS scroll-behavior:smooth on the scroller (Savor/Horizon/Ritual)
+      // otherwise turn every write into a restarted 300ms animation, which
+      // looks completely frozen under rapid per-frame calls. The scroller is
+      // resolved per event: some themes scroll an inner wrapper (Savor's
+      // .page-wrapper), not <html>.
+      var _resolveTouchScroller = function (dy) {
+        var pageEl = appaiGetPageScrollElement();
+        if (appaiCanScroll(pageEl, dy, 0)) return pageEl;
+        var wrapper = appaiScrollRootForEmbedIframe();
+        if (wrapper && appaiCanScroll(wrapper, dy, 0)) return wrapper;
+        return pageEl;
+      };
       if (data.type === 'ai-art-studio:touchscroll') {
         stopFling();
-        try { _scrollEl.scrollTop += (data.deltaY || 0); } catch(e) {}
+        var _tsDy = data.deltaY || 0;
+        appaiInstantScrollBy(_resolveTouchScroller(_tsDy), _tsDy, 0);
         return;
       }
       if (data.type === 'ai-art-studio:touchcancel') {
@@ -1579,7 +1600,7 @@
         stopFling = function() { alive = false; };
         (function step() {
           if (!alive || Math.abs(flingV) < 0.5) return;
-          try { _scrollEl.scrollTop += flingV; } catch(e) {}
+          appaiInstantScrollBy(_resolveTouchScroller(flingV), flingV, 0);
           flingV *= 0.95; // friction: decays to ~0 in ~55 rAF frames (~0.9 s)
           requestAnimationFrame(step);
         })();
