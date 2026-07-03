@@ -1,0 +1,41 @@
+# Customizer tray & launcher — LOCKED, ask the user before ANY edit
+
+The floating Customizer launcher + slide-out tray (positioning, theme style
+matching, overlay suppression, sign-in flow) is **working and verified** as of
+`ai-art-studio-191` (2026-07-04). The user has explicitly required that it not
+be modified without their approval. Companion rule to
+`iframe-scroll-lockdown.mdc`.
+
+## Hard rules
+
+1. **Before editing ANY of the locked parts below, STOP and ask the user for
+   explicit approval first** — even for "small" or "obviously safe" changes,
+   refactors, or drive-by cleanups.
+2. Read `docs/customizer-tray-architecture.md` in full before proposing a
+   change. Every non-obvious rule fixed a real production bug — especially
+   the signed-in pitfall: `appai_customer_id` in localStorage does NOT mean
+   signed in (the anonymous bootstrap writes it too); the stored
+   `appai_customer.isLoggedIn` boolean is authoritative.
+3. After ANY approved change, run both verification scripts against the live
+   dev store and check the pass criteria in the doc:
+   `npx tsx scripts/diagnose-tray-signin.ts`,
+   `npx tsx scripts/diagnose-tray-overlay.ts`.
+4. **If any verification fails, revert immediately and redeploy** (Railway
+   `production` push + `npx shopify app deploy -f`). Do not iterate forward
+   on a broken state.
+
+## Locked parts
+
+- `extensions/theme-extension/assets/appai-customizer-tray.js`: the whole
+  file — `visibleHeaderBottom`, `verifiedClearOfHeaderChrome`,
+  `updateLauncherOffsets`, `themeOverlayOpen`, `startOverlaySuppression`,
+  `isSignedIn`, `openSignInFlow`, `renderTrayBody`, `extractTrayTheme`,
+  settings parsing.
+- `extensions/theme-extension/blocks/ai-art-embed.liquid`: the
+  `#appai-tray-settings` JSON element and the tray/embed script tags.
+- `client/src/pages/embed-design.tsx`: `hasStoredLoggedInIdentity()`, the
+  `openSignIn=1` initial state of `showOtpLogin`, and the
+  `ai-art-studio:open-sign-in` message handler.
+- `extensions/theme-extension/assets/appai-art-embed.js`: the `openSignIn`
+  URL-param forwarding into the iframe URL.
+- `server/routes.ts`: the `/customizer-pages` App Proxy route the tray reads.

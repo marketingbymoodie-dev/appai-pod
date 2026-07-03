@@ -10,6 +10,10 @@ owner, and never without re-running the verification scripts below. If any
 verification fails after a change, revert the change immediately — do not
 iterate forward on a broken state.**
 
+Companion doc: **`docs/customizer-tray-architecture.md`** (floating launcher
+button + slide-out tray + sign-in flow) — same lockdown treatment; some files
+(`appai-art-embed.js`, `embed-design.tsx`) appear on both lockdown lists.
+
 ## The two modes
 
 Mode is decided at mount in `appai-art-embed.js` by:
