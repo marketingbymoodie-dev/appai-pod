@@ -6140,7 +6140,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // controls column) so the inner panel can scroll with the mouse wheel.
   useEffect(() => {
     if (!isEmbedded && !isStorefront) return;
-    let fallbackRaf = 0;
 
     const findScrollableAncestor = (el: Element | null): Element | null => {
       let node = el;
@@ -6217,34 +6216,51 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         return;
       }
 
+      // Mirror the verified touch boundary hand-off (onTouchMove below): only
+      // when the iframe's own scroll is pinned to the edge in the wheel
+      // direction does it hand off to the parent page. Otherwise we scroll
+      // the iframe explicitly ourselves — do NOT rely on the browser's
+      // native wheel-to-scroll default action here. That default action can
+      // silently fail to fire immediately after this iframe transitions from
+      // desktop to mobile-native mode live (Shopify editor's mobile-preview
+      // toggle resizes the same iframe without a reload), even though
+      // overflow/CSS have already switched correctly. See
+      // docs/iframe-scroll-architecture.md before changing this.
       const scrollEl = document.scrollingElement || document.documentElement;
-      const beforeTop = scrollEl.scrollTop;
-      const beforeLeft = scrollEl.scrollLeft;
-      const deltaX = e.deltaX;
-      const deltaY = e.deltaY;
-      const deltaZ = e.deltaZ;
-      const deltaMode = e.deltaMode;
-      if (fallbackRaf) window.cancelAnimationFrame(fallbackRaf);
-      fallbackRaf = window.requestAnimationFrame(() => {
-        fallbackRaf = 0;
-        const topUnchanged = Math.abs(scrollEl.scrollTop - beforeTop) < 1;
-        const leftUnchanged = Math.abs(scrollEl.scrollLeft - beforeLeft) < 1;
-        if (topUnchanged && leftUnchanged) {
-          window.parent.postMessage({
-            type: 'ai-art-studio:wheel',
-            deltaX,
-            deltaY,
-            deltaZ,
-            deltaMode,
-          }, '*');
-        }
-      });
+      const maxScrollTop = scrollEl.scrollHeight - scrollEl.clientHeight;
+      const maxScrollLeft = scrollEl.scrollWidth - scrollEl.clientWidth;
+      const atBottom = scrollEl.scrollTop >= maxScrollTop - 1;
+      const atTop = scrollEl.scrollTop <= 1;
+      const atRight = scrollEl.scrollLeft >= maxScrollLeft - 1;
+      const atLeft = scrollEl.scrollLeft <= 1;
+      const pinnedY = e.deltaY === 0 || (e.deltaY > 0 && atBottom) || (e.deltaY < 0 && atTop);
+      const pinnedX = e.deltaX === 0 || (e.deltaX > 0 && atRight) || (e.deltaX < 0 && atLeft);
+
+      if (pinnedY && pinnedX) {
+        window.parent.postMessage({
+          type: 'ai-art-studio:wheel',
+          deltaX: e.deltaX,
+          deltaY: e.deltaY,
+          deltaZ: e.deltaZ,
+          deltaMode: e.deltaMode,
+        }, '*');
+        return;
+      }
+
+      e.preventDefault();
+      try {
+        scrollEl.scrollBy({ top: e.deltaY, left: e.deltaX, behavior: 'instant' as ScrollBehavior });
+      } catch {
+        scrollEl.scrollTop += e.deltaY;
+        scrollEl.scrollLeft += e.deltaX;
+      }
     };
     // Capture phase so canvas/drag overlays cannot stop propagation before we forward.
-    window.addEventListener('wheel', handleWheel, { passive: true, capture: true });
+    // Not passive: the mobile-native branch calls preventDefault so it can take
+    // over scrolling explicitly instead of depending on native wheel-scroll.
+    window.addEventListener('wheel', handleWheel, { passive: false, capture: true });
     return () => {
-      if (fallbackRaf) window.cancelAnimationFrame(fallbackRaf);
-      window.removeEventListener('wheel', handleWheel, { capture: true });
+      window.removeEventListener('wheel', handleWheel, { capture: true } as EventListenerOptions);
     };
   }, [isEmbedded, isStorefront, mobileNativeScroll]);
 
