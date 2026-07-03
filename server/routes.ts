@@ -1160,7 +1160,9 @@ function buildCustomizerBootHtml(): string {
   }, 25000);
 })();
 </script>
-<script src="/apps/appai/theme-asset/appai-art-embed.js" defer></script>`.trim();
+<script src="/apps/appai/theme-asset/appai-art-embed.js" defer></script>
+<script src="/apps/appai/theme-asset/appai-saved-designs-nav.js" defer></script>
+<script src="/apps/appai/theme-asset/appai-customizer-tray.js" defer></script>`.trim();
 }
 
 const customizerBootBackfillCache = new Set<string>();
@@ -17087,6 +17089,7 @@ ${textEdgeRestrictions}
     "appai-art-embed.js",
     "appai-art-embed.css",
     "appai-saved-designs-nav.js",
+    "appai-customizer-tray.js",
     "appai-customizer-embed.js",
     "appai-cart-guard.js",
     "appai-cart-images.js",

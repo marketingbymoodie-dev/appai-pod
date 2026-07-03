@@ -39,12 +39,55 @@
     first item in the Customizer nav dropdown and wires up a slide-out drawer.
 {% endcomment %}
 <script src="{{ 'appai-saved-designs-nav.js' | asset_url }}" defer></script>
+{% comment %}
+  appai-customizer-tray.js:
+  - Floating "Customize" button + slide-out tray on every page.
+  - Fully app-owned, click-driven UI — immune to theme-specific hover-menu
+    quirks. Auto-matches the theme's button colors and fonts at runtime.
+  - Settings below are merchant-configurable in the theme editor.
+{% endcomment %}
+<script type="application/json" id="appai-tray-settings">
+{
+  "enabled": {{ block.settings.tray_enabled | json }},
+  "label": {{ block.settings.tray_label | default: "Customize" | json }},
+  "position": {{ block.settings.tray_position | default: "bottom-right" | json }}
+}
+</script>
+<script src="{{ 'appai-customizer-tray.js' | asset_url }}" defer></script>
 <script src="{{ 'appai-art-embed.js' | asset_url }}" defer></script>
 
 {% schema %}
 {
   "name": "AI Art Studio",
   "target": "body",
-  "settings": []
+  "settings": [
+    {
+      "type": "header",
+      "content": "Customizer button & tray"
+    },
+    {
+      "type": "checkbox",
+      "id": "tray_enabled",
+      "label": "Show floating Customizer button",
+      "info": "A floating button that opens a slide-out menu of your customizer pages and the customer's saved designs. Works the same on every theme.",
+      "default": true
+    },
+    {
+      "type": "text",
+      "id": "tray_label",
+      "label": "Button label",
+      "default": "Customize"
+    },
+    {
+      "type": "select",
+      "id": "tray_position",
+      "label": "Button position",
+      "options": [
+        { "value": "bottom-right", "label": "Bottom right" },
+        { "value": "bottom-left", "label": "Bottom left" }
+      ],
+      "default": "bottom-right"
+    }
+  ]
 }
 {% endschema %}
