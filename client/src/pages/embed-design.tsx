@@ -981,7 +981,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // storefront=true and shopify=true appear in the URL, storefront wins.
   const isEmbedded = !isAdminTester && searchParams.get("embedded") === "true";
   const isShopify = !isStorefront && !isAdminTester && searchParams.get("shopify") === "true";
-  const mobileNativeScroll = searchParams.get("mobileNativeScroll") === "1";
+  // State (not a plain const) so it can react LIVE to the parent embed
+  // script's `ai-art-studio:set-scroll-mode` message. Shopify's theme editor
+  // "mobile preview" toggle resizes the SAME iframe without a reload, so a
+  // value frozen at mount from the URL param would leave the wrong scroll
+  // mode (and stale CSS/effects) active after the toggle. See
+  // docs/iframe-scroll-architecture.md before changing this.
+  const [mobileNativeScroll, setMobileNativeScroll] = useState(
+    () => searchParams.get("mobileNativeScroll") === "1",
+  );
 
   // Key behavioral flags based on runtime mode
   const requiresSessionToken = runtimeMode === 'admin-embedded';
@@ -6006,6 +6014,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           setConfigLoading(false);
           setIsInAppProductSwitching(false);
         });
+      }
+
+      // Live scroll-mode switch from the parent embed script (appai-art-embed.js),
+      // sent when its matchMedia breakpoint crosses WITHOUT a page reload — e.g.
+      // Shopify theme editor's mobile-preview toggle resizes the same iframe in
+      // place. See docs/iframe-scroll-architecture.md.
+      if (type === "ai-art-studio:set-scroll-mode" && typeof event.data.mobile === "boolean") {
+        setMobileNativeScroll(event.data.mobile);
       }
     };
 

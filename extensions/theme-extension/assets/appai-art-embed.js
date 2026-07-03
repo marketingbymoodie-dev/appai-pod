@@ -187,6 +187,23 @@
     appaiInstantScrollBy(pageEl, dy, dx);
   }
 
+  /**
+   * LIVE mobile-mode check — deliberately NOT cached. Used both to decide
+   * framing at mount/attach time AND, critically, INSIDE the wheel hijack
+   * listener on every event (see below). Shopify's theme editor "mobile
+   * preview" toggle resizes the SAME iframe without a reload, so any value
+   * captured only once at mount/attach time goes stale the moment the
+   * merchant toggles device preview. See docs/iframe-scroll-architecture.md
+   * before changing this — do not reintroduce a cached/attach-time-only check.
+   */
+  function appaiIsMobileScrollMode() {
+    try {
+      return window.matchMedia('(pointer: coarse), (max-width: 767px)').matches;
+    } catch (e) {
+      return window.innerWidth <= 767;
+    }
+  }
+
   /** Same-origin app-proxy iframe: scroll parent directly (more reliable than postMessage). */
   function appaiAttachIframeWheelForward(iframe, mobileNativeScroll) {
     if (mobileNativeScroll || !iframe) return;
@@ -196,11 +213,7 @@
     // store page and make the lower iframe content unreachable (seen in
     // Shopify's desktop mobile preview, where wheel input + narrow viewport
     // combine). cleanupDuplicateGenerators() used to pass `false` blindly.
-    try {
-      if (window.matchMedia('(pointer: coarse), (max-width: 767px)').matches) return;
-    } catch (e) {
-      if (window.innerWidth <= 767) return;
-    }
+    if (appaiIsMobileScrollMode()) return;
     if (iframe.getAttribute('data-appai-wheel-forward') === '1') return;
     iframe.setAttribute('data-appai-wheel-forward', '1');
     var tryAttach = function () {
@@ -214,6 +227,12 @@
       doc.documentElement.setAttribute('data-appai-wheel-forward-doc', '1');
       try { iframe.contentWindow.__APPAI_PARENT_WHEEL_FORWARD__ = true; } catch (e) {}
       doc.addEventListener('wheel', function (e) {
+        // LIVE re-check (not just at attach time): if the theme editor's
+        // mobile-preview toggle has since narrowed the viewport, this listener
+        // may still be attached (it is never removed — see
+        // docs/iframe-scroll-architecture.md), but it must act as a no-op so
+        // the iframe's own internal scroll (mobile-native mode) takes over.
+        if (appaiIsMobileScrollMode()) return;
         var target = e.target;
         // Open Radix overlays (dropdowns, popovers) always scroll internally.
         if (target && target.closest && target.closest(
@@ -642,12 +661,7 @@
       document.querySelector('[data-block-handle="ai-art-studio"] .ai-art-studio__container') ||
       document.querySelector('[data-block-handle="ai-art-studio"]');
     var container, studioContainer;
-    var mobileNativeScroll = false;
-    try {
-      mobileNativeScroll = window.matchMedia('(pointer: coarse), (max-width: 767px)').matches;
-    } catch (e) {
-      mobileNativeScroll = window.innerWidth <= 767;
-    }
+    var mobileNativeScroll = appaiIsMobileScrollMode();
     function appaiMobileFrameHeight() {
       var h = window.visualViewport && window.visualViewport.height ? window.visualViewport.height : window.innerHeight;
       return Math.max(520, Math.floor(h - 24));
@@ -657,6 +671,16 @@
       studioContainer.style.height = appaiMobileFrameHeight() + 'px';
       studioContainer.style.overflow = 'hidden';
       studioContainer.style.webkitOverflowScrolling = 'touch';
+    }
+    // Undo mobile framing when switching back to desktop mode live (theme
+    // editor toggle). 600px matches the container's pre-mount default so
+    // there is no flash of collapsed height before the iframe's first
+    // ai-art-studio:resize report lands and drives the real height.
+    function clearMobileNativeScrollFrame() {
+      if (!studioContainer) return;
+      studioContainer.style.height = '600px';
+      studioContainer.style.overflow = '';
+      studioContainer.style.webkitOverflowScrolling = '';
     }
 
     const urlParams = new URLSearchParams(window.location.search);
@@ -732,11 +756,14 @@
     }
     ensureAppaiLoadingCover();
     applyMobileNativeScrollFrame();
-    if (mobileNativeScroll) {
-      var resizeFrame = function() { applyMobileNativeScrollFrame(); };
-      window.addEventListener('resize', resizeFrame, { passive: true });
-      if (window.visualViewport) window.visualViewport.addEventListener('resize', resizeFrame, { passive: true });
-    }
+    // Registered unconditionally (not gated on the mount-time mode) because
+    // mobileNativeScroll can flip live via the matchMedia 'change' listener
+    // below (Shopify theme editor mobile-preview toggle). The function itself
+    // no-ops when not currently in mobile mode, so this is a cheap no-op most
+    // of the time on desktop.
+    var resizeFrame = function() { applyMobileNativeScrollFrame(); };
+    window.addEventListener('resize', resizeFrame, { passive: true });
+    if (window.visualViewport) window.visualViewport.addEventListener('resize', resizeFrame, { passive: true });
     
     const params = new URLSearchParams();
     params.set('shop', normaliseMyshopifyShopForApi(config.shopDomain));
@@ -792,7 +819,45 @@
     };
     
     studioContainer.appendChild(iframe);
-    
+
+    // ── Live scroll-mode switching ──────────────────────────────────────
+    // Shopify's theme editor "mobile preview" toggle resizes the SAME iframe
+    // WITHOUT a reload, so the mode decided above at mount can go stale the
+    // moment the merchant toggles device preview. Convert the running iframe
+    // live on the matchMedia breakpoint crossing. Do NOT remove this without
+    // re-testing scripts/diagnose-resize.ts — see
+    // docs/iframe-scroll-architecture.md.
+    try {
+      var appaiScrollModeMql = window.matchMedia('(pointer: coarse), (max-width: 767px)');
+      var appaiOnScrollModeChange = function (isMobileNow) {
+        if (isMobileNow === mobileNativeScroll) return;
+        mobileNativeScroll = isMobileNow;
+        if (mobileNativeScroll) {
+          applyMobileNativeScrollFrame();
+        } else {
+          clearMobileNativeScrollFrame();
+          // If the page originally mounted in mobile mode, the wheel hijack
+          // was never attached at all (its attach-time guard returned
+          // immediately) — attach it now that we're live in desktop mode.
+          appaiAttachIframeWheelForward(iframe, false);
+        }
+        try {
+          iframe.setAttribute('scrolling', mobileNativeScroll ? 'yes' : 'no');
+        } catch (e) {}
+        try {
+          iframe.contentWindow.postMessage(
+            { type: 'ai-art-studio:set-scroll-mode', mobile: mobileNativeScroll },
+            '*'
+          );
+        } catch (e) {}
+      };
+      if (appaiScrollModeMql.addEventListener) {
+        appaiScrollModeMql.addEventListener('change', function (e) { appaiOnScrollModeChange(e.matches); });
+      } else if (appaiScrollModeMql.addListener) {
+        appaiScrollModeMql.addListener(function (e) { appaiOnScrollModeChange(e.matches); }); // Safari <14
+      }
+    } catch (e) {}
+
     // ================================================================
     // Theme extraction — reads computed styles from the live storefront DOM
     // and builds a plain object for injection into the iframe CSS variables.
