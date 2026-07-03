@@ -190,6 +190,17 @@
   /** Same-origin app-proxy iframe: scroll parent directly (more reliable than postMessage). */
   function appaiAttachIframeWheelForward(iframe, mobileNativeScroll) {
     if (mobileNativeScroll || !iframe) return;
+    // Authoritative mobile check — do NOT trust the caller's flag alone.
+    // In mobile-native mode the iframe is a fixed viewport-height box that
+    // scrolls its own content; hijacking wheel here would scroll only the
+    // store page and make the lower iframe content unreachable (seen in
+    // Shopify's desktop mobile preview, where wheel input + narrow viewport
+    // combine). cleanupDuplicateGenerators() used to pass `false` blindly.
+    try {
+      if (window.matchMedia('(pointer: coarse), (max-width: 767px)').matches) return;
+    } catch (e) {
+      if (window.innerWidth <= 767) return;
+    }
     if (iframe.getAttribute('data-appai-wheel-forward') === '1') return;
     iframe.setAttribute('data-appai-wheel-forward', '1');
     var tryAttach = function () {
