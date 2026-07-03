@@ -1337,8 +1337,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [freeLimitReached, setFreeLimitReached] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [isSharing, setIsSharing] = useState(false);
-  // OTP login state for storefront — restore from localStorage if available
-  const [showOtpLogin, setShowOtpLogin] = useState(false);
+  // OTP login state for storefront — restore from localStorage if available.
+  // openSignIn=1 is set by the customizer tray's "Sign in" item when it
+  // navigates here from a page without a designer iframe; skip when a stored
+  // identity already exists (the panel would be redundant next to "Sign out").
+  const [showOtpLogin, setShowOtpLogin] = useState(() => {
+    if (searchParams.get('openSignIn') !== '1') return false;
+    try { return !localStorage.getItem('appai_customer_id'); } catch { return true; }
+  });
   const [otpEmail, setOtpEmail] = useState(() => {
     try { return localStorage.getItem('appai_otp_email') || ''; } catch { return ''; }
   });
@@ -6022,6 +6028,22 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       // place. See docs/iframe-scroll-architecture.md.
       if (type === "ai-art-studio:set-scroll-mode" && typeof event.data.mobile === "boolean") {
         setMobileNativeScroll(event.data.mobile);
+      }
+
+      // Customizer tray "Sign in" item (parent page) — open the OTP panel.
+      // Read localStorage directly instead of React state: this handler's
+      // closure can be stale, and localStorage is the same source
+      // storefrontCustomerId restores from.
+      if (type === "ai-art-studio:open-sign-in") {
+        let hasIdentity = false;
+        try { hasIdentity = !!localStorage.getItem('appai_customer_id'); } catch {}
+        if (!hasIdentity) {
+          setShowOtpLogin(true);
+          setTimeout(() => {
+            document.querySelector('[data-testid="text-login-prompt"]')
+              ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }, 150);
+        }
       }
     };
 

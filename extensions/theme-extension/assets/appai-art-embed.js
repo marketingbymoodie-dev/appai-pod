@@ -802,6 +802,11 @@
     if (loadMockup) {
       params.set('loadMockup', loadMockup);
     }
+    // Set by the customizer tray's "Sign in" item when navigating here from a
+    // page without a designer iframe — opens the OTP sign-in panel on load.
+    if (urlParams.get('openSignIn') === '1') {
+      params.set('openSignIn', '1');
+    }
     
     const iframe = document.createElement('iframe');
     // Use App Proxy path so the iframe loads on the Shopify domain (first-party, no cross-origin fetch issues).

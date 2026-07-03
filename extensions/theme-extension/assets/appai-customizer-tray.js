@@ -281,6 +281,11 @@
     'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
     '<polyline points="9 18 15 12 9 6"/></svg>';
 
+  var ICON_USER =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" ' +
+    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>';
+
   function buildLauncher(theme, settings) {
     if (document.getElementById(BTN_ID)) return;
     var btn = document.createElement('button');
@@ -502,6 +507,42 @@
     return m ? m[1] : null;
   }
 
+  /**
+   * Signed-in check, mirroring the designer iframe's own rule
+   * (embed-design.tsx: `customer?.isLoggedIn ?? !!storefrontCustomerId`).
+   * The iframe is served over the App Proxy on the shop domain, so its
+   * localStorage IS this page's localStorage — reads are always fresh, and
+   * signing in inside the iframe is visible here on the next tray open.
+   */
+  function isSignedIn() {
+    try {
+      var raw = localStorage.getItem('appai_customer');
+      if (raw) {
+        var c = JSON.parse(raw);
+        if (c && typeof c.isLoggedIn === 'boolean') return c.isLoggedIn;
+      }
+    } catch (_) {}
+    try { return !!localStorage.getItem('appai_customer_id'); } catch (_) { return false; }
+  }
+
+  /**
+   * Open the app's sign-in (email OTP panel inside the designer iframe).
+   * On a page that already hosts the designer, message the iframe directly
+   * and bring it into view; otherwise navigate to a customizer page with
+   * ?openSignIn=1, which the embed forwards into the iframe URL.
+   */
+  function openSignInFlow() {
+    var iframe = document.querySelector('iframe[title="AI Art Design Studio"]');
+    if (iframe && iframe.contentWindow) {
+      try { iframe.contentWindow.postMessage({ type: 'ai-art-studio:open-sign-in' }, '*'); } catch (_) {}
+      return;
+    }
+    var pages = _pages || [];
+    if (pages.length > 0) {
+      window.location.href = '/pages/' + encodeURIComponent(pages[0].handle) + '?openSignIn=1';
+    }
+  }
+
   function renderTrayBody() {
     var body = document.getElementById('appai-tray-body');
     if (!body) return;
@@ -510,7 +551,47 @@
     var pages = _pages || [];
     var here = currentPageHandle();
 
-    // Saved designs first — only when the existing drawer is available
+    // Sign-in first when the customer has no AppAI identity yet — otherwise
+    // the only way to sign in is to find a customizer page and use the
+    // button inside the designer. Re-checked on every render (localStorage
+    // is shared with the same-origin designer iframe, so signing in there
+    // hides this on the next open without a reload).
+    if (!isSignedIn()) {
+      var accountLabel = document.createElement('div');
+      accountLabel.className = 'appai-tray-section-label';
+      accountLabel.textContent = 'Your account';
+      body.appendChild(accountLabel);
+
+      var signInBtn = document.createElement('button');
+      signInBtn.type = 'button';
+      signInBtn.className = 'appai-tray-item';
+
+      var uIcon = document.createElement('span');
+      uIcon.className = 'appai-tray-item-icon';
+      uIcon.innerHTML = ICON_USER;
+
+      var uText = document.createElement('span');
+      uText.className = 'appai-tray-item-text';
+      var uTitle = document.createElement('span');
+      uTitle.className = 'appai-tray-item-title';
+      uTitle.textContent = 'Sign in or Create an Account';
+      uText.appendChild(uTitle);
+      var uSub = document.createElement('span');
+      uSub.className = 'appai-tray-item-sub';
+      uSub.textContent = 'Save your designs and reload them anytime';
+      uText.appendChild(uSub);
+
+      signInBtn.appendChild(uIcon);
+      signInBtn.appendChild(uText);
+      signInBtn.insertAdjacentHTML('beforeend', ICON_CHEVRON);
+      signInBtn.addEventListener('click', function () {
+        closeTray();
+        setTimeout(openSignInFlow, 120);
+      });
+      body.appendChild(signInBtn);
+    }
+
+    // Saved designs next — only when the existing drawer is available
     // (customer logged in with >=1 design). Re-checked on every render
     // because the saved-designs script initialises asynchronously.
     if (typeof window.__APPAI_OPEN_SAVED_DESIGNS_DRAWER__ === 'function') {
