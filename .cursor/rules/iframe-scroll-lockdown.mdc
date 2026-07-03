@@ -1,0 +1,40 @@
+# Iframe scrolling — LOCKED, ask the user before ANY edit
+
+The iframe scrolling system (desktop wheel forwarding + mobile internal
+scroll) is **working and verified** as of `ai-art-studio-188` (2026-07-03)
+after many failed iterations. The user has explicitly required that it not be
+modified without their approval.
+
+## Hard rules
+
+1. **Before editing ANY of the locked parts below, STOP and ask the user for
+   explicit approval first** — even for "small" or "obviously safe" changes,
+   refactors, or drive-by cleanups. Describe what you want to change and why,
+   and wait for their go-ahead.
+2. Read `docs/iframe-scroll-architecture.md` in full before proposing a change.
+   Every non-obvious rule in there fixed a real production bug (e.g. all scroll
+   writes must use `appaiInstantScrollBy` because themes set CSS
+   `scroll-behavior: smooth`, which silently freezes plain `scrollTop` writes).
+3. After ANY approved change, run all three verification scripts against the
+   live dev store and check the pass criteria in the doc:
+   `npx tsx scripts/diagnose-scroll.ts`, `npx tsx scripts/diagnose-savor.ts`,
+   `npx tsx scripts/diagnose-mobile.ts`.
+4. **If any verification fails, revert immediately and redeploy** (Railway
+   `production` push + `npx shopify app deploy -f`). Do not iterate forward on
+   a broken state.
+
+## Locked parts
+
+- `extensions/theme-extension/assets/appai-art-embed.js`:
+  `appaiInstantScrollBy`, `appaiAnimateWheelScroll`, `appaiScrollParentPage`,
+  `appaiGetPageScrollElement`, `appaiScrollRootForEmbedIframe`,
+  `appaiCanScroll`, `appaiAttachIframeWheelForward`, the wheel-attach calls in
+  `cleanupDuplicateGenerators`, the `resize`/`wheel`/`touchscroll`/
+  `touchfling`/`touchcancel` message handlers, `mobileNativeScroll` detection,
+  `applyMobileNativeScrollFrame`.
+- `client/src/pages/embed-design.tsx`: the resize-report effect, the
+  wheel-forward effect (incl. the `__APPAI_PARENT_WHEEL_FORWARD__` dedupe
+  check), both touch-scroll effects.
+- `client/src/index.css`: all `html[data-appai-embed]` scroll / overflow /
+  scrollbar rules.
+- `server/routes.ts`: the script tags injected by `buildCustomizerBootHtml()`.
