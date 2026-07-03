@@ -457,6 +457,17 @@ html[data-appai-embed][data-appai-mobile-native-scroll] body {
      handoff fired by the boundary touch handler in embed-design.tsx. */
   overscroll-behavior-y: none;
   -webkit-overflow-scrolling: touch;
+  /* The iframe scrolls internally on mobile, but its scrollbar would render
+     right next to the Shopify page's scrollbar (a confusing double bar).
+     Hide OUR internal one — scrolling itself is untouched. */
+  scrollbar-width: none;
+}
+
+html[data-appai-embed][data-appai-mobile-native-scroll]::-webkit-scrollbar,
+html[data-appai-embed][data-appai-mobile-native-scroll] body::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
 }
 
 /* Mobile native scroll only: tell iOS that taps on interactive controls are

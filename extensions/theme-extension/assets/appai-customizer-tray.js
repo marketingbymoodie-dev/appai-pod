@@ -352,6 +352,64 @@
     return bottom;
   }
 
+  /**
+   * Hit-test verification: after computing where the button should sit,
+   * probe the actual pixels it would occupy with elementsFromPoint. If any
+   * element there belongs to header chrome (menu bar, announcement/welcome
+   * bar, nav), push the button below that element's bottom edge and re-test.
+   * This is markup-agnostic — measurement bugs can't leave the button on the
+   * menu because we check what is REALLY rendered at its position.
+   */
+  function isHeaderChrome(el) {
+    if (!el || !el.closest) return null;
+    return el.closest(
+      'header, nav, .shopify-section-group-header-group, ' +
+      '[id^="shopify-section"][id*="header"], [id^="shopify-section"][id*="announcement"], ' +
+      '[class*="announcement"], [class*="utility-bar"], [class*="top-bar"], [class*="topbar"], ' +
+      'sticky-header, header-component, .site-header, .header-wrapper'
+    );
+  }
+
+  function verifiedClearOfHeaderChrome(btn, settings, top) {
+    if (!document.elementsFromPoint) return top;
+    var vh = window.innerHeight;
+    var vw = window.innerWidth;
+    var rect = btn.getBoundingClientRect();
+    var btnW = rect.width || 180;
+    var btnH = rect.height || 42;
+    var x = settings.position.indexOf('left') !== -1
+      ? Math.min(20 + btnW / 2, vw - 1)
+      : Math.max(vw - 20 - btnW / 2, 1);
+
+    for (var attempt = 0; attempt < 6; attempt++) {
+      var overlap = 0;
+      // Probe the button's top edge and vertical center at its horizontal
+      // center. Scan the FULL stack at each point — transparent hero/section
+      // wrappers can sit above the menu bar in hit-test order.
+      var probes = [top + 2, top + btnH / 2];
+      for (var p = 0; p < probes.length; p++) {
+        var y = probes[p];
+        if (y < 0 || y >= vh) continue;
+        var stack = document.elementsFromPoint(x, y);
+        for (var s = 0; s < stack.length; s++) {
+          var el = stack[s];
+          if (!el || el.id === BTN_ID) continue;
+          if (el.closest && el.closest('#' + BTN_ID)) continue;
+          var chrome = isHeaderChrome(el);
+          if (!chrome) continue;
+          var cr = chrome.getBoundingClientRect();
+          // Ignore wrappers that aren't plausibly header chrome height-wise.
+          if (cr.bottom > 0 && cr.bottom < vh * 0.6 && cr.bottom + 14 > top && cr.bottom > overlap) {
+            overlap = cr.bottom;
+          }
+        }
+      }
+      if (!overlap) break;
+      top = overlap + 14;
+    }
+    return top;
+  }
+
   function updateLauncherOffsets(settings) {
     var btn = document.getElementById(BTN_ID);
     if (!btn) return;
@@ -362,6 +420,7 @@
       // thing this button must never do. 16px only applies once scrolled.
       if (headerBottom === 0 && (window.scrollY || window.pageYOffset || 0) < 40) headerBottom = 72;
       var top = headerBottom > 0 ? headerBottom + 14 : 16;
+      top = verifiedClearOfHeaderChrome(btn, settings, top);
       btn.style.setProperty('--appai-tray-top', Math.round(top) + 'px');
     } else {
       var bottom = 20;

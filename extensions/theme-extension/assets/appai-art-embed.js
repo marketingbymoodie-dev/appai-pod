@@ -84,10 +84,57 @@
     return false;
   }
 
+  // Smooth animator for DISCRETE wheel ticks (classic mouse wheel: one notch =
+  // one big ~100px delta). Writing scrollTop += 100 in a single frame is a hard
+  // visual step — the browser normally animates each native wheel tick over
+  // ~150ms. We reproduce that: accumulate the remaining distance and move ~35%
+  // of it per animation frame. Trackpads (many small per-frame deltas) bypass
+  // this and keep instant 1:1 writes, so they stay perfectly responsive.
+  var appaiWheelAnim = { el: null, remY: 0, remX: 0, raf: 0 };
+  function appaiAnimateWheelScroll(el, dy, dx) {
+    if (appaiWheelAnim.el !== el) {
+      appaiWheelAnim.el = el;
+      appaiWheelAnim.remY = 0;
+      appaiWheelAnim.remX = 0;
+    }
+    appaiWheelAnim.remY += dy;
+    appaiWheelAnim.remX += dx;
+    if (appaiWheelAnim.raf) return;
+    var step = function () {
+      appaiWheelAnim.raf = 0;
+      var a = appaiWheelAnim;
+      if (!a.el) return;
+      var moveY = Math.abs(a.remY) <= 1 ? a.remY : a.remY * 0.35;
+      var moveX = Math.abs(a.remX) <= 1 ? a.remX : a.remX * 0.35;
+      try {
+        a.el.scrollTop += moveY;
+        a.el.scrollLeft += moveX;
+      } catch (e) {
+        a.remY = 0;
+        a.remX = 0;
+        return;
+      }
+      a.remY -= moveY;
+      a.remX -= moveX;
+      if (Math.abs(a.remY) >= 0.5 || Math.abs(a.remX) >= 0.5) {
+        a.raf = requestAnimationFrame(step);
+      } else {
+        a.remY = 0;
+        a.remX = 0;
+      }
+    };
+    appaiWheelAnim.raf = requestAnimationFrame(step);
+  }
+
   function appaiScrollParentPage(deltaX, deltaY, deltaMode) {
     var dy = appaiNormalizeWheelDelta(deltaY, deltaMode, window.innerHeight || 800);
     var dx = appaiNormalizeWheelDelta(deltaX, deltaMode, window.innerWidth || 1200);
     if (Math.abs(dy) < 0.01 && Math.abs(dx) < 0.01) return;
+
+    // Discrete wheel notch (line/page mode, or a single large pixel jump) →
+    // animate like the browser's native smooth wheel scroll. Small frequent
+    // trackpad deltas stay instant.
+    var smooth = deltaMode !== 0 || Math.abs(dy) >= 60 || Math.abs(dx) >= 60;
 
     // Prefer the MAIN page scroller so scrolling over the iframe feels exactly
     // like scrolling over normal page content (1:1 native speed). Writing
@@ -96,19 +143,22 @@
     // scroller around the iframe when the page itself cannot move in the wheel
     // direction (themes that scroll an inner container instead of <html>).
     var pageEl = appaiGetPageScrollElement();
+    var targetEl = null;
     if (appaiCanScroll(pageEl, dy, dx)) {
-      try {
-        pageEl.scrollTop += dy;
-        pageEl.scrollLeft += dx;
-        return;
-      } catch (e) {}
+      targetEl = pageEl;
+    } else {
+      var embedRoot = appaiScrollRootForEmbedIframe();
+      if (embedRoot && appaiCanScroll(embedRoot, dy, dx)) targetEl = embedRoot;
     }
 
-    var embedRoot = appaiScrollRootForEmbedIframe();
-    if (embedRoot && appaiCanScroll(embedRoot, dy, dx)) {
+    if (targetEl) {
       try {
-        embedRoot.scrollTop += dy;
-        embedRoot.scrollLeft += dx;
+        if (smooth) {
+          appaiAnimateWheelScroll(targetEl, dy, dx);
+        } else {
+          targetEl.scrollTop += dy;
+          targetEl.scrollLeft += dx;
+        }
         return;
       } catch (e) {}
     }
@@ -116,7 +166,7 @@
     // Last resort: window.scrollBy (covers edge cases where scrollingElement
     // math is off) then a direct write to whatever scroller we resolved.
     try {
-      window.scrollBy({ top: dy, left: dx, behavior: 'auto' });
+      window.scrollBy({ top: dy, left: dx, behavior: smooth ? 'smooth' : 'auto' });
       return;
     } catch (e) {}
     try {
@@ -142,10 +192,22 @@
       try { iframe.contentWindow.__APPAI_PARENT_WHEEL_FORWARD__ = true; } catch (e) {}
       doc.addEventListener('wheel', function (e) {
         var target = e.target;
+        // Open Radix overlays (dropdowns, popovers) always scroll internally.
         if (target && target.closest && target.closest(
-          '[data-appai-inner-scroll],[data-radix-select-content],[data-radix-popper-content-wrapper],[data-radix-dropdown-menu-content],[data-radix-popover-content]'
+          '[data-radix-select-content],[data-radix-popper-content-wrapper],[data-radix-dropdown-menu-content],[data-radix-popover-content]'
         )) {
           return;
+        }
+        // Opt-in inner-scroll panels scroll internally only while they can
+        // still move in the wheel direction; at their boundary the wheel
+        // hands off to the parent page (no dead zone).
+        var inner = target && target.closest ? target.closest('[data-appai-inner-scroll]') : null;
+        if (inner) {
+          var canY = e.deltaY < 0 ? inner.scrollTop > 0
+            : inner.scrollTop + inner.clientHeight < inner.scrollHeight - 1;
+          var canX = e.deltaX < 0 ? inner.scrollLeft > 0
+            : inner.scrollLeft + inner.clientWidth < inner.scrollWidth - 1;
+          if ((e.deltaY && canY) || (e.deltaX && canX)) return;
         }
         appaiScrollParentPage(e.deltaX, e.deltaY, e.deltaMode);
         e.preventDefault();
