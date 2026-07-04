@@ -63,6 +63,8 @@ On Shopify customizer pages the iframe auto-resizes to full content height. Brow
 
 **Why the guard (2026-07, Ritual bug):** the message fires on every load, not just hard refresh. On a fresh navigation the preview is already near the top; scrolling then only trims top margin, and on themes whose header is **not sticky** (Ritual: static header inside the `.page-wrapper` scroller) it pushed the nav menu off-screen — merchants saw "the native menu is removed" on every customizer page open. The guard keeps the hard-refresh-from-footer rescue intact.
 
+**Sticky-header watchdog (`appaiInstallStickyHeaderWatchdog` in `appai-art-embed.js`):** Ritual/Horizon-family `<header-component sticky="scroll-up">` has a theme bug — quick wheel direction changes ending back at the very top can strand it at `data-sticky-state="idle"` + `opacity:0` (invisible menu at scroll 0, reproduced with all app scripts blocked). The watchdog resets it to `"inactive"` when the header sits at its natural top position but stays hidden for ~0.8s. It must never fire mid-page (`rect.top > -4` check) or the theme's hide-on-scroll-down/reveal-on-scroll-up breaks.
+
 Do not remove this without re-testing (a) hard refresh on a long customizer page (mobile + desktop) and (b) fresh landing on Ritual — header/menu must stay visible.
 
 ### Catalog placeholder carousel (Primary / View 2 / View 3)

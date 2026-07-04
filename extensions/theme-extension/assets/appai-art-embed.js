@@ -427,6 +427,41 @@
 
 
 
+  /**
+   * Ritual/Horizon-family sticky-header watchdog. The theme's
+   * <header-component sticky="scroll-up"> hides the header with opacity:0
+   * while scrolling down and reveals it on sustained upward scroll. Quick
+   * wheel direction changes that end back AT THE VERY TOP can strand its
+   * state machine at data-sticky-state="idle" + opacity:0 — an invisible
+   * menu at scroll position 0 with no scroll room left to trigger the
+   * reveal. Reproduced on Ritual's homepage with ALL app scripts blocked,
+   * so it is a theme bug — but customers hit it constantly while wheel-
+   * scrolling over the customizer iframe, so we heal it: if the header sits
+   * at its natural top position yet is still hidden in "idle" for two
+   * consecutive ticks (~0.8s), reset it to "inactive" (the theme's own
+   * resting state at the top). No-op mid-page (rect.top is negative there)
+   * and on themes without <header-component sticky> (e.g. Dawn).
+   */
+  function appaiInstallStickyHeaderWatchdog() {
+    var armed = false;
+    setInterval(function () {
+      try {
+        var hc = document.querySelector('header-component[sticky]');
+        if (!hc || hc.getAttribute('data-sticky-state') !== 'idle') { armed = false; return; }
+        var r = hc.getBoundingClientRect();
+        var stuck = r.height > 0 && r.top > -4 && getComputedStyle(hc).opacity === '0';
+        if (stuck && armed) {
+          console.log('[AI Art Embed] Sticky-header watchdog: header stuck hidden at top, resetting to inactive.');
+          hc.setAttribute('data-sticky-state', 'inactive');
+          armed = false;
+        } else {
+          armed = stuck;
+        }
+      } catch (e) { armed = false; }
+    }, 400);
+  }
+  appaiInstallStickyHeaderWatchdog();
+
   // Cart image replacement is now handled by appai-cart-images.js (loaded via script tag above).
   // Only run product page logic on product pages
   var isProductPage = window.location.pathname.includes('/products/') || 
