@@ -26,7 +26,7 @@ drawer itself, but navigation lives in the tray.)
 
 | File | Role |
 |---|---|
-| `extensions/theme-extension/assets/appai-customizer-tray.js` | Launcher button, tray, positioning, overlay suppression, sign-in item |
+| `extensions/theme-extension/assets/appai-customizer-tray.js` | Launcher button, tray, positioning, overlay suppression, sign-in item + in-tray email-OTP panel |
 | `extensions/theme-extension/blocks/ai-art-embed.liquid` | App embed (`target: body`) that loads the script + merchant settings JSON (`#appai-tray-settings`: `enabled`, `label`, `position`, `shimmer`) |
 | `extensions/theme-extension/assets/appai-saved-designs-nav.js` | Provides `window.__APPAI_OPEN_SAVED_DESIGNS_DRAWER__` / `window.__APPAI_SAVED_DESIGNS__` that the tray delegates to |
 | `client/src/pages/embed-design.tsx` | `hasStoredLoggedInIdentity()`, `openSignIn=1` initial state, `ai-art-studio:open-sign-in` message handler |
@@ -130,15 +130,38 @@ item on the next open without a reload.
 
 ## Sign-in flow (two paths)
 
-- **Designer iframe on the current page** → the tray posts
+- **Designer iframe on the current page** → the tray closes and posts
   `{ type: 'ai-art-studio:open-sign-in' }` to the iframe.
   `embed-design.tsx` handles it: if no logged-in identity, open the OTP panel
   (`setShowOtpLogin(true)`) and `scrollIntoView` the login prompt (same-origin
-  iframe, so this also scrolls the parent page to it).
-- **No iframe on the current page** → navigate to the first customizer page
-  with `?openSignIn=1`. `appai-art-embed.js` forwards that param into the
-  iframe URL; `embed-design.tsx` seeds `showOtpLogin` from it at mount
-  (skipped when already signed in).
+  iframe, so this also scrolls the parent page to it). The iframe path stays
+  authoritative on customizer pages because the React app must run
+  `completeStorefrontLogin()` itself to update its in-memory customer state.
+- **No iframe on the current page** → the tray renders its **own email-OTP
+  panel** in the tray body (`renderSignInPanel()` in
+  `appai-customizer-tray.js`) — customers can sign in from ANY page, they are
+  never bounced to a customizer page first. The panel:
+  - calls the same App Proxy endpoints the designer uses
+    (`/apps/appai/api/storefront/auth/request-otp` / `verify-otp`) with
+    `shop = window.Shopify.shop` (the `{handle}.myshopify.com` domain those
+    endpoints validate against);
+  - on success writes **exactly the same localStorage keys/shape as
+    `completeStorefrontLogin()`** (`appai_customer_id`,
+    `appai_identity_token`, `appai_otp_email`, `appai_customer` with
+    `isLoggedIn: true`) — the designer iframe is same-origin via the App
+    Proxy, so it picks the identity up on its next load;
+  - fires the idempotent `merge-session` call when a `appai_session` anon id
+    exists, folding anonymous free-generations/designs into the account;
+  - shows a success note, then re-renders the tray body (sign-in item gone).
+  If `window.Shopify.shop` is unavailable (never seen on a real storefront),
+  it falls back to the legacy navigation with `?openSignIn=1`, which
+  `appai-art-embed.js` forwards into the iframe URL and `embed-design.tsx`
+  seeds `showOtpLogin` from at mount (skipped when already signed in).
+
+  Pitfall (shipped once): each `draw()` of the panel must reset
+  `state.loading` — the email→code transition redraws while the request
+  flag is still true, and the new step's submit handler would early-return
+  forever ("Verify does nothing").
 
 ## Mandatory verification after ANY change to the above
 
@@ -152,8 +175,13 @@ storefront password defaults to the dev-store one):
 
 - `diagnose-tray-signin`: in a fresh (logged-out) context the tray shows
   "Sign in or Create an Account" first; Case 1 (customizer page) opens the
-  OTP panel in the iframe via postMessage; Case 2 (homepage) navigates with
-  `openSignIn=1` in the iframe URL and the panel opens on load.
+  OTP panel in the iframe via postMessage and the tray closes; Case 2
+  (homepage, no iframe) opens the in-tray OTP panel with NO navigation, and
+  the mocked email→code→verify flow writes the
+  `completeStorefrontLogin()`-shaped localStorage, calls `merge-session`,
+  and removes the sign-in item. (The script serves the local
+  `appai-customizer-tray.js` via route interception, so it validates the
+  working tree.)
 - `diagnose-tray-overlay`: on Dawn, Tinker, and Horizon at 390px, opening the
   theme's drawer/menu sets `.appai-suppressed` (opacity 0) and closing it
   restores the launcher (opacity 1).

@@ -28,6 +28,10 @@
  * Saved designs: delegates to the existing drawer via
  * window.__APPAI_OPEN_SAVED_DESIGNS_DRAWER__ (only present when the customer
  * is logged in and has designs — the section hides itself otherwise).
+ * Sign-in: on pages hosting the designer iframe, postMessage opens the
+ * designer's own OTP panel; on every other page the tray renders its own
+ * email-OTP panel (same App Proxy endpoints + localStorage keys), so
+ * customers can sign in from anywhere without navigating first.
  *
  * SETTINGS
  * ─────────
@@ -260,6 +264,39 @@
       '.appai-tray-item-sub{display:block;font-size:12px;opacity:0.6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;}',
       '.appai-tray-item-chevron{flex-shrink:0;opacity:0.4;}',
       '#appai-tray-empty{padding:32px 20px;text-align:center;opacity:0.65;font-size:13.5px;line-height:1.5;}',
+      // In-tray sign-in panel (email OTP) — used on pages without the
+      // designer iframe so customers can sign in from anywhere.
+      '.appai-signin-back{',
+        'display:inline-flex;align-items:center;gap:6px;background:none;border:none;cursor:pointer;',
+        'color:inherit;opacity:0.65;font-family:inherit;font-size:13px;padding:6px 8px;margin:2px 0 10px;',
+        'border-radius:8px;transition:opacity 150ms;',
+      '}',
+      '.appai-signin-back:hover{opacity:1;}',
+      '.appai-signin-title{margin:0 8px 4px;font-size:16px;font-weight:700;',
+        'font-family:' + (theme.headingFontFamily || theme.bodyFontFamily) + ';color:inherit;}',
+      '.appai-signin-sub{margin:0 8px 16px;font-size:13px;opacity:0.65;line-height:1.5;}',
+      '.appai-signin-field{margin:0 8px 10px;}',
+      '.appai-signin-input{',
+        'width:100%;box-sizing:border-box;padding:11px 12px;font-size:14.5px;font-family:inherit;',
+        'color:inherit;background:transparent;border:1px solid ' + theme.trayBorder + ';border-radius:10px;',
+        'outline:none;',
+      '}',
+      '.appai-signin-input:focus{border-color:' + theme.buttonBg + ';}',
+      '.appai-signin-input.appai-code{text-align:center;letter-spacing:0.4em;font-size:18px;}',
+      '.appai-signin-submit{',
+        'display:block;width:calc(100% - 16px);box-sizing:border-box;margin:4px 8px 0;padding:12px 14px;',
+        'border:none;cursor:pointer;border-radius:10px;font-family:inherit;font-size:14.5px;font-weight:600;',
+        'background:' + theme.buttonBg + ';color:' + theme.buttonColor + ';transition:opacity 150ms;',
+      '}',
+      '.appai-signin-submit:disabled{opacity:0.55;cursor:default;}',
+      '.appai-signin-error{margin:10px 8px 0;font-size:12.5px;color:#dc2626;line-height:1.4;}',
+      '.appai-signin-alt{',
+        'display:block;background:none;border:none;cursor:pointer;color:inherit;opacity:0.6;',
+        'font-family:inherit;font-size:12.5px;padding:4px;margin:12px 8px 0;text-decoration:underline;',
+      '}',
+      '.appai-signin-alt:hover{opacity:0.9;}',
+      '.appai-signin-success{margin:8px;padding:14px;border-radius:10px;font-size:13.5px;line-height:1.5;',
+        'background:rgba(34,197,94,0.12);border:1px solid rgba(34,197,94,0.3);}',
     ].join('');
     document.head.appendChild(style);
   }
@@ -607,21 +644,247 @@
   }
 
   /**
-   * Open the app's sign-in (email OTP panel inside the designer iframe).
-   * On a page that already hosts the designer, message the iframe directly
-   * and bring it into view; otherwise navigate to a customizer page with
-   * ?openSignIn=1, which the embed forwards into the iframe URL.
+   * Open the app's sign-in.
+   * On a page that already hosts the designer iframe, message the iframe so
+   * its existing OTP panel opens (single source of truth for the designer's
+   * customer state — the React app must run completeStorefrontLogin itself).
+   * On every other page, show the tray's OWN email-OTP panel — customers
+   * must be able to sign in from any page, without being bounced to a
+   * customizer page first. Both paths hit the same App Proxy endpoints and
+   * write the same localStorage keys, which the same-origin designer iframe
+   * reads on its next load.
    */
   function openSignInFlow() {
     var iframe = document.querySelector('iframe[title="AI Art Design Studio"]');
     if (iframe && iframe.contentWindow) {
-      try { iframe.contentWindow.postMessage({ type: 'ai-art-studio:open-sign-in' }, '*'); } catch (_) {}
+      closeTray();
+      setTimeout(function () {
+        try { iframe.contentWindow.postMessage({ type: 'ai-art-studio:open-sign-in' }, '*'); } catch (_) {}
+      }, 120);
       return;
     }
-    var pages = _pages || [];
-    if (pages.length > 0) {
-      window.location.href = '/pages/' + encodeURIComponent(pages[0].handle) + '?openSignIn=1';
+    renderSignInPanel();
+  }
+
+  // ─── In-tray email OTP sign-in ────────────────────────────────────────
+
+  /** `{handle}.myshopify.com` — required by the storefront auth endpoints. */
+  function resolveShopDomain() {
+    try {
+      var s = window.Shopify && window.Shopify.shop;
+      if (typeof s === 'string' && /\.myshopify\.com$/.test(s)) return s;
+    } catch (_) {}
+    return null;
+  }
+
+  /**
+   * Persist the verified login exactly like completeStorefrontLogin() in
+   * embed-design.tsx — same keys, same shape — so the designer iframe (same
+   * origin via App Proxy) picks the identity up on its next load, and
+   * isSignedIn()/hasStoredLoggedInIdentity() report signed in.
+   */
+  function persistLogin(email, data) {
+    try {
+      localStorage.setItem('appai_customer_id', data.customerId);
+      if (data.identityToken) localStorage.setItem('appai_identity_token', data.identityToken);
+      localStorage.setItem('appai_otp_email', email);
+      localStorage.setItem('appai_customer', JSON.stringify({
+        email: email,
+        id: data.customerId,
+        credits: data.credits || 0,
+        freeGenerationsUsed: data.freeGenerationsUsed || 0,
+        isLoggedIn: true,
+      }));
+    } catch (_) {}
+    // Fold any anonymous designer session (free generations, designs) into
+    // the account — mirrors completeStorefrontLogin(); backend is idempotent.
+    try {
+      var anonSessionId = localStorage.getItem('appai_session');
+      var shop = resolveShopDomain();
+      if (anonSessionId && shop) {
+        fetch(PROXY + '/api/storefront/merge-session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ sessionId: anonSessionId, customerId: data.customerId, shop: shop }),
+        }).catch(function () {});
+      }
+    } catch (_) {}
+  }
+
+  function renderSignInPanel() {
+    var body = document.getElementById('appai-tray-body');
+    if (!body) return;
+    var shop = resolveShopDomain();
+    if (!shop) {
+      // Cannot call the auth endpoints without the myshopify domain — fall
+      // back to the legacy path: open a customizer page with ?openSignIn=1.
+      var pages = _pages || [];
+      if (pages.length > 0) {
+        window.location.href = '/pages/' + encodeURIComponent(pages[0].handle) + '?openSignIn=1';
+      }
+      return;
     }
+
+    var state = { step: 'email', email: '', loading: false, error: null };
+
+    function draw() {
+      // Each draw is a fresh step: clear the in-flight flag or the new
+      // step's submit handler would early-return forever.
+      state.loading = false;
+      body.innerHTML = '';
+
+      var back = document.createElement('button');
+      back.type = 'button';
+      back.className = 'appai-signin-back';
+      back.innerHTML =
+        '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" ' +
+        'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        '<polyline points="15 18 9 12 15 6"/></svg>Back';
+      back.addEventListener('click', function () { renderTrayBody(); });
+      body.appendChild(back);
+
+      var title = document.createElement('h3');
+      title.className = 'appai-signin-title';
+      title.textContent = 'Sign in or Create an Account';
+      body.appendChild(title);
+
+      if (state.step === 'done') {
+        var okBox = document.createElement('div');
+        okBox.className = 'appai-signin-success';
+        okBox.textContent = "You're signed in as " + state.email + '. Your designs and credits are now linked to this email.';
+        body.appendChild(okBox);
+        setTimeout(function () {
+          var tray = document.getElementById(TRAY_ID);
+          if (tray && tray.classList.contains('appai-open')) renderTrayBody();
+        }, 2200);
+        return;
+      }
+
+      var sub = document.createElement('p');
+      sub.className = 'appai-signin-sub';
+      sub.textContent = state.step === 'email'
+        ? 'Enter your email and we\u2019ll send you a 6-digit code. No password needed.'
+        : 'Enter the 6-digit code sent to ' + state.email + '.';
+      body.appendChild(sub);
+
+      var field = document.createElement('div');
+      field.className = 'appai-signin-field';
+      var input = document.createElement('input');
+      input.className = 'appai-signin-input' + (state.step === 'code' ? ' appai-code' : '');
+      if (state.step === 'email') {
+        input.type = 'email';
+        input.placeholder = 'you@example.com';
+        input.autocomplete = 'email';
+        input.value = state.email;
+      } else {
+        input.type = 'text';
+        input.inputMode = 'numeric';
+        input.placeholder = '000000';
+        input.maxLength = 6;
+        input.autocomplete = 'one-time-code';
+      }
+      field.appendChild(input);
+      body.appendChild(field);
+
+      var submit = document.createElement('button');
+      submit.type = 'button';
+      submit.className = 'appai-signin-submit';
+      submit.textContent = state.step === 'email' ? 'Send Code' : 'Verify';
+      body.appendChild(submit);
+
+      var errEl = document.createElement('div');
+      errEl.className = 'appai-signin-error';
+      errEl.style.display = 'none';
+      body.appendChild(errEl);
+
+      if (state.step === 'code') {
+        var alt = document.createElement('button');
+        alt.type = 'button';
+        alt.className = 'appai-signin-alt';
+        alt.textContent = 'Use a different email';
+        alt.addEventListener('click', function () {
+          state.step = 'email';
+          state.error = null;
+          draw();
+        });
+        body.appendChild(alt);
+      }
+
+      function showError(msg) {
+        errEl.textContent = msg;
+        errEl.style.display = 'block';
+      }
+      if (state.error) showError(state.error);
+
+      function setLoading(on) {
+        state.loading = on;
+        submit.disabled = on;
+        input.disabled = on;
+        submit.textContent = on
+          ? (state.step === 'email' ? 'Sending\u2026' : 'Verifying\u2026')
+          : (state.step === 'email' ? 'Send Code' : 'Verify');
+      }
+
+      function go() {
+        if (state.loading) return;
+        state.error = null;
+        errEl.style.display = 'none';
+        if (state.step === 'email') {
+          var email = (input.value || '').trim();
+          if (!email || email.indexOf('@') === -1) { showError('Please enter a valid email address.'); return; }
+          state.email = email;
+          setLoading(true);
+          fetch(PROXY + '/api/storefront/auth/request-otp', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ email: email, shop: shop }),
+          })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+              if (data && data.ok) { state.step = 'code'; draw(); }
+              else { setLoading(false); showError((data && data.error) || 'Failed to send code.'); }
+            })
+            .catch(function () { setLoading(false); showError('Failed to send code. Please try again.'); });
+        } else {
+          var code = (input.value || '').replace(/\D/g, '');
+          if (code.length !== 6) { showError('Enter the 6-digit code from the email.'); return; }
+          setLoading(true);
+          fetch(PROXY + '/api/storefront/auth/verify-otp', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ email: state.email, code: code, shop: shop }),
+          })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+              if (data && data.ok && data.customerId) {
+                persistLogin(state.email, data);
+                state.step = 'done';
+                draw();
+              } else {
+                setLoading(false);
+                showError((data && data.error) || 'Invalid code.');
+              }
+            })
+            .catch(function () { setLoading(false); showError('Verification failed. Please try again.'); });
+        }
+      }
+
+      submit.addEventListener('click', go);
+      input.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); go(); }
+      });
+      if (state.step === 'code') {
+        input.addEventListener('input', function () {
+          input.value = input.value.replace(/\D/g, '').slice(0, 6);
+        });
+      }
+      setTimeout(function () { try { input.focus(); } catch (_) {} }, 60);
+    }
+
+    draw();
   }
 
   function renderTrayBody() {
@@ -665,10 +928,10 @@
       signInBtn.appendChild(uIcon);
       signInBtn.appendChild(uText);
       signInBtn.insertAdjacentHTML('beforeend', ICON_CHEVRON);
-      signInBtn.addEventListener('click', function () {
-        closeTray();
-        setTimeout(openSignInFlow, 120);
-      });
+      // openSignInFlow decides: iframe present → close tray + postMessage;
+      // otherwise it swaps the tray body for the in-tray OTP panel (the tray
+      // must STAY open for that, so no unconditional closeTray here).
+      signInBtn.addEventListener('click', openSignInFlow);
       body.appendChild(signInBtn);
     }
 
