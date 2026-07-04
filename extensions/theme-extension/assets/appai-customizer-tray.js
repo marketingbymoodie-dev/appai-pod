@@ -886,10 +886,30 @@
           ? "You're signed in as " + state.email + '. Your designs and credits are now linked to this email.'
           : "You're signed in. Your designs and credits are now linked to your account.";
         body.appendChild(okBox);
-        setTimeout(function () {
+
+        // The saved-designs script bailed at boot (no identity yet). Re-run
+        // it now so window.__APPAI_OPEN_SAVED_DESIGNS_DRAWER__ exists and the
+        // "Saved Designs" section shows up when we return to the tray list —
+        // wait for its designs fetch, but keep the success note up >=2.2s.
+        var shownAt = Date.now();
+        var rerender = function () {
           var tray = document.getElementById(TRAY_ID);
           if (tray && tray.classList.contains('appai-open')) renderTrayBody();
-        }, 2200);
+        };
+        var rerenderAfterMinDelay = function () {
+          setTimeout(rerender, Math.max(0, 2200 - (Date.now() - shownAt)));
+        };
+        var reinit = null;
+        try {
+          if (typeof window.__APPAI_SAVED_DESIGNS_REINIT__ === 'function') {
+            reinit = window.__APPAI_SAVED_DESIGNS_REINIT__();
+          }
+        } catch (_) {}
+        if (reinit && typeof reinit.then === 'function') {
+          reinit.then(rerenderAfterMinDelay, rerenderAfterMinDelay);
+        } else {
+          rerenderAfterMinDelay();
+        }
         return;
       }
 

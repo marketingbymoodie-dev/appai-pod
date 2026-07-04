@@ -28,7 +28,7 @@ drawer itself, but navigation lives in the tray.)
 |---|---|
 | `extensions/theme-extension/assets/appai-customizer-tray.js` | Launcher button, tray, positioning, overlay suppression, sign-in item + in-tray email-OTP panel |
 | `extensions/theme-extension/blocks/ai-art-embed.liquid` | App embed (`target: body`) that loads the script + merchant settings JSON (`#appai-tray-settings`: `enabled`, `label`, `position`, `shimmer`) |
-| `extensions/theme-extension/assets/appai-saved-designs-nav.js` | Provides `window.__APPAI_OPEN_SAVED_DESIGNS_DRAWER__` / `window.__APPAI_SAVED_DESIGNS__` that the tray delegates to |
+| `extensions/theme-extension/assets/appai-saved-designs-nav.js` | Provides `window.__APPAI_OPEN_SAVED_DESIGNS_DRAWER__` / `window.__APPAI_SAVED_DESIGNS__` that the tray delegates to, plus `window.__APPAI_SAVED_DESIGNS_REINIT__` for post-login re-init |
 | `client/src/pages/embed-design.tsx` | `hasStoredLoggedInIdentity()`, `openSignIn=1` initial state, `ai-art-studio:open-sign-in` message handler |
 | `extensions/theme-extension/assets/appai-art-embed.js` | Forwards the page's `openSignIn=1` URL param into the designer iframe URL |
 | `server/routes.ts` | `/apps/appai/customizer-pages` (App Proxy) supplies the tray's page list; `buildCustomizerBootHtml()` loads the same assets on self-bootstrapped pages (settings element absent → defaults) |
@@ -162,6 +162,15 @@ item on the next open without a reload.
   - fires the idempotent `merge-session` call when a `appai_session` anon id
     exists, folding anonymous free-generations/designs into the account;
   - shows a success note, then re-renders the tray body (sign-in item gone).
+    Before re-rendering it calls `window.__APPAI_SAVED_DESIGNS_REINIT__()`
+    (exposed by `appai-saved-designs-nav.js`) — that script bailed at page
+    boot because there was no identity yet, so without the reinit the
+    **Saved Designs section would not appear until a reload**. The reinit
+    re-runs its init (fetch designs → expose
+    `__APPAI_OPEN_SAVED_DESIGNS_DRAWER__` / `__APPAI_SAVED_DESIGNS__` →
+    inject nav item); it is idempotent (observer/message listener attach
+    once, injection checks for existing nodes). The tray waits for the
+    reinit promise but keeps the success note visible >=2.2s.
   If `window.Shopify.shop` is unavailable (never seen on a real storefront),
   it falls back to the legacy navigation with `?openSignIn=1`, which
   `appai-art-embed.js` forwards into the iframe URL and `embed-design.tsx`
@@ -188,7 +197,9 @@ storefront password defaults to the dev-store one):
   (homepage, no iframe) opens the in-tray OTP panel with NO navigation, and
   the mocked email→code→verify flow writes the
   `completeStorefrontLogin()`-shaped localStorage, calls `merge-session`,
-  and removes the sign-in item; Case 3 (homepage) shows the Google button +
+  removes the sign-in item, and (with mocked `my-designs`) shows the Saved
+  Designs section immediately after login and opens the drawer with the
+  design cards; Case 3 (homepage) shows the Google button +
   "or" divider when auth config has Google, and a stubbed central popup's
   `APPAI_STOREFRONT_GOOGLE_AUTH` message completes the login the same way.
   (The script serves the local `appai-customizer-tray.js` via route

@@ -21,10 +21,17 @@ const LOCAL_TRAY_JS = fs.readFileSync(
   path.join(process.cwd(), "extensions", "theme-extension", "assets", "appai-customizer-tray.js"),
   "utf8",
 );
+const LOCAL_SAVED_NAV_JS = fs.readFileSync(
+  path.join(process.cwd(), "extensions", "theme-extension", "assets", "appai-saved-designs-nav.js"),
+  "utf8",
+);
 
 async function serveLocalTray(context: BrowserContext) {
   await context.route(/appai-customizer-tray\.js/, (route) => {
     route.fulfill({ contentType: "application/javascript; charset=utf-8", body: LOCAL_TRAY_JS });
+  });
+  await context.route(/appai-saved-designs-nav\.js/, (route) => {
+    route.fulfill({ contentType: "application/javascript; charset=utf-8", body: LOCAL_SAVED_NAV_JS });
   });
 }
 
@@ -111,6 +118,19 @@ async function main() {
       mergeCalled = true;
       route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true }) });
     });
+    // The signed-in customer has designs → the tray must show Saved Designs
+    // right after the in-tray login (saved-designs script reinit).
+    await context.route(/\/apps\/appai\/api\/storefront\/customizer\/my-designs/, (route) => {
+      route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          designs: [
+            { id: "d1", artworkUrl: "", mockupUrls: [], prompt: "a fox", baseTitle: "Zip Hoodie", pageHandle: "zip-hoodie-aop", productTypeId: null, createdAt: "" },
+            { id: "d2", artworkUrl: "", mockupUrls: [], prompt: "a wolf", baseTitle: "Zip Hoodie", pageHandle: "zip-hoodie-aop", productTypeId: null, createdAt: "" },
+          ],
+        }),
+      });
+    });
 
     const page = await context.newPage();
     await gotoUrl(page, `https://${SHOP}/?preview_theme_id=${THEME_ID}`);
@@ -170,7 +190,7 @@ async function main() {
     console.log("Case 2 localStorage matches completeStorefrontLogin shape:", storageOk);
     if (!storageOk) { failures++; console.log("  stored:", stored); }
 
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(3500);
     console.log("Case 2 merge-session called with anon session:", mergeCalled);
     if (!mergeCalled) failures++;
 
@@ -180,6 +200,28 @@ async function main() {
     const signInGone = !trayTextAfter.includes("Sign in or Create an Account");
     console.log("Case 2 sign-in item gone after login:", signInGone);
     if (!signInGone) failures++;
+
+    const savedShown = trayTextAfter.includes("Saved Designs");
+    console.log("Case 2 Saved Designs section shown after login (no reload):", savedShown);
+    if (!savedShown) { failures++; console.log("  tray text:", JSON.stringify(trayTextAfter.slice(0, 300))); }
+
+    // The drawer must actually open from the tray item.
+    if (savedShown) {
+      const items = await page.$$("#appai-tray-body button.appai-tray-item");
+      for (const item of items) {
+        const text = await item.innerText();
+        if (text.includes("Saved Designs")) { await item.click(); break; }
+      }
+      await page.waitForTimeout(800);
+      const drawerOpen = await page.evaluate(() =>
+        document.getElementById("appai-saved-designs-drawer")?.classList.contains("appai-open") || false,
+      );
+      const drawerCards = await page.evaluate(() =>
+        document.querySelectorAll("#appai-drawer-grid .appai-design-card").length,
+      );
+      console.log("Case 2 drawer opens with design cards:", drawerOpen, "| cards:", drawerCards);
+      if (!drawerOpen || drawerCards !== 2) failures++;
+    }
 
     await context.close();
   }

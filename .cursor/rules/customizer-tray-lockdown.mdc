@@ -38,6 +38,10 @@ be modified without their approval. Companion rule to
   in sync with `shared/storefront-auth.ts`), `persistLogin`,
   `startGoogleSignIn`, `renderTrayBody`, `extractTrayTheme`, settings
   parsing.
+- `extensions/theme-extension/assets/appai-saved-designs-nav.js`: `init()`
+  return contract and `window.__APPAI_SAVED_DESIGNS_REINIT__` — the tray
+  calls it after an in-tray login so Saved Designs appears without a
+  reload; it must stay idempotent (observer/listener attach once).
 - `extensions/theme-extension/blocks/ai-art-embed.liquid`: the
   `#appai-tray-settings` JSON element and the tray/embed script tags.
 - `client/src/pages/embed-design.tsx`: `hasStoredLoggedInIdentity()`, the

@@ -589,9 +589,13 @@
 
   // ─── Main init ───────────────────────────────────────────────────────────
 
+  // The observer + message listener must only be attached once, even though
+  // init() can now run again after an in-page login (see reinit below).
+  var _wired = false;
+
   function init() {
     var customerId = getStoredCustomerId();
-    if (!customerId) return;
+    if (!customerId) return Promise.resolve(false);
 
     var shop = getShop();
     // Expose to module scope so openDrawer()/refreshDrawerIfChanged() can
@@ -599,10 +603,10 @@
     _customerId = customerId;
     _shop = shop;
 
-    fetchDesigns(customerId, shop).then(function (data) {
+    return fetchDesigns(customerId, shop).then(function (data) {
       if (!data || !data.designs || data.designs.length === 0) {
         console.log('[AppAI Nav] No saved designs for this customer.');
-        return;
+        return false;
       }
 
       var designs = data.designs;
@@ -638,6 +642,9 @@
       // window.__APPAI_SAVED_DESIGNS__) and let it kick a background
       // refresh — never close over this initial `designs` snapshot.
       window.__APPAI_OPEN_SAVED_DESIGNS_DRAWER__ = function () { openDrawer(); };
+
+      if (_wired) return true;
+      _wired = true;
 
       // ── MutationObserver: re-inject if the nav item is removed from the DOM ──
       // Some Shopify themes re-render the nav when the URL changes via
@@ -682,10 +689,23 @@
         }
       });
 
+      return true;
     }).catch(function (e) {
       console.warn('[AppAI Nav] Failed to fetch saved designs:', e);
+      return false;
     });
   }
+
+  /**
+   * Re-run init after an in-page login (the tray's sign-in panel writes the
+   * identity to localStorage WITHOUT a reload, so the boot-time init already
+   * bailed on the missing customer id). Idempotent: injection checks for
+   * existing nodes and the observer/message listener only attach once.
+   * Returns a promise resolving true when the customer has >=1 design.
+   */
+  window.__APPAI_SAVED_DESIGNS_REINIT__ = function () {
+    return init();
+  };
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', function () {
