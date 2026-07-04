@@ -184,6 +184,90 @@ async function main() {
     await context.close();
   }
 
+  // ── Case 3: non-customizer page — Google sign-in from the in-tray panel ──
+  {
+    const APP_URL = "https://appai-pod-production.up.railway.app";
+    const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    await serveLocalTray(context);
+    await context.route(/\/apps\/appai\/api\/storefront\/auth\/config/, (route) => {
+      route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ googleClientId: "test-client-id", appUrl: APP_URL }),
+      });
+    });
+    // Stub the central auth popup ON THE APP ORIGIN so event.origin passes
+    // the tray's isAllowedCentralAuthOrigin check.
+    await context.route(/\/storefront\/google-auth/, (route) => {
+      route.fulfill({
+        contentType: "text/html",
+        body: `<!doctype html><script>
+          var p = new URLSearchParams(location.search);
+          window.opener.postMessage({
+            type: 'APPAI_STOREFRONT_GOOGLE_AUTH',
+            nonce: p.get('nonce'),
+            ok: true,
+            customerId: 'google-customer-9',
+            identityToken: 'google-token',
+            credits: 3,
+            freeGenerationsUsed: 0,
+            email: 'guser@example.com',
+          }, p.get('openerOrigin'));
+        <\/script>`,
+      });
+    });
+    await context.route(/\/apps\/appai\/api\/storefront\/merge-session/, (route) => {
+      route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true }) });
+    });
+
+    const page = await context.newPage();
+    await gotoUrl(page, `https://${SHOP}/?preview_theme_id=${THEME_ID}`);
+    await page.waitForSelector("#appai-tray-launcher", { timeout: 20000 });
+    await page.waitForTimeout(1500);
+    await page.click("#appai-tray-launcher");
+    await page.waitForTimeout(600);
+    await page.click("#appai-tray-body button.appai-tray-item");
+    await page.waitForTimeout(800);
+
+    const googleShown = await page.isVisible(".appai-signin-google");
+    console.log("Case 3 Google button shown in panel:", googleShown);
+    if (!googleShown) failures++;
+    const dividerShown = await page.isVisible(".appai-signin-divider");
+    console.log("Case 3 'or' divider shown:", dividerShown);
+    if (!dividerShown) failures++;
+
+    if (googleShown) {
+      await page.click(".appai-signin-google");
+      await page.waitForSelector(".appai-signin-success", { timeout: 10000 });
+      const successText = await page.textContent(".appai-signin-success");
+      console.log("Case 3 success message:", JSON.stringify((successText || "").slice(0, 80)));
+
+      const stored = await page.evaluate(() => ({
+        customerId: localStorage.getItem("appai_customer_id"),
+        token: localStorage.getItem("appai_identity_token"),
+        email: localStorage.getItem("appai_otp_email"),
+        customer: localStorage.getItem("appai_customer"),
+      }));
+      const cust = stored.customer ? JSON.parse(stored.customer) : null;
+      const storageOk =
+        stored.customerId === "google-customer-9" &&
+        stored.token === "google-token" &&
+        stored.email === "guser@example.com" &&
+        cust?.isLoggedIn === true &&
+        cust?.credits === 3;
+      console.log("Case 3 localStorage written from Google result:", storageOk);
+      if (!storageOk) { failures++; console.log("  stored:", stored); }
+
+      await page.waitForTimeout(3000);
+      const trayTextAfter = await page.evaluate(
+        () => document.getElementById("appai-tray-body")?.innerText || "",
+      );
+      const signInGone = !trayTextAfter.includes("Sign in or Create an Account");
+      console.log("Case 3 sign-in item gone after Google login:", signInGone);
+      if (!signInGone) failures++;
+    }
+    await context.close();
+  }
+
   await browser.close();
   console.log(failures === 0 ? "ALL PASS" : `FAILURES: ${failures}`);
   if (failures > 0) process.exit(1);

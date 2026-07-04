@@ -31,10 +31,13 @@ be modified without their approval. Companion rule to
 - `extensions/theme-extension/assets/appai-customizer-tray.js`: the whole
   file — `visibleHeaderBottom`, `verifiedClearOfHeaderChrome`,
   `updateLauncherOffsets`, `themeOverlayOpen`, `startOverlaySuppression`,
-  `isSignedIn`, `openSignInFlow`, `renderSignInPanel` (in-tray email-OTP
-  panel: must keep the same localStorage shape as
-  `completeStorefrontLogin()` and reset `state.loading` on every `draw()`),
-  `persistLogin`, `renderTrayBody`, `extractTrayTheme`, settings parsing.
+  `isSignedIn`, `openSignInFlow`, `renderSignInPanel` (in-tray Google +
+  email-OTP panel: must keep the same localStorage shape as
+  `completeStorefrontLogin()`, reset `state.loading` on every `draw()`, and
+  validate Google results by nonce AND `isAllowedCentralAuthOrigin` — kept
+  in sync with `shared/storefront-auth.ts`), `persistLogin`,
+  `startGoogleSignIn`, `renderTrayBody`, `extractTrayTheme`, settings
+  parsing.
 - `extensions/theme-extension/blocks/ai-art-embed.liquid`: the
   `#appai-tray-settings` JSON element and the tray/embed script tags.
 - `client/src/pages/embed-design.tsx`: `hasStoredLoggedInIdentity()`, the

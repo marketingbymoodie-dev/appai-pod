@@ -30,8 +30,10 @@
  * is logged in and has designs — the section hides itself otherwise).
  * Sign-in: on pages hosting the designer iframe, postMessage opens the
  * designer's own OTP panel; on every other page the tray renders its own
- * email-OTP panel (same App Proxy endpoints + localStorage keys), so
- * customers can sign in from anywhere without navigating first.
+ * sign-in panel — Continue with Google (central auth popup, when the
+ * merchant has it configured) plus email OTP (same App Proxy endpoints +
+ * localStorage keys) — so customers can sign in from anywhere without
+ * navigating first.
  *
  * SETTINGS
  * ─────────
@@ -289,6 +291,21 @@
         'background:' + theme.buttonBg + ';color:' + theme.buttonColor + ';transition:opacity 150ms;',
       '}',
       '.appai-signin-submit:disabled{opacity:0.55;cursor:default;}',
+      '.appai-signin-google{',
+        'display:block;width:calc(100% - 16px);box-sizing:border-box;margin:0 8px 0;padding:12px 14px;',
+        'cursor:pointer;border-radius:10px;font-family:inherit;font-size:14.5px;font-weight:600;',
+        'background:transparent;color:inherit;border:1px solid ' + theme.trayBorder + ';',
+        'transition:background 150ms,opacity 150ms;',
+      '}',
+      '.appai-signin-google:hover{background:rgba(127,127,127,0.10);}',
+      '.appai-signin-google:disabled{opacity:0.55;cursor:default;}',
+      '.appai-signin-divider{',
+        'display:flex;align-items:center;gap:10px;margin:14px 8px;font-size:12px;opacity:0.55;',
+      '}',
+      '.appai-signin-divider::before,.appai-signin-divider::after{',
+        'content:"";flex:1;height:1px;background:' + theme.trayBorder + ';',
+      '}',
+      '.appai-signin-email-label{margin:0 8px 8px;font-size:12.5px;opacity:0.65;}',
       '.appai-signin-error{margin:10px 8px 0;font-size:12.5px;color:#dc2626;line-height:1.4;}',
       '.appai-signin-alt{',
         'display:block;background:none;border:none;cursor:pointer;color:inherit;opacity:0.6;',
@@ -678,6 +695,43 @@
   }
 
   /**
+   * Auth config (Google client id + central app URL), same endpoint the
+   * designer uses. Cached: the tray only needs it once per page load.
+   */
+  var _authConfigPromise = null;
+  function fetchAuthConfig() {
+    if (_authConfigPromise) return _authConfigPromise;
+    var shop = resolveShopDomain();
+    if (!shop) return Promise.resolve({});
+    _authConfigPromise = fetch(
+      PROXY + '/api/storefront/auth/config?shop=' + encodeURIComponent(shop),
+      { credentials: 'same-origin' }
+    )
+      .then(function (r) { return r.ok ? r.json() : {}; })
+      .catch(function () { return {}; });
+    return _authConfigPromise;
+  }
+
+  /**
+   * Origins allowed to send Google auth results from the central popup —
+   * must stay in sync with isAllowedCentralAuthOrigin() in
+   * shared/storefront-auth.ts (app hosts only, never *.myshopify.com).
+   */
+  function isAllowedCentralAuthOrigin(origin) {
+    try {
+      var u = new URL(origin);
+      var httpLocal = u.protocol === 'http:' && (u.hostname === 'localhost' || u.hostname === '127.0.0.1');
+      if (u.protocol !== 'https:' && !httpLocal) return false;
+      if (u.hostname === 'localhost' || u.hostname === '127.0.0.1') return true;
+      if (/\.railway\.app$/.test(u.hostname)) return true;
+      if (u.hostname === 'aiartstudio.app' || /\.aiartstudio\.app$/.test(u.hostname)) return true;
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /**
    * Persist the verified login exactly like completeStorefrontLogin() in
    * embed-design.tsx — same keys, same shape — so the designer iframe (same
    * origin via App Proxy) picks the identity up on its next load, and
@@ -687,9 +741,9 @@
     try {
       localStorage.setItem('appai_customer_id', data.customerId);
       if (data.identityToken) localStorage.setItem('appai_identity_token', data.identityToken);
-      localStorage.setItem('appai_otp_email', email);
+      if (email) localStorage.setItem('appai_otp_email', email);
       localStorage.setItem('appai_customer', JSON.stringify({
-        email: email,
+        email: email || undefined,
         id: data.customerId,
         credits: data.credits || 0,
         freeGenerationsUsed: data.freeGenerationsUsed || 0,
@@ -726,7 +780,80 @@
       return;
     }
 
-    var state = { step: 'email', email: '', loading: false, error: null };
+    var state = {
+      step: 'email', email: '', loading: false, error: null,
+      googleEnabled: false, appUrl: null, googleLoading: false,
+    };
+
+    // Google availability comes from the same config endpoint the designer
+    // uses; redraw the email step once known (panel may already be visible).
+    fetchAuthConfig().then(function (config) {
+      var appUrl = (config && typeof config.appUrl === 'string') ? config.appUrl.replace(/\/$/, '') : null;
+      if (config && config.googleClientId && appUrl) {
+        state.googleEnabled = true;
+        state.appUrl = appUrl;
+        var stillMounted = body.querySelector('.appai-signin-title');
+        if (stillMounted && state.step === 'email' && !state.loading) draw();
+      }
+    });
+
+    var googleCleanup = null;
+
+    function startGoogleSignIn(onError) {
+      if (!state.appUrl || state.googleLoading) return;
+      var nonce;
+      try { nonce = crypto.randomUUID(); } catch (_) {
+        nonce = 'n' + Date.now() + Math.random().toString(36).slice(2);
+      }
+      var url = state.appUrl + '/storefront/google-auth' +
+        '?shop=' + encodeURIComponent(shop) +
+        '&openerOrigin=' + encodeURIComponent(window.location.origin) +
+        '&nonce=' + encodeURIComponent(nonce);
+
+      var popup = null;
+      try { popup = window.open(url, 'appaiGoogleAuth', 'popup=yes,width=520,height=640'); } catch (_) {}
+      if (!popup) {
+        onError('Popup blocked. Allow popups for this site and try again.');
+        return;
+      }
+
+      state.googleLoading = true;
+
+      var poll = null;
+      var onMessage = function (event) {
+        var data = event.data;
+        if (!data || data.type !== 'APPAI_STOREFRONT_GOOGLE_AUTH') return;
+        if (data.nonce !== nonce) return;
+        if (!isAllowedCentralAuthOrigin(event.origin)) return;
+        cleanup();
+        if (data.ok && data.customerId) {
+          persistLogin(data.email || '', data);
+          state.email = data.email || '';
+          state.step = 'done';
+          draw();
+        } else {
+          state.googleLoading = false;
+          onError(data.error || 'Google sign-in failed.');
+        }
+      };
+      var cleanup = function () {
+        window.removeEventListener('message', onMessage);
+        if (poll) { clearInterval(poll); poll = null; }
+        googleCleanup = null;
+      };
+      googleCleanup = cleanup;
+      window.addEventListener('message', onMessage);
+      // User closed the popup without completing sign-in → restore the button.
+      poll = setInterval(function () {
+        if (!popup.closed) return;
+        cleanup();
+        if (state.googleLoading) {
+          state.googleLoading = false;
+          var stillMounted = body.querySelector('.appai-signin-title');
+          if (stillMounted && state.step === 'email') draw();
+        }
+      }, 500);
+    }
 
     function draw() {
       // Each draw is a fresh step: clear the in-flight flag or the new
@@ -741,7 +868,10 @@
         '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" ' +
         'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
         '<polyline points="15 18 9 12 15 6"/></svg>Back';
-      back.addEventListener('click', function () { renderTrayBody(); });
+      back.addEventListener('click', function () {
+        if (googleCleanup) googleCleanup();
+        renderTrayBody();
+      });
       body.appendChild(back);
 
       var title = document.createElement('h3');
@@ -752,7 +882,9 @@
       if (state.step === 'done') {
         var okBox = document.createElement('div');
         okBox.className = 'appai-signin-success';
-        okBox.textContent = "You're signed in as " + state.email + '. Your designs and credits are now linked to this email.';
+        okBox.textContent = state.email
+          ? "You're signed in as " + state.email + '. Your designs and credits are now linked to this email.'
+          : "You're signed in. Your designs and credits are now linked to your account.";
         body.appendChild(okBox);
         setTimeout(function () {
           var tray = document.getElementById(TRAY_ID);
@@ -764,9 +896,53 @@
       var sub = document.createElement('p');
       sub.className = 'appai-signin-sub';
       sub.textContent = state.step === 'email'
-        ? 'Enter your email and we\u2019ll send you a 6-digit code. No password needed.'
+        ? (state.googleEnabled
+            ? 'Save designs, track credits, and pick up where you left off. New here? We\u2019ll create your account automatically.'
+            : 'Enter your email and we\u2019ll send you a 6-digit code. No password needed.')
         : 'Enter the 6-digit code sent to ' + state.email + '.';
       body.appendChild(sub);
+
+      var errEl = document.createElement('div');
+      errEl.className = 'appai-signin-error';
+      errEl.style.display = 'none';
+
+      function showError(msg) {
+        errEl.textContent = msg;
+        errEl.style.display = 'block';
+      }
+
+      // Same layout as the designer's OTP panel: Google first, then "or",
+      // then email. Only on the email step and only when the merchant has
+      // Google auth configured (auth/config supplies clientId + appUrl).
+      if (state.step === 'email' && state.googleEnabled) {
+        var gBtn = document.createElement('button');
+        gBtn.type = 'button';
+        gBtn.className = 'appai-signin-google';
+        gBtn.textContent = state.googleLoading ? 'Signing in with Google\u2026' : 'Continue with Google';
+        gBtn.disabled = state.googleLoading;
+        gBtn.addEventListener('click', function () {
+          if (state.googleLoading) return;
+          errEl.style.display = 'none';
+          gBtn.textContent = 'Signing in with Google\u2026';
+          gBtn.disabled = true;
+          startGoogleSignIn(function (msg) {
+            gBtn.textContent = 'Continue with Google';
+            gBtn.disabled = false;
+            showError(msg);
+          });
+        });
+        body.appendChild(gBtn);
+
+        var divider = document.createElement('div');
+        divider.className = 'appai-signin-divider';
+        divider.textContent = 'or';
+        body.appendChild(divider);
+
+        var emailLabel = document.createElement('p');
+        emailLabel.className = 'appai-signin-email-label';
+        emailLabel.textContent = 'Continue with email \u2014 we\u2019ll send you a 6-digit code';
+        body.appendChild(emailLabel);
+      }
 
       var field = document.createElement('div');
       field.className = 'appai-signin-field';
@@ -793,9 +969,8 @@
       submit.textContent = state.step === 'email' ? 'Send Code' : 'Verify';
       body.appendChild(submit);
 
-      var errEl = document.createElement('div');
-      errEl.className = 'appai-signin-error';
-      errEl.style.display = 'none';
+      // errEl is created earlier (before the Google section) so both the
+      // Google and email paths can report into the same element.
       body.appendChild(errEl);
 
       if (state.step === 'code') {
@@ -811,10 +986,6 @@
         body.appendChild(alt);
       }
 
-      function showError(msg) {
-        errEl.textContent = msg;
-        errEl.style.display = 'block';
-      }
       if (state.error) showError(state.error);
 
       function setLoading(on) {

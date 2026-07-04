@@ -137,10 +137,19 @@ item on the next open without a reload.
   iframe, so this also scrolls the parent page to it). The iframe path stays
   authoritative on customizer pages because the React app must run
   `completeStorefrontLogin()` itself to update its in-memory customer state.
-- **No iframe on the current page** → the tray renders its **own email-OTP
+- **No iframe on the current page** → the tray renders its **own sign-in
   panel** in the tray body (`renderSignInPanel()` in
   `appai-customizer-tray.js`) — customers can sign in from ANY page, they are
   never bounced to a customizer page first. The panel:
+  - shows **Continue with Google** first (then "or" + email) when
+    `auth/config` returns a `googleClientId` + `appUrl` — same layout as the
+    designer's panel. The tray opens the central popup
+    (`{appUrl}/storefront/google-auth?shop&openerOrigin&nonce`) directly (it
+    IS the top-level window, no parent bridge needed) and listens for the
+    `APPAI_STOREFRONT_GOOGLE_AUTH` postMessage back, validating **both the
+    nonce and the sender origin** (`isAllowedCentralAuthOrigin` in the tray —
+    must stay in sync with `shared/storefront-auth.ts`: app hosts only,
+    never `*.myshopify.com`);
   - calls the same App Proxy endpoints the designer uses
     (`/apps/appai/api/storefront/auth/request-otp` / `verify-otp`) with
     `shop = window.Shopify.shop` (the `{handle}.myshopify.com` domain those
@@ -179,9 +188,11 @@ storefront password defaults to the dev-store one):
   (homepage, no iframe) opens the in-tray OTP panel with NO navigation, and
   the mocked email→code→verify flow writes the
   `completeStorefrontLogin()`-shaped localStorage, calls `merge-session`,
-  and removes the sign-in item. (The script serves the local
-  `appai-customizer-tray.js` via route interception, so it validates the
-  working tree.)
+  and removes the sign-in item; Case 3 (homepage) shows the Google button +
+  "or" divider when auth config has Google, and a stubbed central popup's
+  `APPAI_STOREFRONT_GOOGLE_AUTH` message completes the login the same way.
+  (The script serves the local `appai-customizer-tray.js` via route
+  interception, so it validates the working tree.)
 - `diagnose-tray-overlay`: on Dawn, Tinker, and Horizon at 390px, opening the
   theme's drawer/menu sets `.appai-suppressed` (opacity 0) and closing it
   restores the launcher (opacity 1).
