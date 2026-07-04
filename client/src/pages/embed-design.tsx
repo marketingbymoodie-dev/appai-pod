@@ -969,14 +969,20 @@ export interface EmbedDesignProps {
  * with `isLoggedIn: false`), so id presence alone does NOT mean signed in.
  */
 function hasStoredLoggedInIdentity(): boolean {
+  // Must stay in sync with isSignedIn() in appai-customizer-tray.js.
+  // ONLY appai_customer.isLoggedIn === true counts. Never fall back to
+  // appai_customer_id presence: the anonymous bootstrap writes that id for
+  // every visitor, and older app versions wrote it WITHOUT the
+  // appai_customer record — that legacy state suppressed the sign-in panel
+  // for anonymous visitors ("just opens a customizer page").
   try {
     const raw = localStorage.getItem('appai_customer');
     if (raw) {
       const c = JSON.parse(raw);
-      if (c && typeof c.isLoggedIn === 'boolean') return c.isLoggedIn;
+      if (c && c.isLoggedIn === true) return true;
     }
   } catch {}
-  try { return !!localStorage.getItem('appai_customer_id'); } catch { return false; }
+  return false;
 }
 
 export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) {

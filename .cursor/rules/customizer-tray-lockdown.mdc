@@ -13,9 +13,11 @@ be modified without their approval. Companion rule to
    refactors, or drive-by cleanups.
 2. Read `docs/customizer-tray-architecture.md` in full before proposing a
    change. Every non-obvious rule fixed a real production bug — especially
-   the signed-in pitfall: `appai_customer_id` in localStorage does NOT mean
-   signed in (the anonymous bootstrap writes it too); the stored
-   `appai_customer.isLoggedIn` boolean is authoritative.
+   the signed-in pitfall (shipped twice): signed in means ONLY
+   `appai_customer.isLoggedIn === true` in localStorage. `appai_customer_id`
+   presence must never count, not even as a fallback — the anonymous
+   bootstrap writes it for every visitor and older versions wrote it
+   without the `appai_customer` record.
 3. After ANY approved change, run both verification scripts against the live
    dev store and check the pass criteria in the doc:
    `npx tsx scripts/diagnose-tray-signin.ts`,

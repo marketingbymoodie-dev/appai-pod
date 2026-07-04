@@ -583,8 +583,14 @@
   }
 
   /**
-   * Signed-in check, mirroring the designer iframe's own rule
-   * (embed-design.tsx: `customer?.isLoggedIn ?? !!storefrontCustomerId`).
+   * Signed-in check — must stay in sync with hasStoredLoggedInIdentity()
+   * in embed-design.tsx. ONLY a stored `appai_customer` record with
+   * `isLoggedIn: true` counts. `appai_customer_id` presence proves nothing:
+   * the anonymous identity bootstrap writes it for every visitor who has
+   * merely loaded the designer once, and older app versions wrote it
+   * WITHOUT the `appai_customer` record — that legacy state made this
+   * (and the iframe check) report "signed in" for anonymous visitors,
+   * hiding/swallowing the sign-in flow.
    * The iframe is served over the App Proxy on the shop domain, so its
    * localStorage IS this page's localStorage — reads are always fresh, and
    * signing in inside the iframe is visible here on the next tray open.
@@ -594,10 +600,10 @@
       var raw = localStorage.getItem('appai_customer');
       if (raw) {
         var c = JSON.parse(raw);
-        if (c && typeof c.isLoggedIn === 'boolean') return c.isLoggedIn;
+        if (c && c.isLoggedIn === true) return true;
       }
     } catch (_) {}
-    try { return !!localStorage.getItem('appai_customer_id'); } catch (_) { return false; }
+    return false;
   }
 
   /**

@@ -100,19 +100,24 @@ theme editor.
 
 ## Signed-in detection — THE pitfall (bug shipped once, do not re-ship)
 
-The designer's rule is `customer?.isLoggedIn ?? !!storefrontCustomerId`.
-The persisted-storage mirror of that rule is:
+The persisted-storage rule is strict:
 
-1. Parse `localStorage.appai_customer`; if it has a boolean `isLoggedIn`,
-   **that is the answer**.
-2. Only if that record is absent, fall back to `!!appai_customer_id`.
+**Signed in ⇔ `localStorage.appai_customer` parses and has
+`isLoggedIn === true`. Anything else — record absent, malformed, or
+`isLoggedIn: false` — is signed OUT. There is NO fallback.**
 
-**Never** treat `appai_customer_id` presence alone as "signed in": the
-**anonymous identity bootstrap also writes it** (and `appai_customer` with
-`isLoggedIn: false`) for any visitor who has merely loaded the designer once.
-The first version of the sign-in flow checked only the id and silently
-swallowed the open-sign-in request for every returning anonymous visitor —
-the button appeared to "just navigate to the customizer page".
+**Never** treat `appai_customer_id` presence as "signed in" — not even as a
+fallback when the `appai_customer` record is absent. The **anonymous identity
+bootstrap writes the id for every visitor** who has merely loaded the
+designer once, and **older app versions wrote the id WITHOUT the
+`appai_customer` record**, so returning visitors can carry an id-only
+localStorage state indefinitely. This bug shipped **twice**:
+
+1. v1 checked only `!!appai_customer_id` → swallowed the open-sign-in
+   request for every returning anonymous visitor.
+2. v2 read `appai_customer.isLoggedIn` first but **fell back to the id when
+   the record was absent** → same symptom for visitors with the legacy
+   id-only state ("the button just navigates to a customizer page").
 
 Implemented in two places that must stay in sync:
 - `isSignedIn()` in `appai-customizer-tray.js` (parent page)
