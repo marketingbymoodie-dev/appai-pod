@@ -163,6 +163,15 @@
 
       if (data.type === 'ai-art-studio:scroll-to-preview') {
         try {
+          // Only rescue landings where the preview is genuinely out of view
+          // (hard refresh restored scroll near the footer). On a fresh load
+          // the preview is already near the top; scrolling then hides the
+          // nav menu on themes with non-sticky headers (e.g. Ritual).
+          var preRect = container.getBoundingClientRect();
+          var vh = window.innerHeight || document.documentElement.clientHeight || 800;
+          if (preRect.top >= 0 && preRect.top < vh * 0.5) return;
+        } catch (e) {}
+        try {
           container.scrollIntoView({ block: 'start', behavior: 'auto' });
         } catch (e) {}
         try {

@@ -1628,6 +1628,18 @@
           || studioContainer;
         if (embedRoot) {
           try {
+            // This message exists to rescue hard-refresh landings where the
+            // browser restored scroll near the footer. On a fresh navigation
+            // the preview is already at/near the top — scrolling then only
+            // trims the top margin, and on themes whose header is NOT sticky
+            // (Ritual: static header inside the .page-wrapper scroller) it
+            // pushes the nav menu off-screen, which looks like the menu was
+            // removed. Skip unless the preview is genuinely out of view.
+            var _pre = embedRoot.getBoundingClientRect();
+            var _vh = window.innerHeight || document.documentElement.clientHeight || 800;
+            if (_pre.top >= 0 && _pre.top < _vh * 0.5) return;
+          } catch(e) {}
+          try {
             embedRoot.scrollIntoView({ block: 'start', behavior: 'auto' });
           } catch(e) {}
           try {

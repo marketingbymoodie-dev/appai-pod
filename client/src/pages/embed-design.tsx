@@ -1245,7 +1245,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
     requestAnimationFrame(() => {
       const target = previewLandingRef.current ?? artworkColumnRef.current;
-      target?.scrollIntoView({ block: 'start', behavior: 'auto' });
+      if (target) {
+        // Scroll ONLY this document — never ancestors. The storefront embeds
+        // this page in a SAME-ORIGIN iframe (app proxy), so scrollIntoView
+        // here also scrolled the parent storefront page, pushing non-sticky
+        // theme headers (Ritual) off-screen on every load ("menu removed").
+        // Parent-side landing is handled by the guarded
+        // ai-art-studio:scroll-to-preview handler in appai-art-embed.js.
+        const se = document.scrollingElement || document.documentElement;
+        se.scrollTop += target.getBoundingClientRect().top;
+      }
       try {
         window.parent.postMessage({ type: 'ai-art-studio:scroll-to-preview' }, '*');
       } catch {

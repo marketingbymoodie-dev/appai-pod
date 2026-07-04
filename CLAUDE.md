@@ -54,14 +54,16 @@ After **deploy-worthy** fixes (not docs-only): `npm run build` → commit → me
 
 On Shopify customizer pages the iframe auto-resizes to full content height. Browsers often restore parent scroll near the **footer** after reload, so customers miss the product mockup.
 
-**Invariant:** after config loads, scroll the **preview / image box** into view — not the page bottom.
+**Invariant:** after config loads, scroll the **preview / image box** into view — not the page bottom. But **only when the preview is actually out of view** (see guard below).
 
 | Layer | Behaviour |
 |-------|-----------|
-| **Iframe** (`embed-design.tsx`) | `history.scrollRestoration = 'manual'`; scroll iframe to top; `previewLandingRef` on `container-mockup`; postMessage `ai-art-studio:scroll-to-preview` (retries at 0 / 400 / 1200 ms for resize settle). |
-| **Theme** (`ai-art-embed.liquid`) | Handle `ai-art-studio:scroll-to-preview`: `scrollIntoView` on embed root + set parent `scrollTop` so embed top is ~16px below viewport top. |
+| **Iframe** (`embed-design.tsx`) | `history.scrollRestoration = 'manual'`; scroll iframe to top; `previewLandingRef` on `container-mockup` — scrolled via **own `document.scrollingElement` only, never `scrollIntoView`** (same-origin iframe means `scrollIntoView` also scrolls the parent storefront page); postMessage `ai-art-studio:scroll-to-preview` (retries at 0 / 400 / 1200 ms for resize settle). |
+| **Theme** (`appai-art-embed.js` + `design-studio.js`) | Handle `ai-art-studio:scroll-to-preview`: **guard first** — if the embed root's `rect.top` is already in the top half of the viewport, do nothing. Otherwise `scrollIntoView` on embed root + set parent `scrollTop` so embed top is ~16px below viewport top. |
 
-Do not remove this without re-testing hard refresh on a long customizer page (mobile + desktop).
+**Why the guard (2026-07, Ritual bug):** the message fires on every load, not just hard refresh. On a fresh navigation the preview is already near the top; scrolling then only trims top margin, and on themes whose header is **not sticky** (Ritual: static header inside the `.page-wrapper` scroller) it pushed the nav menu off-screen — merchants saw "the native menu is removed" on every customizer page open. The guard keeps the hard-refresh-from-footer rescue intact.
+
+Do not remove this without re-testing (a) hard refresh on a long customizer page (mobile + desktop) and (b) fresh landing on Ritual — header/menu must stay visible.
 
 ### Catalog placeholder carousel (Primary / View 2 / View 3)
 
