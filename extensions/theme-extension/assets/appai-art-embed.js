@@ -2386,13 +2386,27 @@
       .then(function(config) {
         if (!config) {
           var staleBoot = document.getElementById('appai-boot');
+          // Only pages the app itself created/hosts carry these markers: the
+          // self-bootstrap cover (#appai-boot) or a theme app block container.
+          // Ordinary merchant pages (Contact, About, FAQ...) also live under
+          // /pages/ and reach this 404 branch — they must be left untouched.
+          var isAppaiPage = !!staleBoot || !!document.querySelector(
+            '.ai-art-studio-block, [data-block-handle="ai-art-studio"]'
+          );
           if (staleBoot && staleBoot.parentNode) staleBoot.parentNode.removeChild(staleBoot);
           if (opts.fallbackUrl) {
             window.location.href = opts.fallbackUrl;
             return;
           }
-          // STATE=ERROR — not a registered/active customizer page.
-          // Show a clear message instead of silently releasing the flag.
+          if (!isAppaiPage) {
+            // Regular theme page that merely matched the /pages/ URL pattern —
+            // do nothing. Injecting the "not configured" notice here put an
+            // error message on every merchant Contact/About page.
+            console.log('[AI Art Embed] /pages/' + handle + ' is not a customizer page; leaving it alone.');
+            return;
+          }
+          // STATE=ERROR — an app-hosted page whose config is missing/paused.
+          // Show a clear message instead of a blank page.
           console.log('[AI Art Embed] STATE=ERROR /pages/' + handle + ' is not a customizer page (404).');
           var mount = document.querySelector('#MainContent') ||
                       document.querySelector('main[role="main"]') ||
