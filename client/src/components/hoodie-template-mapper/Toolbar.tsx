@@ -27,6 +27,7 @@ import {
   saveTemplate,
   uploadMockup,
   downloadPrintifyBlankMockups,
+  appendCacheBust,
   type SaveTemplatePublishResult,
 } from "./api";
 import AopPreviewModal from "./AopPreviewModal";
@@ -176,7 +177,11 @@ export default function Toolbar({ onOpenLoadDialog, onLoadTemplate }: Props) {
       await saveTemplate(template.name, template);
       const result = await downloadPrintifyBlankMockups(template.name);
       for (const d of result.downloaded) {
-        actions.setMockup(d.view, { src: d.url, width: d.width, height: d.height });
+        actions.setMockup(d.view, {
+          src: appendCacheBust(d.url, Date.now()),
+          width: d.width,
+          height: d.height,
+        });
       }
       toast({
         title: "Blank mockups downloaded",

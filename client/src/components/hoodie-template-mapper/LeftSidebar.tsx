@@ -22,6 +22,7 @@ import { useHoodieMapperStore } from "./store";
 import {
   listMockups,
   listTemplates,
+  mockupUrlsMatch,
   type MockupListEntry,
   type TemplateListEntry,
 } from "./api";
@@ -415,8 +416,8 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
         ) : (
           mockups.map((m) => {
             const inferred = inferViewFromFilename(m.filename);
-            const isAttachedFront = frontMockupSrc === m.url;
-            const isAttachedBack = backMockupSrc === m.url;
+            const isAttachedFront = mockupUrlsMatch(frontMockupSrc, m.url);
+            const isAttachedBack = mockupUrlsMatch(backMockupSrc, m.url);
             const isAttached = isAttachedFront || isAttachedBack;
             return (
               <div

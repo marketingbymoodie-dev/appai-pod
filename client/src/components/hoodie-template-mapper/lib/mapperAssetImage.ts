@@ -40,7 +40,7 @@ export async function loadMapperAssetImage(src: string): Promise<HTMLImageElemen
     return loadViaImageElement(src);
   }
 
-  const res = await fetch(src, { credentials: "include" });
+  const res = await fetch(src, { credentials: "include", cache: "no-store" });
   if (!res.ok) {
     throw new Error(`Failed to load mapper asset (${res.status})`);
   }

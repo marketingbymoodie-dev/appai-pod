@@ -73,8 +73,11 @@ export default function MockupCropOverlay({ mockupWidth, mockupHeight, rect, zoo
         strokeWidth={stroke}
         draggable
         dragBoundFunc={(pos) => {
-          const nx = Math.max(0, Math.min(pos.x, mockupWidth - rect.width));
-          const ny = Math.max(0, Math.min(pos.y, mockupHeight - rect.height));
+          const node = rectRef.current;
+          const w = node?.width() ?? rect.width;
+          const h = node?.height() ?? rect.height;
+          const nx = Math.max(0, Math.min(pos.x, mockupWidth - w));
+          const ny = Math.max(0, Math.min(pos.y, mockupHeight - h));
           return { x: nx, y: ny };
         }}
         onDragEnd={(e) => {
