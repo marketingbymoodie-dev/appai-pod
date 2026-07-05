@@ -10,6 +10,7 @@ import {
   ensureLocalMapperDirs,
 } from "./aopMapperStorage";
 import { ensureHoodieTemplatesBucket } from "./supabaseHoodieTemplates";
+import sharp from "sharp";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 const POLL_INTERVAL_MS = 1500;
@@ -54,22 +55,29 @@ function extractImages(product: any): MockupImage[] {
 }
 
 async function uploadTransparentPng(token: string): Promise<string> {
-  const png = Buffer.from(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
-    "base64",
-  );
-  const form = new FormData();
-  form.append(
-    "file",
-    new Blob([png], { type: "image/png" }),
-    "blank.png",
-  );
+  // Printify expects JSON { file_name, contents } — not multipart FormData.
+  // Use a 1024² transparent PNG (same minimum size as mockup harvest elsewhere).
+  const png = await sharp({
+    create: { width: 1024, height: 1024, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+  })
+    .png()
+    .toBuffer();
+
   const res = await fetch(`${PRINTIFY_API_BASE}/uploads/images.json`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-    body: form,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      file_name: `mapper-blank-${Date.now()}.png`,
+      contents: png.toString("base64"),
+    }),
   });
-  if (!res.ok) throw new Error(`Printify image upload → ${res.status}`);
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Printify image upload → ${res.status}: ${body.slice(0, 200)}`);
+  }
   const data = (await res.json()) as { id?: string };
   if (!data.id) throw new Error("Printify image upload returned no id");
   return data.id;
