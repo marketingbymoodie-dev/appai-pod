@@ -49,6 +49,7 @@ import {
   drawMockupImageInCanvas,
   findGroupForPanel,
   layerRenderPriority,
+  mockupDrawRect,
   SEAM_PAIR_PANELS,
 } from "@shared/hoodieTemplate";
 import { svgPathToAnchors } from "./svgPath";
@@ -592,6 +593,73 @@ function aabbOf(anchors: Pt[]): Aabb | null {
     if (p.y > maxY) maxY = p.y;
   }
   return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+export type AopPreviewCanvasBounds = {
+  width: number;
+  height: number;
+  offsetX: number;
+  offsetY: number;
+};
+
+/**
+ * Canvas size for the AOP preview — large enough for a scaled/repositioned
+ * mockup blank and traced masks. Origin shift keeps negative mockup coords
+ * visible instead of clipping at the canvas edge.
+ */
+export function resolveAopPreviewCanvasBounds(
+  template: HoodieTemplate,
+  view: HoodieView,
+  mockup: HTMLImageElement,
+): AopPreviewCanvasBounds {
+  const viewState = template.views[view];
+  const mockupAsset = viewState?.mockup ?? null;
+  const baseW = mockup.naturalWidth || mockup.width || 1;
+  const baseH = mockup.naturalHeight || mockup.height || 1;
+  let minX = 0;
+  let minY = 0;
+  let maxX = baseW;
+  let maxY = baseH;
+
+  if (mockupAsset) {
+    const dr = mockupDrawRect(mockupAsset);
+    minX = Math.min(minX, dr.x);
+    minY = Math.min(minY, dr.y);
+    maxX = Math.max(maxX, dr.x + dr.renderWidth);
+    maxY = Math.max(maxY, dr.y + dr.renderHeight);
+  }
+
+  for (const layer of viewState?.layers ?? []) {
+    if (!layer.visible) continue;
+    const anchors = svgPathToAnchors(layer.maskPath);
+    const bb = aabbOf(anchors);
+    if (bb) {
+      minX = Math.min(minX, bb.x);
+      minY = Math.min(minY, bb.y);
+      maxX = Math.max(maxX, bb.x + bb.width);
+      maxY = Math.max(maxY, bb.y + bb.height);
+    }
+    if (layer.mesh) {
+      for (const p of layer.mesh.targetPoints) {
+        minX = Math.min(minX, p.x);
+        minY = Math.min(minY, p.y);
+        maxX = Math.max(maxX, p.x);
+        maxY = Math.max(maxY, p.y);
+      }
+    }
+  }
+
+  const pad = 4;
+  minX -= pad;
+  minY -= pad;
+  maxX += pad;
+  maxY += pad;
+  return {
+    offsetX: minX,
+    offsetY: minY,
+    width: Math.max(1, Math.ceil(maxX - minX)),
+    height: Math.max(1, Math.ceil(maxY - minY)),
+  };
 }
 
 function unionAabb(a: Aabb, b: Aabb): Aabb {
@@ -1183,17 +1251,23 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     backgroundColor = null,
   } = params;
 
-  const W = params.width ?? mockup.naturalWidth ?? mockup.width;
-  const H = params.height ?? mockup.naturalHeight ?? mockup.height;
+  const canvasBounds = resolveAopPreviewCanvasBounds(template, view, mockup);
+  const W = params.width ?? canvasBounds.width;
+  const H = params.height ?? canvasBounds.height;
   if (ctx.canvas.width !== W) ctx.canvas.width = W;
   if (ctx.canvas.height !== H) ctx.canvas.height = H;
 
   const viewState = template.views[view];
+  const contentOffsetX = params.width != null ? 0 : canvasBounds.offsetX;
+  const contentOffsetY = params.width != null ? 0 : canvasBounds.offsetY;
 
   // Step 1: Mockup base (optional x/y/scale alignment).
   ctx.clearRect(0, 0, W, H);
   const viewMockupAsset = viewState?.mockup ?? null;
+  ctx.save();
+  ctx.translate(-contentOffsetX, -contentOffsetY);
   drawMockupImageInCanvas(ctx, mockup, viewMockupAsset, W, H);
+  ctx.restore();
 
   if (!viewState) return;
 
@@ -1221,6 +1295,8 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
   printCanvas.height = H;
   const pctx = printCanvas.getContext("2d");
   if (!pctx) return;
+  pctx.save();
+  pctx.translate(-contentOffsetX, -contentOffsetY);
 
   // `useColors` controls whether each panel paints the debug colour fill
   // instead of artwork. Solid-colors mode is the explicit "show me the
@@ -1615,10 +1691,14 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     pctx.restore();
   }
 
+  pctx.restore();
+
   // Step 4: Composite print onto mockup.
   ctx.drawImage(printCanvas, 0, 0);
 
   // Step 5: Optional outlines + labels for debugging.
+  ctx.save();
+  ctx.translate(-contentOffsetX, -contentOffsetY);
   if (showOutlines) drawOutlines(ctx, visible);
   if (showLabels) drawLabels(ctx, visible);
   // Step 6: Design-rect overlays — one dashed outline per group, the
@@ -1631,6 +1711,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
       drawDesignRect(ctx, info, isActive);
     }
   }
+  ctx.restore();
 }
 
 function drawDesignRect(
@@ -1706,8 +1787,13 @@ function drawLabels(ctx: CanvasRenderingContext2D, layers: MaskLayer[]): void {
  * preview canvas back out of React.
  */
 export function renderAopPreviewToCanvas(params: AopPreviewParams): HTMLCanvasElement {
-  const W = params.width ?? params.mockup.naturalWidth ?? params.mockup.width;
-  const H = params.height ?? params.mockup.naturalHeight ?? params.mockup.height;
+  const bounds = resolveAopPreviewCanvasBounds(
+    params.template,
+    params.view,
+    params.mockup,
+  );
+  const W = params.width ?? bounds.width;
+  const H = params.height ?? bounds.height;
   const canvas = document.createElement("canvas");
   canvas.width = W;
   canvas.height = H;
