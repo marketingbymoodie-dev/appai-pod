@@ -25,6 +25,7 @@ import {
   type MockupListEntry,
   type TemplateListEntry,
 } from "./api";
+import { readMapperAssetDimensions } from "./lib/mapperAssetImage";
 
 /**
  * Persisted expanded/collapsed state for each LeftSidebar section.
@@ -133,15 +134,6 @@ function inferViewFromFilename(filename: string): HoodieView | null {
   return null;
 }
 
-function readImageDimsFromUrl(url: string): Promise<{ width: number; height: number } | null> {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
-    img.onerror = () => resolve(null);
-    img.src = url;
-  });
-}
-
 export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name: string) => void }) {
   const view = useHoodieMapperStore((s) => s.view);
   const layers = useHoodieMapperStore((s) => s.template.views[s.view].layers);
@@ -200,7 +192,12 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
 
   async function attachMockupToView(entry: MockupListEntry, target?: HoodieView) {
     const inferredView = target ?? inferViewFromFilename(entry.filename) ?? view;
-    const dims = await readImageDimsFromUrl(entry.url);
+    let dims: { width: number; height: number } | null = null;
+    try {
+      dims = await readMapperAssetDimensions(entry.url);
+    } catch {
+      dims = null;
+    }
     if (!dims) {
       toast({
         title: "Could not load mockup",

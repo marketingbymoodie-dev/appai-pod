@@ -205,7 +205,7 @@ export async function uploadReferenceOverlay(
 export type FetchPrintifyBlanksResult = {
   ok: true;
   blueprintId: number;
-  downloaded: Array<{ view: "front" | "back"; filename: string; url: string; bytes: number }>;
+  downloaded: Array<{ view: "front" | "back"; filename: string; url: string; bytes: number; width: number; height: number }>;
 };
 
 /** Pull blank garment mockups from Printify into mapper storage (uses multiply shading source photos). */

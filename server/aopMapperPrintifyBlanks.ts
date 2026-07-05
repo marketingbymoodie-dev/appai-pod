@@ -184,7 +184,7 @@ async function resolveCatalogVariant(
 export type FetchPrintifyBlanksResult = {
   ok: true;
   blueprintId: number;
-  downloaded: Array<{ view: "front" | "back"; filename: string; url: string; bytes: number }>;
+  downloaded: Array<{ view: "front" | "back"; filename: string; url: string; bytes: number; width: number; height: number }>;
 };
 
 export async function fetchPrintifyBlankMockups(args: {
@@ -261,6 +261,10 @@ export async function fetchPrintifyBlankMockups(args: {
       const res = await fetch(match.url);
       if (!res.ok) continue;
       const buf = Buffer.from(await res.arrayBuffer());
+      const meta = await sharp(buf).metadata();
+      const width = meta.width ?? 0;
+      const height = meta.height ?? 0;
+      if (width <= 0 || height <= 0) continue;
       const filename = `${templateName}-${view}.png`;
       await writeAssetBuffer("mockups", filename, buf);
       downloaded.push({
@@ -268,6 +272,8 @@ export async function fetchPrintifyBlankMockups(args: {
         filename,
         url: `${mockupUrlBase}/${encodeURIComponent(filename)}`,
         bytes: buf.length,
+        width,
+        height,
       });
     }
   } finally {

@@ -21,6 +21,7 @@ import { useToast } from "@/hooks/use-toast";
 import { History, X } from "lucide-react";
 import type { HoodieView } from "@shared/hoodieTemplate";
 import { isValidAopTemplateSlug, normalizeAopTemplateSlugInput } from "@shared/hoodieTemplate";
+import { readMapperAssetDimensions } from "@/components/hoodie-template-mapper/lib/mapperAssetImage";
 import {
   Dialog,
   DialogContent,
@@ -41,12 +42,7 @@ import { Input } from "@/components/ui/input";
  */
 
 function readImageDimsFromUrl(url: string): Promise<{ width: number; height: number } | null> {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
-    img.onerror = () => resolve(null);
-    img.src = url;
-  });
+  return readMapperAssetDimensions(url).catch(() => null);
 }
 
 export default function HoodieTemplateMapperPage() {

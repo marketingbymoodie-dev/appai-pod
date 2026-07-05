@@ -33,6 +33,14 @@ import AopPreviewModal from "./AopPreviewModal";
 import FreshStartDialog from "./FreshStartDialog";
 import { clearAutosave } from "./lib/autosave";
 
+function formatError(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (err && typeof err === "object" && "message" in err && typeof (err as { message?: unknown }).message === "string") {
+    return (err as { message: string }).message;
+  }
+  return String(err);
+}
+
 type Props = {
   onOpenLoadDialog: () => void;
   onLoadTemplate: (slug: string) => void;
@@ -154,16 +162,6 @@ export default function Toolbar({ onOpenLoadDialog, onLoadTemplate }: Props) {
     }
   }
 
-  function loadImageDimensionsFromUrl(url: string): Promise<{ width: number; height: number }> {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () =>
-        resolve({ width: img.naturalWidth, height: img.naturalHeight });
-      img.onerror = reject;
-      img.src = url;
-    });
-  }
-
   async function handleDownloadPrintifyBlanks() {
     if (!template.blueprintId) {
       toast({
@@ -178,17 +176,16 @@ export default function Toolbar({ onOpenLoadDialog, onLoadTemplate }: Props) {
       await saveTemplate(template.name, template);
       const result = await downloadPrintifyBlankMockups(template.name);
       for (const d of result.downloaded) {
-        const dims = await loadImageDimensionsFromUrl(d.url);
-        actions.setMockup(d.view, { src: d.url, width: dims.width, height: dims.height });
+        actions.setMockup(d.view, { src: d.url, width: d.width, height: d.height });
       }
       toast({
         title: "Blank mockups downloaded",
         description: `Printify bp ${result.blueprintId}: ${result.downloaded.map((d) => d.view).join(", ")}`,
       });
-    } catch (err: any) {
+    } catch (err: unknown) {
       toast({
         title: "Printify download failed",
-        description: err?.message || String(err),
+        description: formatError(err),
         variant: "destructive",
       });
     } finally {

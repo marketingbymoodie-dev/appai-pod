@@ -24,6 +24,7 @@ import PenToolOverlay from "./PenToolOverlay";
 import AnchorHandlesOverlay from "./AnchorHandlesOverlay";
 import ReferenceOverlayLayer from "./ReferenceOverlayLayer";
 import MockupBaseLayer from "./MockupBaseLayer";
+import { loadMapperAssetImage } from "../lib/mapperAssetImage";
 import type { Pt } from "@shared/hoodieTemplate";
 
 /**
@@ -62,33 +63,18 @@ const PEN_CLOSE_RADIUS = 12;
 /** Distance to nearest edge (in mockup px) at which alt-click inserts a new anchor. */
 const EDGE_INSERT_THRESHOLD = 14;
 
-function isCrossOrigin(src: string): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    const url = new URL(src, window.location.href);
-    return url.origin !== window.location.origin;
-  } catch {
-    return false;
-  }
-}
-
 type ImageLoadResult = { img: HTMLImageElement | null; error: string | null };
 
 function loadHtmlImage(src: string | null | undefined): Promise<ImageLoadResult> {
   if (!src) return Promise.resolve({ img: null, error: null });
-  return new Promise((resolve) => {
-    const img = new Image();
-    if (isCrossOrigin(src)) {
-      img.crossOrigin = "anonymous";
-    }
-    img.onload = () => resolve({ img, error: null });
-    img.onerror = (e) => {
+  return loadMapperAssetImage(src)
+    .then((img) => ({ img, error: null as string | null }))
+    .catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
       // eslint-disable-next-line no-console
-      console.warn("[hoodie-mapper] image load failed", src, e);
-      resolve({ img: null, error: `Failed to load mockup at ${src}` });
-    };
-    img.src = src;
-  });
+      console.warn("[hoodie-mapper] image load failed", src, message);
+      return { img: null, error: message || `Failed to load mockup at ${src}` };
+    });
 }
 
 type LoadedImageState = {
