@@ -168,23 +168,31 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
     if (renamingId) renameInputRef.current?.select();
   }, [renamingId]);
 
-  async function refreshTemplates() {
+  async function refreshTemplates(options?: { silent?: boolean }) {
     setLoading(true);
     try {
       setTemplates(await listTemplates());
     } catch (err: any) {
-      toast({ title: "Could not list templates", description: err?.message || String(err), variant: "destructive" });
+      const msg = err?.message || String(err);
+      const isAuth = msg.includes("401") || msg.includes("403");
+      if (!options?.silent && !isAuth) {
+        toast({ title: "Could not list templates", description: msg, variant: "destructive" });
+      }
     } finally {
       setLoading(false);
     }
   }
 
-  async function refreshMockups() {
+  async function refreshMockups(options?: { silent?: boolean }) {
     setMockupLoading(true);
     try {
       setMockups(await listMockups());
     } catch (err: any) {
-      toast({ title: "Could not list mockups", description: err?.message || String(err), variant: "destructive" });
+      const msg = err?.message || String(err);
+      const isAuth = msg.includes("401") || msg.includes("403");
+      if (!options?.silent && !isAuth) {
+        toast({ title: "Could not list mockups", description: msg, variant: "destructive" });
+      }
     } finally {
       setMockupLoading(false);
     }
@@ -224,7 +232,8 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
   // having to click the refresh icon.
   useEffect(() => {
     if (saveSeq === 0) return;
-    refreshTemplates();
+    refreshTemplates({ silent: true });
+    refreshMockups({ silent: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [saveSeq]);
 

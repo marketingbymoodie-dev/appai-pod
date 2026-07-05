@@ -42,6 +42,7 @@ import { readImageDimensions, uploadReferenceOverlay, uploadSourcePanel } from "
 import { loadMapperAssetImage } from "./lib/mapperAssetImage";
 import { detectMockupContentBounds } from "./lib/mockupCrop";
 import { applyMockupCropUpload } from "./lib/mockupCropApply";
+import MockupCropControls from "./MockupCropControls";
 
 /**
  * Right sidebar: template metadata + tool-aware controls + per-layer
@@ -668,6 +669,14 @@ function MockupTransformSection({ view }: { view: HoodieView }) {
           </div>
         ) : (
           <div className="space-y-2 border-t border-slate-800 pt-2">
+            {mockupCrop.rect && (
+              <MockupCropControls
+                rect={mockupCrop.rect}
+                maxW={mockup.width}
+                maxH={mockup.height}
+                onChange={(next) => actions.setMockupCropRect(next)}
+              />
+            )}
             {sameSizeMockups && (
               <ToggleRow
                 label="Apply same crop to front + back"

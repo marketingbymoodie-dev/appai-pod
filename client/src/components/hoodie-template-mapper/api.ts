@@ -71,6 +71,9 @@ export async function saveTemplate(name: string, template: HoodieTemplate): Prom
     });
     if (!r.ok) {
       const err = await r.text().catch(() => "");
+      if (r.status === 401) {
+        throw new Error("Session expired — refresh the Shopify admin page and try Save again.");
+      }
       if (r.status === 403) {
         throw new Error("Platform operator access required to save templates.");
       }
