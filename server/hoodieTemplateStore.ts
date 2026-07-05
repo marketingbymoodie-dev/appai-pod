@@ -19,9 +19,14 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import {
+  isValidPublicTemplateName,
+  resolveAdminSlugCandidatesForPublicName,
+} from "@shared/aopTemplateNaming";
 import { normalizeHoodieTemplate } from "@shared/hoodieTemplate";
 import {
   isSupabaseHoodieTemplatesConfigured,
+  listHoodieTemplatesBucketFiles,
   publicHoodieTemplateUrl,
 } from "./supabaseHoodieTemplates";
 
@@ -37,16 +42,27 @@ export type PublishedHoodieTemplate = {
 };
 
 /**
- * Allowlist of template names the storefront endpoint will serve. Anything
- * not listed here returns 404 — prevents enumeration of internal admin
- * templates that may exist on the bucket but aren't customer-ready.
+ * Published templates are loaded from Supabase by name. Any valid slug that
+ * has been Saved + published is served — no per-product code allowlist.
  */
-const PUBLIC_TEMPLATE_NAMES = new Set<string>([
-  "unisex-zip-hoodie-aop-L",
-  "unisex-pullover-hoodie-aop-L",
-  "unisex-sweatshirt-aop-L",
-  "spun-polyester-pillow-wrap-L",
-]);
+export function isPublicTemplateName(name: string): boolean {
+  return isValidPublicTemplateName(name);
+}
+
+/** @deprecated use listPublishedTemplateNames() for an up-to-date Supabase list */
+export function listPublicTemplateNames(): string[] {
+  return [];
+}
+
+/** List template basenames currently in Supabase `templates/` (published). */
+export async function listPublishedTemplateNames(): Promise<string[]> {
+  if (!isSupabaseHoodieTemplatesConfigured()) return [];
+  const files = await listHoodieTemplatesBucketFiles("templates");
+  return files
+    .map((f) => f.name.replace(/\.json$/i, ""))
+    .filter((name) => isValidPublicTemplateName(name))
+    .sort();
+}
 
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const STALE_GRACE_MS = 24 * 60 * 60 * 1000; // serve stale up to 24h if Supabase pauses
@@ -63,14 +79,6 @@ type CacheEntry = {
 
 const cache = new Map<string, CacheEntry>();
 
-export function isPublicTemplateName(name: string): boolean {
-  return PUBLIC_TEMPLATE_NAMES.has(name);
-}
-
-export function listPublicTemplateNames(): string[] {
-  return Array.from(PUBLIC_TEMPLATE_NAMES);
-}
-
 async function fetchJson(url: string, signal?: AbortSignal): Promise<any> {
   const r = await fetch(url, { signal, cache: "no-store" });
   if (!r.ok) throw new Error(`GET ${url} → ${r.status}`);
@@ -79,29 +87,11 @@ async function fetchJson(url: string, signal?: AbortSignal): Promise<any> {
 
 /**
  * Map customer-facing template names back to the admin authoring file name on
- * disk. The publish script renames the admin's `zip-hoodie-aop-L` to
- * `unisex-zip-hoodie-aop-L` (the "polished" public name) before uploading;
- * this mapping is the inverse so the dev fallback can find the raw file.
- *
- * If a name isn't mapped here we fall back to using it verbatim, then
- * (as a last resort) try stripping a `unisex-` prefix.
+ * disk (dev fallback). Legacy hoodies use explicit maps; new products try
+ * underscore variants of the public kebab name.
  */
-const DEV_LOCAL_NAME: Record<string, string> = {
-  "unisex-zip-hoodie-aop-L": "zip-hoodie-aop-L",
-  "unisex-pullover-hoodie-aop-L": "pullover-hoodie-aop-L",
-  "unisex-sweatshirt-aop-L": "sweatshirt-aop-L",
-  "spun-polyester-pillow-wrap-L": "Spun_Polyester",
-};
-
 function resolveLocalAdminCandidates(publicName: string): string[] {
-  const candidates = new Set<string>();
-  candidates.add(publicName);
-  const mapped = DEV_LOCAL_NAME[publicName];
-  if (mapped) candidates.add(mapped);
-  if (publicName.startsWith("unisex-")) {
-    candidates.add(publicName.slice("unisex-".length));
-  }
-  return Array.from(candidates);
+  return resolveAdminSlugCandidatesForPublicName(publicName);
 }
 
 /**
@@ -174,8 +164,8 @@ function loadLocalAdminTemplate(publicName: string): PublishedHoodieTemplate | n
 export async function getPublishedHoodieTemplate(
   name: string,
 ): Promise<PublishedHoodieTemplate> {
-  if (!isPublicTemplateName(name)) {
-    throw new Error(`Template "${name}" is not in the public allowlist`);
+  if (!isValidPublicTemplateName(name)) {
+    throw new Error(`Invalid template name "${name}"`);
   }
 
   const cached = cache.get(name);

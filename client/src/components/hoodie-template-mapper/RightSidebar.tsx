@@ -33,6 +33,7 @@ import {
   type MeshGrid,
 } from "@shared/hoodieTemplate";
 import type { HoodieView } from "@shared/hoodieTemplate";
+import { resolvePublicTemplateName } from "@shared/aopTemplateNaming";
 import { useHoodieMapperStore } from "./store";
 import { svgPathToAnchors } from "./lib/svgPath";
 import { readImageDimensions, uploadReferenceOverlay, uploadSourcePanel } from "./api";
@@ -144,6 +145,12 @@ export default function RightSidebar() {
               className="h-8 text-xs"
             />
           </Field>
+          <p className="text-[10px] leading-snug text-emerald-400/90">
+            Storefront / catalog name:{" "}
+            <span className="font-mono text-emerald-200">
+              {resolvePublicTemplateName(template.name)}
+            </span>
+          </p>
           <Field label="Label">
             <Input
               value={template.label}
@@ -203,9 +210,9 @@ export default function RightSidebar() {
             <span className="text-slate-400">blueprintId</span> = Printify catalog number (450 pullover, 451 zip).{" "}
             <span className="text-slate-400">productTypeId</span> = optional note only — merchants are routed by{" "}
             <span className="text-slate-300">panelMappingTemplate</span> on the platform catalog row (set in{" "}
-            <span className="text-slate-300">Platform Catalog → Publish for merchants</span>), not this field. After
-            you import blueprint {template.blueprintId ?? "?"} under Admin → Products, you can paste the new row id
-            here and Save if you want it recorded in the JSON; leave blank until then.
+            <span className="text-slate-300">Platform Catalog → Publish for merchants</span>). Use the{" "}
+            <span className="font-mono text-emerald-300">{resolvePublicTemplateName(template.name)}</span> name
+            there after Save — no code change needed for new products.
           </p>
         </Section>
 

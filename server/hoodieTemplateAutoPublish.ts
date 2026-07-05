@@ -22,6 +22,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { resolvePublicTemplateName } from "@shared/aopTemplateNaming";
 import { readAssetBuffer, readTemplateText, TEMPLATES_DIR, MOCKUPS_DIR } from "./aopMapperStorage";
 import {
   ensureHoodieTemplatesBucket,
@@ -31,18 +32,7 @@ import {
 } from "./supabaseHoodieTemplates";
 import { invalidateHoodieTemplateCache } from "./hoodieTemplateStore";
 
-/**
- * Inverse of `DEV_LOCAL_NAME` in `hoodieTemplateStore.ts`. Maps the admin
- * authoring file name (e.g. `zip-hoodie-aop-L`) to its public published name
- * (e.g. `unisex-zip-hoodie-aop-L`). Templates not listed here are not
- * auto-published.
- */
-export const ADMIN_TO_PUBLIC_NAME: Record<string, string> = {
-  "zip-hoodie-aop-L": "unisex-zip-hoodie-aop-L",
-  "pullover-hoodie-aop-L": "unisex-pullover-hoodie-aop-L",
-  "sweatshirt-aop-L": "unisex-sweatshirt-aop-L",
-  Spun_Polyester: "spun-polyester-pillow-wrap-L",
-};
+export { ADMIN_TO_PUBLIC_NAME, LEGACY_ADMIN_TO_PUBLIC_NAME, resolvePublicTemplateName } from "@shared/aopTemplateNaming";
 
 const ROOT = process.cwd();
 // Re-export paths from storage module (local tmp/ dirs).
@@ -169,18 +159,19 @@ export type AutoPublishResult =
  * Sanitise + upload one template (and its mockups, if changed) to Supabase.
  *
  * @param adminName  The admin authoring name (the basename used by Save in the
- *                   mapper UI). Must be present in `ADMIN_TO_PUBLIC_NAME`.
+ *                   mapper UI). Public name is derived automatically — see
+ *                   `resolvePublicTemplateName()` in `@shared/aopTemplateNaming`.
  */
 export async function autoPublishHoodieTemplate(
   adminName: string,
 ): Promise<AutoPublishResult> {
   const t0 = Date.now();
-  const publicName = ADMIN_TO_PUBLIC_NAME[adminName];
+  const publicName = resolvePublicTemplateName(adminName);
   if (!publicName) {
     return {
       ok: false,
       skipped: true,
-      reason: `Admin template "${adminName}" has no public mapping; not auto-published.`,
+      reason: `Could not derive a public template name from admin slug "${adminName}".`,
     };
   }
   if (!isSupabaseHoodieTemplatesConfigured()) {

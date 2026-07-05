@@ -105,7 +105,7 @@ import {
 import {
   getPublishedHoodieTemplate,
   isPublicTemplateName,
-  listPublicTemplateNames,
+  listPublishedTemplateNames,
 } from "./hoodieTemplateStore";
 import { enqueueMockupJob, getMockupJob } from "./mockup-jobs";
 import { harvestFlatCalibration, type HarvestOptions } from "./flat-calibration";
@@ -6758,10 +6758,7 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "Invalid template name" });
       }
       if (!isPublicTemplateName(name)) {
-        return res.status(404).json({
-          error: "Template not found",
-          available: listPublicTemplateNames(),
-        });
+        return res.status(400).json({ error: "Invalid template name" });
       }
       try {
         const published = await getPublishedHoodieTemplate(name);
@@ -6774,10 +6771,21 @@ ${textEdgeRestrictions}
           cachedAt: published.cachedAt,
         });
       } catch (err: any) {
-        console.error(`[hoodie-template] load failed for ${name}:`, err?.message || err);
+        const msg = err?.message || String(err);
+        if (/invalid template name/i.test(msg)) {
+          return res.status(400).json({ error: msg });
+        }
+        const available = await listPublishedTemplateNames().catch(() => []);
+        if (/not found|404|→ 404/i.test(msg) || available.length === 0) {
+          return res.status(404).json({
+            error: "Template not found — Save it in the AOP Panel Mapper first.",
+            available,
+          });
+        }
+        console.error(`[hoodie-template] load failed for ${name}:`, msg);
         return res.status(503).json({
           error: "Template temporarily unavailable",
-          detail: err?.message || String(err),
+          detail: msg,
         });
       }
     }),
