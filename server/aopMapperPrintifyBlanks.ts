@@ -120,6 +120,59 @@ function pickView(images: MockupImage[], view: "front" | "back"): MockupImage | 
   );
 }
 
+type PrintPlaceholder = { position: string; width: number; height: number };
+
+function listVariantPrintPlaceholders(variant: any): PrintPlaceholder[] {
+  const out: PrintPlaceholder[] = [];
+  for (const ph of variant?.placeholders || []) {
+    const w = Number(ph.width);
+    const h = Number(ph.height);
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) continue;
+    out.push({ position: String(ph.position || "default"), width: w, height: h });
+  }
+  return out;
+}
+
+async function resolveProviderId(token: string, blueprintId: number): Promise<number> {
+  const providers = await pf<any[]>(
+    `/catalog/blueprints/${blueprintId}/print_providers.json`,
+    token,
+  );
+  if (!Array.isArray(providers) || providers.length === 0) {
+    throw new Error(`No print providers listed for blueprint ${blueprintId}`);
+  }
+  const id = Number(providers[0]?.id);
+  if (!Number.isFinite(id) || id <= 0) {
+    throw new Error(`No print provider found for blueprint ${blueprintId}`);
+  }
+  return id;
+}
+
+async function resolveCatalogVariant(
+  token: string,
+  blueprintId: number,
+  providerId: number,
+): Promise<{ variantId: number; placeholders: PrintPlaceholder[] }> {
+  const variantsData = await pf<any>(
+    `/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`,
+    token,
+  );
+  const variants: any[] = variantsData?.variants ?? (Array.isArray(variantsData) ? variantsData : []);
+  if (variants.length === 0) {
+    throw new Error(`No catalog variants for blueprint ${blueprintId}, provider ${providerId}`);
+  }
+  const variant = variants[0];
+  const variantId = Number(variant?.id ?? variant?.variant_id);
+  if (!Number.isFinite(variantId) || variantId <= 0) {
+    throw new Error(`Invalid catalog variant for blueprint ${blueprintId}`);
+  }
+  const placeholders = listVariantPrintPlaceholders(variant);
+  if (placeholders.length === 0) {
+    throw new Error("Blueprint variant has no print placeholders");
+  }
+  return { variantId, placeholders };
+}
+
 export type FetchPrintifyBlanksResult = {
   ok: true;
   blueprintId: number;
@@ -144,30 +197,18 @@ export async function fetchPrintifyBlankMockups(args: {
   await ensureHoodieTemplatesBucket();
   ensureLocalMapperDirs();
 
-  const catalog = await pf<any>(`/catalog/blueprints/${blueprintId}.json`, token);
-  const providers = catalog?.print_providers ?? [];
-  const providerId = providers[0]?.id;
-  if (!providerId) throw new Error(`No print provider found for blueprint ${blueprintId}`);
-  const provider = await pf<any>(
-    `/catalog/blueprints/${blueprintId}/print_providers/${providerId}.json`,
-    token,
-  );
-  const variant = provider?.variants?.[0];
-  if (!variant?.id) throw new Error(`No catalog variant for blueprint ${blueprintId}`);
+  const providerId = await resolveProviderId(token, blueprintId);
+  const { variantId, placeholders } = await resolveCatalogVariant(token, blueprintId, providerId);
 
-  const placeholders = (variant.placeholders ?? []) as Array<{ position: string; width: number; height: number }>;
   const primary =
     placeholders.find((p) => p.position === "front") ||
     placeholders.find((p) => p.position === "default") ||
     placeholders[0];
-  if (!primary) throw new Error("Blueprint variant has no print placeholders");
-
   const hasBack = placeholders.some((p) => p.position === "back");
   const transparentId = await uploadTransparentPng(token);
 
   const printAreas: Array<{ variant_ids: number[]; placeholders: Array<{ position: string; images: unknown[] }> }> =
     [];
-  const variantId = variant.id;
   if (hasBack) {
     printAreas.push({
       variant_ids: [variantId],
