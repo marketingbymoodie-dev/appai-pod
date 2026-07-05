@@ -9,6 +9,7 @@ import {
   mergeDesignGroupsForBlueprintSwitch,
   PULOVER_HOODIE_BLUEPRINT_ID,
   ZIP_HOODIE_BLUEPRINT_ID,
+  type HoodiePanelKey,
   type HoodieTemplate,
   type HoodieToolId,
   type HoodieView,
@@ -26,6 +27,7 @@ import {
   smoothPath,
   svgPathToAnchors,
 } from "./lib/svgPath";
+import type { CropRect } from "./lib/mockupCrop";
 
 /**
  * Zustand store for the hoodie template mapper. Centralizes the in-memory
@@ -140,6 +142,8 @@ export type HoodieMapperState = {
    * the toggle doesn't bake into saved JSON.
    */
   meshEdit: MeshEditState;
+  /** Interactive mockup crop before masking. */
+  mockupCrop: { active: boolean; rect: CropRect | null };
 };
 
 /**
@@ -170,6 +174,18 @@ export type HoodieMapperActions = {
   markSaved: () => void;
   setMockup: (view: HoodieView, mockup: MockupAsset | null) => void;
   patchMockup: (view: HoodieView, patch: Partial<MockupAsset>) => void;
+  startMockupCrop: (rect: CropRect) => void;
+  setMockupCropRect: (rect: CropRect) => void;
+  cancelMockupCrop: () => void;
+  /**
+   * Deep-copy all mask layers from one view to another (e.g. identical pillow faces).
+   * Optional panelKeyMap remaps assignments (front → back). Returns count copied.
+   */
+  copyLayersFromView: (
+    from: HoodieView,
+    to: HoodieView,
+    opts?: { panelKeyMap?: Partial<Record<HoodiePanelKey, HoodiePanelKey>>; replaceExisting?: boolean },
+  ) => number;
   setReferenceOverlay: (view: HoodieView, overlay: ReferenceOverlayAsset | null) => void;
   setTemplateMeta: (patch: Partial<Pick<HoodieTemplate, "name" | "label" | "hoodieType" | "productTypeId" | "blueprintId" | "size">>) => void;
   /** Replace the full designGroups array (used by AOP modal save-as-defaults). */
@@ -378,6 +394,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
   magneticRadius: DEFAULT_MAGNETIC_RADIUS,
   magneticTolerance: DEFAULT_MAGNETIC_TOLERANCE,
   meshEdit: { ...DEFAULT_MESH_EDIT_STATE },
+  mockupCrop: { active: false, rect: null },
   selectedAnchorIndex: null,
   dirty: false,
   busy: false,
@@ -390,6 +407,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
         hoverLayerId: null,
         penDraft: null,
         selectedAnchorIndex: null,
+        mockupCrop: { active: false, rect: null },
         dirty: false,
       })),
     resetTemplate: (name) =>
@@ -399,6 +417,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
         hoverLayerId: null,
         penDraft: null,
         selectedAnchorIndex: null,
+        mockupCrop: { active: false, rect: null },
         dirty: false,
       })),
     setView: (view) =>
@@ -444,6 +463,58 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
           dirty: true,
         };
       }),
+    startMockupCrop: (rect) =>
+      set(() => ({
+        mockupCrop: { active: true, rect },
+        tool: "move",
+        selectedLayerId: null,
+      })),
+    setMockupCropRect: (rect) =>
+      set((s) => ({
+        mockupCrop: s.mockupCrop.active ? { active: true, rect } : s.mockupCrop,
+      })),
+    cancelMockupCrop: () => set(() => ({ mockupCrop: { active: false, rect: null } })),
+    copyLayersFromView: (from, to, opts) => {
+      const sourceLayers = get().template.views[from]?.layers ?? [];
+      if (sourceLayers.length === 0) return 0;
+      const panelKeyMap = opts?.panelKeyMap ?? {};
+      const replaceExisting = opts?.replaceExisting ?? false;
+
+      const cloned: MaskLayer[] = sourceLayers.map((src, idx) => {
+        const newId = newLayerId();
+        const mappedKey =
+          src.panelKey && panelKeyMap[src.panelKey] ? panelKeyMap[src.panelKey]! : src.panelKey;
+        return {
+          ...src,
+          id: newId,
+          view: to,
+          panelKey: mappedKey,
+          maskPath: src.maskPath,
+          mesh: src.mesh
+            ? {
+                ...src.mesh,
+                targetPoints: src.mesh.targetPoints.map((p) => ({ x: p.x, y: p.y })),
+              }
+            : src.mesh,
+          cornerPins: src.cornerPins
+            ? (src.cornerPins.map((p) => ({ x: p.x, y: p.y })) as typeof src.cornerPins)
+            : src.cornerPins,
+          zIndex: idx + 1,
+        };
+      });
+
+      set((s) => {
+        const dest = s.template.views[to] ?? EMPTY_HOODIE_VIEW;
+        const layers = replaceExisting ? cloned : [...dest.layers, ...cloned];
+        return {
+          template: patchView(s.template, to, { layers }),
+          view: to,
+          selectedLayerId: cloned[0]?.id ?? null,
+          dirty: true,
+        };
+      });
+      return cloned.length;
+    },
     setReferenceOverlay: (view, overlay) =>
       set((s) => ({
         template: patchView(s.template, view, { referenceOverlay: overlay }),

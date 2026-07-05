@@ -20,6 +20,7 @@ import {
   Loader2,
   FlipHorizontal,
   FlipVertical,
+  Crop,
 } from "lucide-react";
 import {
   MAX_MESH_COLS,
@@ -27,6 +28,7 @@ import {
   PANEL_DISPLAY_LABEL,
   panelsEligibleForView,
   PULOVER_HOODIE_BLUEPRINT_ID,
+  isPillowWrapBlueprint,
   mockupDrawRect,
   type HoodiePanelKey,
   type MaskLayer,
@@ -37,6 +39,9 @@ import { resolvePublicTemplateName } from "@shared/aopTemplateNaming";
 import { useHoodieMapperStore } from "./store";
 import { svgPathToAnchors } from "./lib/svgPath";
 import { readImageDimensions, uploadReferenceOverlay, uploadSourcePanel } from "./api";
+import { loadMapperAssetImage } from "./lib/mapperAssetImage";
+import { detectMockupContentBounds } from "./lib/mockupCrop";
+import { applyMockupCropUpload } from "./lib/mockupCropApply";
 
 /**
  * Right sidebar: template metadata + tool-aware controls + per-layer
@@ -499,8 +504,24 @@ function SelectedLayerSection({ layer }: { layer: MaskLayer }) {
 
 function MockupTransformSection({ view }: { view: HoodieView }) {
   const template = useHoodieMapperStore((s) => s.template);
+  const mockupCrop = useHoodieMapperStore((s) => s.mockupCrop);
+  const busy = useHoodieMapperStore((s) => s.busy);
   const actions = useHoodieMapperStore((s) => s.actions);
+  const { toast } = useToast();
   const mockup = template.views[view].mockup;
+  const frontLayers = template.views.front.layers;
+  const backLayers = template.views.back.layers;
+  const frontMockup = template.views.front.mockup;
+  const backMockup = template.views.back.mockup;
+  const [applyCropToBoth, setApplyCropToBoth] = useState(true);
+  const [cropBusy, setCropBusy] = useState(false);
+  const isPillow = isPillowWrapBlueprint(template.blueprintId);
+  const sameSizeMockups =
+    frontMockup &&
+    backMockup &&
+    frontMockup.width === backMockup.width &&
+    frontMockup.height === backMockup.height;
+
   if (!mockup) {
     return (
       <Section title={`Base mockup (${view})`}>
@@ -515,11 +536,100 @@ function MockupTransformSection({ view }: { view: HoodieView }) {
   const rect = mockupDrawRect(mockup);
   const locked = mockup.transformLocked === true;
 
+  async function handleStartCrop(autoTrim: boolean) {
+    if (cropBusy || busy) return;
+    setCropBusy(true);
+    try {
+      const img = await loadMapperAssetImage(mockup!.src);
+      const initial = autoTrim
+        ? detectMockupContentBounds(img)
+        : { x: 0, y: 0, width: mockup!.width, height: mockup!.height };
+      actions.startMockupCrop(initial);
+      toast({
+        title: autoTrim ? "Auto-trim crop ready" : "Crop mode",
+        description: "Adjust the box on canvas, then Apply crop.",
+      });
+    } catch (err: unknown) {
+      toast({
+        title: "Could not start crop",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+    } finally {
+      setCropBusy(false);
+    }
+  }
+
+  async function handleApplyCrop() {
+    if (!mockupCrop.rect || cropBusy || busy) return;
+    setCropBusy(true);
+    actions.setBusy(true);
+    try {
+      const cropped = await applyMockupCropUpload({
+        templateName: template.name,
+        view,
+        mockup,
+        rect: mockupCrop.rect,
+      });
+      actions.setMockup(view, cropped);
+
+      if (applyCropToBoth && sameSizeMockups) {
+        const otherView: HoodieView = view === "front" ? "back" : "front";
+        const otherMockup = template.views[otherView].mockup;
+        if (otherMockup) {
+          const otherCropped = await applyMockupCropUpload({
+            templateName: template.name,
+            view: otherView,
+            mockup: otherMockup,
+            rect: mockupCrop.rect,
+          });
+          actions.setMockup(otherView, otherCropped);
+        }
+      }
+
+      actions.cancelMockupCrop();
+      toast({
+        title: "Mockup cropped",
+        description:
+          applyCropToBoth && sameSizeMockups
+            ? `${view} + ${view === "front" ? "back" : "front"} saved at ${cropped.width}×${cropped.height}px`
+            : `${view} saved at ${cropped.width}×${cropped.height}px`,
+      });
+    } catch (err: unknown) {
+      toast({
+        title: "Crop failed",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+    } finally {
+      setCropBusy(false);
+      actions.setBusy(false);
+    }
+  }
+
+  function handleCopyFromFront() {
+    const count = actions.copyLayersFromView("front", "back", {
+      panelKeyMap: isPillow ? { front: "back" } : {},
+      replaceExisting: backLayers.length > 0,
+    });
+    if (count === 0) {
+      toast({
+        title: "Nothing to copy",
+        description: "Draw and mesh the front face first.",
+        variant: "destructive",
+      });
+      return;
+    }
+    toast({
+      title: "Copied from front view",
+      description: `${count} layer(s) on back${isPillow ? " — panel assignment set to Back" : ""}. Save when done.`,
+    });
+  }
+
   return (
     <Section title={`Base mockup (${view})`}>
       <div className="text-[11px] text-slate-400">
-        Move/scale the garment blank on the canvas. Panel masks stay fixed — use this to line up a
-        new photo with zip-hoodie traces. Saved into the template and used in Preview AOP.
+        Crop whitespace before masking, or move/scale the blank to align with reused hoodie traces.
       </div>
       <div className="mt-2 space-y-2 rounded border border-slate-800 bg-slate-950 p-2 text-[11px]">
         <div className="text-slate-300">
@@ -528,8 +638,88 @@ function MockupTransformSection({ view }: { view: HoodieView }) {
         </div>
         <div className="text-[10px] text-slate-500">
           pos ({Math.round(rect.x)},{Math.round(rect.y)}) · scale {(rect.scale * 100).toFixed(0)}%
-          {!locked && <span className="ml-1 text-sky-300">— drag &amp; resize on canvas</span>}
+          {!locked && !mockupCrop.active && (
+            <span className="ml-1 text-sky-300">— drag &amp; resize on canvas</span>
+          )}
         </div>
+
+        {!mockupCrop.active ? (
+          <div className="flex flex-wrap gap-2 pt-1">
+            <Button
+              size="sm"
+              variant="secondary"
+              className="h-7 text-[11px]"
+              disabled={cropBusy || busy}
+              onClick={() => handleStartCrop(true)}
+              data-testid="mockup-crop-auto-trim"
+            >
+              {cropBusy ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Crop className="mr-1 h-3 w-3" />}
+              Auto-trim &amp; crop
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-[11px]"
+              disabled={cropBusy || busy}
+              onClick={() => handleStartCrop(false)}
+            >
+              Manual crop box
+            </Button>
+          </div>
+        ) : (
+          <div className="space-y-2 border-t border-slate-800 pt-2">
+            {sameSizeMockups && (
+              <ToggleRow
+                label="Apply same crop to front + back"
+                checked={applyCropToBoth}
+                onChange={setApplyCropToBoth}
+              />
+            )}
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                variant="default"
+                className="h-7 flex-1 text-[11px]"
+                disabled={cropBusy || busy || !mockupCrop.rect}
+                onClick={handleApplyCrop}
+                data-testid="mockup-crop-apply"
+              >
+                {cropBusy ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
+                Apply crop
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 text-[11px]"
+                disabled={cropBusy || busy}
+                onClick={() => actions.cancelMockupCrop()}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {view === "back" && frontLayers.length > 0 && (
+          <div className="border-t border-slate-800 pt-2">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 w-full text-[11px]"
+              onClick={handleCopyFromFront}
+              data-testid="copy-masks-from-front"
+            >
+              <Copy className="mr-1 h-3 w-3" />
+              Copy masks + mesh from front
+            </Button>
+            <p className="mt-1 text-[10px] text-slate-500">
+              {isPillow
+                ? "For identical pillow faces — copies polygon, mesh, and artwork; assigns Back panel."
+                : "Copies geometry as-is — review panel assignments on back."}
+            </p>
+          </div>
+        )}
+
         <ToggleRow
           label="Lock position (prevent accidental drags)"
           checked={locked}

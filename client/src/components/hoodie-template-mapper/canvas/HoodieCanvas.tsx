@@ -24,6 +24,7 @@ import PenToolOverlay from "./PenToolOverlay";
 import AnchorHandlesOverlay from "./AnchorHandlesOverlay";
 import ReferenceOverlayLayer from "./ReferenceOverlayLayer";
 import MockupBaseLayer from "./MockupBaseLayer";
+import MockupCropOverlay from "./MockupCropOverlay";
 import { loadMapperAssetImage } from "../lib/mapperAssetImage";
 import type { Pt } from "@shared/hoodieTemplate";
 
@@ -164,6 +165,7 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
   const mockup = useHoodieMapperStore((s) => s.template.views[s.view].mockup);
   const referenceOverlay = useHoodieMapperStore((s) => s.template.views[s.view].referenceOverlay);
   const meshEdit = useHoodieMapperStore((s) => s.meshEdit);
+  const mockupCrop = useHoodieMapperStore((s) => s.mockupCrop);
   const actions = useHoodieMapperStore((s) => s.actions);
 
   const mockupImageState = useLoadedImage(mockup?.src);
@@ -374,6 +376,7 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
       // initiates a pan also drops an anchor. Spacebar drags should be
       // pan-only.
       if (isPanning || evt.shiftKey) return;
+      if (mockupCrop.active) return;
       const mockupPt = pointerToMockup();
       if (!mockupPt) return;
 
@@ -425,7 +428,7 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
         actions.setSelectedLayer(null);
       }
     },
-    [actions, isPenActive, isPanning, penDraft, pointerToMockup, scale, selectedLayer, tool],
+    [actions, isPenActive, isPanning, mockupCrop.active, penDraft, pointerToMockup, scale, selectedLayer, tool],
   );
 
   // Snap a raw mockup point to the nearest strong edge when the magnetic pen
@@ -647,8 +650,18 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
           <MockupBaseLayer
             mockup={mockup}
             image={mockupImage}
-            panLocked={isPanning}
+            panLocked={isPanning || mockupCrop.active}
             onChange={(patch) => actions.patchMockup(view, patch)}
+          />
+        )}
+
+        {mockupCrop.active && mockupCrop.rect && mockupWidth > 0 && mockupHeight > 0 && (
+          <MockupCropOverlay
+            mockupWidth={mockupWidth}
+            mockupHeight={mockupHeight}
+            rect={mockupCrop.rect}
+            zoom={scale}
+            onChange={(rect) => actions.setMockupCropRect(rect)}
           />
         )}
 
@@ -848,6 +861,15 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
                   ? "loaded"
                   : "—"}{" "}
             · scale {scale.toFixed(2)} · pos ({Math.round(position.x)},{Math.round(position.y)})
+          </div>
+        </div>
+      )}
+
+      {mockupCrop.active && mockupCrop.rect && (
+        <div className="pointer-events-none absolute left-1/2 top-3 z-10 -translate-x-1/2 rounded border border-sky-500/40 bg-sky-500/15 px-4 py-2 text-center text-xs text-sky-100">
+          <div className="font-medium">Crop mockup — drag the box, then Apply crop in the right sidebar</div>
+          <div className="mt-0.5 text-[11px] text-sky-200/80">
+            {Math.round(mockupCrop.rect.width)}×{Math.round(mockupCrop.rect.height)} px region selected
           </div>
         </div>
       )}
