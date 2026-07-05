@@ -7,8 +7,8 @@
  *   npm run publish:hoodie -- --source pullover-hoodie-aop-L
  *
  * Loads `.env` from the project root automatically (same as `npm run dev`).
- * Public name comes from `ADMIN_TO_PUBLIC_NAME` in `hoodieTemplateAutoPublish.ts`
- * (e.g. pullover-hoodie-aop-L → unisex-pullover-hoodie-aop-L).
+ * Public name is derived automatically from the admin slug — see
+ * `resolvePublicTemplateName()` in `@shared/aopTemplateNaming`.
  *
  * Easier alternative: open Hoodie Template Mapper and click **Publish** (or
  * **Save**, which auto-publishes when Supabase env vars are loaded).

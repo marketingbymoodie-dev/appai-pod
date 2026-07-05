@@ -20,7 +20,7 @@ import {
 } from "../platformCatalogStore";
 import {
   getPublishedHoodieTemplate,
-  listPublicTemplateNames,
+  listPublishedTemplateNames,
 } from "../hoodieTemplateStore";
 import {
   buildHarvestColorsFromProductType,
@@ -656,7 +656,8 @@ export function registerPlatformCalibrationRoutes(
 
   app.get("/api/platform/canonical/aop-panel-templates", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
-    res.json({ templates: listPublicTemplateNames() });
+    const templates = await listPublishedTemplateNames();
+    res.json({ templates });
   });
 
   app.post("/api/platform/canonical/:blueprintId/publish-aop", isAuthenticated, async (req: any, res: Response) => {

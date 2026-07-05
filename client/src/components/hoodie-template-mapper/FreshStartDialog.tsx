@@ -14,8 +14,10 @@ import {
   createFreshAopTemplate,
   isValidAopTemplateSlug,
   PULOVER_HOODIE_BLUEPRINT_ID,
+  PILLOW_WRAP_BLUEPRINT_ID,
   ZIP_HOODIE_BLUEPRINT_ID,
 } from "@shared/hoodieTemplate";
+import { resolvePublicTemplateName } from "@shared/aopTemplateNaming";
 import { listTemplates } from "./api";
 
 type Props = {
@@ -104,9 +106,15 @@ export default function FreshStartDialog({ open, onOpenChange, onConfirm }: Prop
               <p className="text-xs text-destructive">Use letters, numbers, dashes, underscores (max 64 chars).</p>
             )}
             {!slugTaken && normalizedSlug && (
-              <p className="text-xs text-muted-foreground">
-                Mockup uploads will save as {normalizedSlug}-front.png and {normalizedSlug}-back.png
-              </p>
+              <>
+                <p className="text-xs text-muted-foreground">
+                  Mockup uploads will save as {normalizedSlug}-front.png and {normalizedSlug}-back.png
+                </p>
+                <p className="text-xs text-emerald-700 dark:text-emerald-400">
+                  Storefront / catalog name after Save:{" "}
+                  <span className="font-mono">{resolvePublicTemplateName(normalizedSlug)}</span>
+                </p>
+              </>
             )}
           </div>
 
@@ -149,6 +157,15 @@ export default function FreshStartDialog({ open, onOpenChange, onConfirm }: Prop
                   onClick={() => setBlueprintId(String(ZIP_HOODIE_BLUEPRINT_ID))}
                 >
                   Zip 451
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-6 px-2 text-[10px]"
+                  onClick={() => setBlueprintId(String(PILLOW_WRAP_BLUEPRINT_ID))}
+                >
+                  Pillow 220
                 </Button>
               </div>
             </div>
