@@ -1,0 +1,240 @@
+# Customizer tray & floating launcher — LOCKED DOWN, do not touch casually
+
+**Status: WORKING and verified on live store (2026-07-04, `ai-art-studio-191`).**
+Companion to **`docs/iframe-scroll-architecture.md`** — together these two
+documents cover the storefront UX that took many failed iterations to get
+right. **Do not modify any file or function listed here without explicit
+approval from the project owner, and never without re-running the
+verification scripts below. If any verification fails after a change, revert
+immediately — do not iterate forward on a broken state.**
+
+## Why the tray exists (do not go back to native nav)
+
+Theme-native nav dropdowns are hover-driven and behave differently per theme.
+Verified with **no app code involved**: Horizon-family menus (Horizon, Tinker,
+Savor, Ritual) do not open when the pointer approaches from **below** the menu
+bar — a plain merchant-created dropdown item reproduced the exact same bug as
+our injected "Customizer" item. Fighting this per-theme was abandoned.
+
+The replacement is fully app-owned DOM: a floating launcher button + slide-out
+tray, **click-driven only**, identical on every theme, desktop and mobile. It
+deliberately **never touches the theme's header/menu DOM**. (The old
+`appai-saved-designs-nav.js` nav-injection still exists for the saved-designs
+drawer itself, but navigation lives in the tray.)
+
+## The pieces
+
+| File | Role |
+|---|---|
+| `extensions/theme-extension/assets/appai-customizer-tray.js` | Launcher button, tray, positioning, overlay suppression, sign-in item + in-tray email-OTP panel |
+| `extensions/theme-extension/blocks/ai-art-embed.liquid` | App embed (`target: body`) that loads the script + merchant settings JSON (`#appai-tray-settings`: `enabled`, `label`, `position`, `shimmer`) |
+| `extensions/theme-extension/assets/appai-saved-designs-nav.js` | Provides `window.__APPAI_OPEN_SAVED_DESIGNS_DRAWER__` / `window.__APPAI_SAVED_DESIGNS__` that the tray delegates to, plus `window.__APPAI_SAVED_DESIGNS_REINIT__` for post-login re-init |
+| `client/src/pages/embed-design.tsx` | `hasStoredLoggedInIdentity()`, `openSignIn=1` initial state, `ai-art-studio:open-sign-in` message handler |
+| `extensions/theme-extension/assets/appai-art-embed.js` | Forwards the page's `openSignIn=1` URL param into the designer iframe URL |
+| `server/routes.ts` | `/apps/appai/customizer-pages` (App Proxy) supplies the tray's page list; `buildCustomizerBootHtml()` loads the same assets on self-bootstrapped pages (settings element absent → defaults) |
+
+The launcher stays hidden when the shop has **no active customizer pages**
+(`fetchPages()` returns empty), and when the merchant disables it in the
+theme editor.
+
+## Launcher behavior — why every piece exists
+
+1. **Theme style matching** (`extractTrayTheme`): computed styles are read at
+   runtime — primary button colors/radius/font for the launcher, body
+   background/text + heading font for the tray. No theme-specific CSS
+   variable names, so it works on any theme. Falls back to a neutral dark
+   scheme when colors are transparent/unusable.
+
+2. **Top placement must NEVER overlap the menu bar.** Two layers, both
+   required (each fixed a real bug):
+   - `visibleHeaderBottom()` measures header chrome and takes the **MAX**
+     bottom across all candidates — announcement/welcome bars above the menu
+     used to shadow it. Includes sections inside the header group
+     (Horizon-family wraps sections in zero-height custom elements) and
+     anchors on the header **cart icon** as a selector-proof fallback.
+   - `verifiedClearOfHeaderChrome()` then **hit-tests the actual pixels** the
+     button would occupy with `elementsFromPoint`, pushing the button below
+     any real header chrome found there (up to 6 iterations). Measurement
+     bugs cannot leave the button on the menu because this checks what is
+     really rendered.
+   - With no measurable header at page top, assume 72px rather than 16px —
+     overlapping the menu is the one thing this button must never do.
+
+3. **Bottom placement clears Shopify's preview bar** (`#preview-bar-iframe`
+   etc.) on password-protected/preview stores.
+
+4. **Offsets are CSS variables** (`--appai-tray-top` / `--appai-tray-bottom`)
+   updated on scroll/resize (rAF-throttled) plus timed rechecks at 1s/3s for
+   late-mounting sticky headers and the preview bar.
+
+5. **Theme overlay suppression** (`themeOverlayOpen` +
+   `startOverlaySuppression`): when the theme opens its own nav drawer / mega
+   menu / cart drawer / modal, the launcher fades out (`.appai-suppressed`)
+   and returns when it closes — the same pattern chat widgets use. Pushing
+   the button "below the menu" is impossible: drawers cover the full viewport
+   height on mobile. Detection is theme-agnostic and all three prongs are
+   needed:
+   - open `<dialog>` overlays taller than 35% of the viewport (Horizon-family
+     drawers, Tinker cart drawer);
+   - `<details open>` **inside header chrome only** with a panel > 80px —
+     content accordions (FAQs) also use `<details>` and must NOT count;
+   - header toggles with `aria-expanded="true"` whose `aria-controls` target
+     is taller than 35% of the viewport (Dawn's burger).
+   Re-checks run on click/keyup/resize with 250ms/650ms follow-ups so drawer
+   animations settle; there is deliberately **no permanent MutationObserver**.
+
+6. **Shimmer** on the label reuses the boot-title shimmer treatment,
+   recolored to sweep the theme's button text color; merchant-toggleable.
+
+## Tray content order (top to bottom)
+
+1. **Sign in** ("Your account") — only when NOT signed in (rules below).
+2. **Saved Designs** ("Your designs") — only when
+   `window.__APPAI_OPEN_SAVED_DESIGNS_DRAWER__` exists (logged-in customer
+   with ≥1 design); re-checked every render because that script initialises
+   asynchronously.
+3. **Customizer pages** ("Design your own") — active pages from the App
+   Proxy; the current page is marked "You're here" and does not navigate.
+   The list background-refreshes on every open so a just-published page
+   appears without a reload.
+
+## Signed-in detection — THE pitfall (bug shipped once, do not re-ship)
+
+The persisted-storage rule is strict:
+
+**Signed in ⇔ `localStorage.appai_customer` parses and has
+`isLoggedIn === true`. Anything else — record absent, malformed, or
+`isLoggedIn: false` — is signed OUT. There is NO fallback.**
+
+**Never** treat `appai_customer_id` presence as "signed in" — not even as a
+fallback when the `appai_customer` record is absent. The **anonymous identity
+bootstrap writes the id for every visitor** who has merely loaded the
+designer once, and **older app versions wrote the id WITHOUT the
+`appai_customer` record**, so returning visitors can carry an id-only
+localStorage state indefinitely. This bug shipped **twice**:
+
+1. v1 checked only `!!appai_customer_id` → swallowed the open-sign-in
+   request for every returning anonymous visitor.
+2. v2 read `appai_customer.isLoggedIn` first but **fell back to the id when
+   the record was absent** → same symptom for visitors with the legacy
+   id-only state ("the button just navigates to a customizer page").
+
+Implemented in two places that must stay in sync:
+- `isSignedIn()` in `appai-customizer-tray.js` (parent page)
+- `hasStoredLoggedInIdentity()` in `embed-design.tsx` (iframe)
+
+This works because the designer iframe is served over the **App Proxy on the
+shop domain** — its localStorage IS the storefront page's localStorage, so
+tray reads are always fresh and signing in inside the iframe hides the tray
+item on the next open without a reload.
+
+## Sign-in flow (two paths)
+
+- **Designer iframe on the current page** → the tray closes and posts
+  `{ type: 'ai-art-studio:open-sign-in' }` to the iframe.
+  `embed-design.tsx` handles it: if no logged-in identity, open the OTP panel
+  (`setShowOtpLogin(true)`) and `scrollIntoView` the login prompt (same-origin
+  iframe, so this also scrolls the parent page to it). The iframe path stays
+  authoritative on customizer pages because the React app must run
+  `completeStorefrontLogin()` itself to update its in-memory customer state.
+- **No iframe on the current page** → the tray renders its **own sign-in
+  panel** in the tray body (`renderSignInPanel()` in
+  `appai-customizer-tray.js`) — customers can sign in from ANY page, they are
+  never bounced to a customizer page first. The panel:
+  - shows **Continue with Google** first (then "or" + email) when
+    `auth/config` returns a `googleClientId` + `appUrl` — same layout as the
+    designer's panel. The tray opens the central popup
+    (`{appUrl}/storefront/google-auth?shop&openerOrigin&nonce`) directly (it
+    IS the top-level window, no parent bridge needed) and listens for the
+    `APPAI_STOREFRONT_GOOGLE_AUTH` postMessage back, validating **both the
+    nonce and the sender origin** (`isAllowedCentralAuthOrigin` in the tray —
+    must stay in sync with `shared/storefront-auth.ts`: app hosts only,
+    never `*.myshopify.com`);
+  - calls the same App Proxy endpoints the designer uses
+    (`/apps/appai/api/storefront/auth/request-otp` / `verify-otp`) with
+    `shop = window.Shopify.shop` (the `{handle}.myshopify.com` domain those
+    endpoints validate against);
+  - on success writes **exactly the same localStorage keys/shape as
+    `completeStorefrontLogin()`** (`appai_customer_id`,
+    `appai_identity_token`, `appai_otp_email`, `appai_customer` with
+    `isLoggedIn: true`) — the designer iframe is same-origin via the App
+    Proxy, so it picks the identity up on its next load;
+  - fires the idempotent `merge-session` call when a `appai_session` anon id
+    exists, folding anonymous free-generations/designs into the account;
+  - shows a success note, then re-renders the tray body (sign-in item gone).
+    Before re-rendering it calls `window.__APPAI_SAVED_DESIGNS_REINIT__()`
+    (exposed by `appai-saved-designs-nav.js`) — that script bailed at page
+    boot because there was no identity yet, so without the reinit the
+    **Saved Designs section would not appear until a reload**. The reinit
+    re-runs its init (fetch designs → expose
+    `__APPAI_OPEN_SAVED_DESIGNS_DRAWER__` / `__APPAI_SAVED_DESIGNS__` →
+    inject nav item); it is idempotent (observer/message listener attach
+    once, injection checks for existing nodes). The tray waits for the
+    reinit promise but keeps the success note visible >=2.2s.
+  If `window.Shopify.shop` is unavailable (never seen on a real storefront),
+  it falls back to the legacy navigation with `?openSignIn=1`, which
+  `appai-art-embed.js` forwards into the iframe URL and `embed-design.tsx`
+  seeds `showOtpLogin` from at mount (skipped when already signed in).
+
+  Pitfall (shipped once): each `draw()` of the panel must reset
+  `state.loading` — the email→code transition redraws while the request
+  flag is still true, and the new step's submit handler would early-return
+  forever ("Verify does nothing").
+
+## Mandatory verification after ANY change to the above
+
+```bash
+npx tsx scripts/diagnose-tray-signin.ts    # sign-in item + both open paths
+npx tsx scripts/diagnose-tray-overlay.ts   # launcher hides under theme menus
+```
+
+Pass criteria (`?preview_theme_id` is used — the live theme never changes;
+storefront password defaults to the dev-store one):
+
+- `diagnose-tray-signin`: in a fresh (logged-out) context the tray shows
+  "Sign in or Create an Account" first; Case 1 (customizer page) opens the
+  OTP panel in the iframe via postMessage and the tray closes; Case 2
+  (homepage, no iframe) opens the in-tray OTP panel with NO navigation, and
+  the mocked email→code→verify flow writes the
+  `completeStorefrontLogin()`-shaped localStorage, calls `merge-session`,
+  removes the sign-in item, and (with mocked `my-designs`) shows the Saved
+  Designs section immediately after login and opens the drawer with the
+  design cards; Case 3 (homepage) shows the Google button +
+  "or" divider when auth config has Google, and a stubbed central popup's
+  `APPAI_STOREFRONT_GOOGLE_AUTH` message completes the login the same way.
+  (The script serves the local `appai-customizer-tray.js` via route
+  interception, so it validates the working tree.)
+- `diagnose-tray-overlay`: on Dawn, Tinker, and Horizon at 390px, opening the
+  theme's drawer/menu sets `.appai-suppressed` (opacity 0) and closing it
+  restores the launcher (opacity 1).
+- If the tray change also touched anything in the iframe-scroll lockdown
+  list, run the scroll suite from `docs/iframe-scroll-architecture.md` too.
+
+**If any criterion fails: `git revert` and redeploy (Railway `production`
+push + `npx shopify app deploy -f`) BEFORE investigating further.**
+
+## Deploy notes
+
+- `appai-customizer-tray.js` / `appai-art-embed.js` / liquid changes need
+  **`npx shopify app deploy -f`** (CDN asset is versioned per extension
+  release; allow a few minutes for cache).
+- `embed-design.tsx` / `server/routes.ts` changes need the **Railway**
+  deploy (build → commit → merge `production` → push).
+- Most tray changes touch both sides — deploy both.
+
+## What was tried and rejected (do not redo)
+
+- Injecting/repairing items in the theme's native nav dropdown for
+  navigation — hover behavior is broken per-theme at the theme level
+  (approach-from-below never opens on Horizon-family; reproduced with plain
+  merchant menu items, zero app code).
+- A fixed `top` offset for the launcher — announcement bars, sticky headers
+  and zero-height Horizon wrappers all broke it; measurement + pixel
+  hit-testing are both required.
+- Checking only `appai_customer_id` for signed-in state — anonymous
+  bootstrap writes it too (see pitfall above).
+- Pushing the launcher below an open theme menu on mobile — drawers are
+  full-viewport-height; there is no "below". Fade out/in is the only
+  placement that never fights the theme's overlay.
+- A permanent MutationObserver for overlay state — timed rechecks on
+  click/keyup/resize are cheaper and theme-agnostic.

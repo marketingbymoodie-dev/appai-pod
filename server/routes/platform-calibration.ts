@@ -403,6 +403,12 @@ export function registerPlatformCalibrationRoutes(
     res.json({ isPlatformAdmin: isPlatformAdminRequest(req) });
   });
 
+  app.get("/api/platform/generation-health", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    const shops = await storage.listGenerationHealthSummary();
+    res.json({ shops, currency: "USD" });
+  });
+
   app.get("/api/admin/catalog/allowed-blueprints", isAuthenticated, async (_req: any, res: Response) => {
     const entries = await listMerchantImportableCatalog();
     const blueprints = await Promise.all(

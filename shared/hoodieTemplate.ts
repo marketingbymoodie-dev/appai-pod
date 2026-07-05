@@ -35,6 +35,10 @@ export const PULOVER_HOODIE_BLUEPRINT_ID = 450;
 export const ZIP_HOODIE_BLUEPRINT_ID = 451;
 /** Printify blueprint 449 (unisex sweatshirt AOP) — collar + cuffs, no hood. */
 export const SWEATSHIRT_BLUEPRINT_ID = 449;
+/** Printify blueprint 220 (spun polyester pillow wrap AOP) — two faces, wide print canvas. */
+export const PILLOW_WRAP_BLUEPRINT_ID = 220;
+
+export type WrapBackMode = "duplicate" | "solid-color";
 
 export type HoodiePanelKey =
   | "front"
@@ -447,6 +451,12 @@ export type HoodieTemplate = {
   tileSettings?: TileSettings;
   /** Mockup-px ↔ real-world conversion. Used by the tile-size slider. */
   realWorldCalibration?: RealWorldCalibration;
+  /**
+   * Pillow wrap templates: customer chooses duplicate art on both faces or
+   * solid colour on the back face. Stored on published template as default;
+   * customer placer state overrides at runtime.
+   */
+  wrapBackMode?: WrapBackMode;
 };
 
 export const EMPTY_HOODIE_VIEW: HoodieViewState = {
@@ -735,6 +745,57 @@ export function isSweatshirtBlueprint(blueprintId: number | null | undefined): b
   return blueprintId === SWEATSHIRT_BLUEPRINT_ID;
 }
 
+export function isPillowWrapBlueprint(blueprintId: number | null | undefined): boolean {
+  return blueprintId === PILLOW_WRAP_BLUEPRINT_ID;
+}
+
+/** Hoodie-only keys hidden for pillow wrap templates. */
+const PILLOW_EXCLUDED_PANEL_KEYS: readonly HoodiePanelKey[] = [
+  "front_left",
+  "front_right",
+  "front_pocket",
+  "pocket_left",
+  "pocket_right",
+  "left_sleeve",
+  "right_sleeve",
+  "left_cuff",
+  "right_cuff",
+  "collar_front",
+  "collar_back",
+  "left_hood",
+  "right_hood",
+  "waistband",
+];
+
+export function defaultPillowWrapDesignGroups(): DesignGroup[] {
+  const blank: GroupPlacement = { ...DEFAULT_GROUP_PLACEMENT };
+  const blankPair: Record<HoodieView, GroupPlacement> = {
+    front: { ...blank },
+    back: { ...blank },
+  };
+  void blankPair;
+  return [
+    {
+      id: "front-face",
+      name: "Front face",
+      panelKeys: ["front"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      id: "back-face",
+      name: "Back face",
+      panelKeys: ["back"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+  ];
+}
+
 /** Zip-only panel keys (hidden when authoring bp 450 pullover templates). */
 const ZIP_ONLY_FRONT_PANEL_KEYS: readonly HoodiePanelKey[] = [
   "front_left",
@@ -755,6 +816,7 @@ const SWEATSHIRT_EXCLUDED_PANEL_KEYS: readonly HoodiePanelKey[] = [
 ];
 
 export function designGroupsForBlueprint(blueprintId: number | null | undefined): DesignGroup[] {
+  if (isPillowWrapBlueprint(blueprintId)) return defaultPillowWrapDesignGroups();
   if (isSweatshirtBlueprint(blueprintId)) return defaultSweatshirtDesignGroups();
   if (isPulloverHoodieBlueprint(blueprintId)) return defaultPulloverDesignGroups();
   return defaultDesignGroups();
@@ -792,6 +854,9 @@ export function panelsEligibleForView(
   blueprintId: number | null | undefined,
 ): readonly HoodiePanelKey[] {
   const all = PANELS_PER_VIEW[view];
+  if (isPillowWrapBlueprint(blueprintId)) {
+    return all.filter((k) => !PILLOW_EXCLUDED_PANEL_KEYS.includes(k));
+  }
   if (isSweatshirtBlueprint(blueprintId)) {
     return all.filter((k) => !SWEATSHIRT_EXCLUDED_PANEL_KEYS.includes(k));
   }
@@ -904,6 +969,7 @@ export function isValidAopTemplateSlug(name: string): boolean {
 }
 
 export function defaultHoodieTypeForBlueprint(blueprintId: number): string {
+  if (isPillowWrapBlueprint(blueprintId)) return "pillow-wrap-aop";
   if (isPulloverHoodieBlueprint(blueprintId)) return "pullover-hoodie-aop";
   if (isZipHoodieBlueprint(blueprintId)) return "zip-hoodie-aop";
   return `aop-bp-${blueprintId}`;

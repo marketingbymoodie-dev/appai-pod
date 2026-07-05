@@ -23,6 +23,17 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "shopify_installations", column: "generation_month",            type: "TEXT" },
   { table: "shopify_installations", column: "monthly_generations_used",    type: "INTEGER NOT NULL DEFAULT 0" },
   { table: "shopify_installations", column: "monthly_overage_used",        type: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "shopify_installations", column: "overage_opt_in_enabled",      type: "BOOLEAN NOT NULL DEFAULT FALSE" },
+  { table: "shopify_installations", column: "overage_budget_cents",        type: "INTEGER" },
+  { table: "shopify_installations", column: "overage_recurring",           type: "BOOLEAN NOT NULL DEFAULT FALSE" },
+  { table: "shopify_installations", column: "overage_opt_in_at",           type: "TIMESTAMP" },
+  { table: "shopify_installations", column: "overage_opt_in_bucket_key",   type: "TEXT" },
+  { table: "shopify_installations", column: "quota_alert_90_bucket_key",   type: "TEXT" },
+  { table: "shopify_installations", column: "quota_alert_100_bucket_key",  type: "TEXT" },
+  { table: "shopify_installations", column: "pending_plan_name",           type: "TEXT" },
+  { table: "shopify_installations", column: "pending_plan_effective_at",   type: "TIMESTAMP" },
+  { table: "style_presets",         column: "prompt_prefix_dark",          type: "TEXT" },
+  { table: "generation_jobs",       column: "billing_mode",                type: "TEXT" },
   { table: "customizer_pages",      column: "base_product_handle",         type: "TEXT" },
   { table: "generation_jobs",       column: "session_id",                  type: "TEXT" },
   { table: "generation_jobs",       column: "customer_id",                 type: "TEXT" },
@@ -154,6 +165,35 @@ const DATA_MIGRATIONS: string[] = [
     FROM customers c
     WHERE cb.customer_id = c.id
       AND c.credits < cb.credits`,
+  // Canonical hot-pink chroma prefixes for merchant apparel styles (matting-critical).
+  `UPDATE style_presets
+   SET prompt_prefix = 'T-shirt graphic, centered flat vector illustration, bold clean shapes, flat vibrant colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of',
+       category = 'apparel'
+   WHERE lower(name) = 'centered graphic'
+     AND (prompt_prefix ILIKE '%white%' OR prompt_prefix NOT ILIKE '%#FF00FF%')`,
+  `UPDATE style_presets
+   SET prompt_prefix = 'T-shirt graphic, illustrated character motif, detailed illustration, flat vibrant colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of',
+       category = 'apparel'
+   WHERE lower(name) = 'illustrated motif'
+     AND (prompt_prefix ILIKE '%white%' OR prompt_prefix NOT ILIKE '%#FF00FF%')`,
+  // Allow white inside subject (teeth, eyes) — matting now preserves connected-only removal.
+  `UPDATE style_presets
+   SET prompt_prefix = 'T-shirt graphic, centered flat vector illustration, bold clean shapes, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (avoid hot pink/magenta in the design), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of'
+   WHERE lower(name) = 'centered graphic'
+     AND prompt_prefix ILIKE '%avoid white, light colors%'`,
+  `UPDATE style_presets
+   SET prompt_prefix = 'T-shirt graphic, illustrated character motif, detailed illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (avoid hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of'
+   WHERE lower(name) = 'illustrated motif'
+     AND prompt_prefix ILIKE '%avoid white, light colors%'`,
+  `UPDATE style_presets
+   SET prompt_prefix = 'T-shirt graphic, illustrated pet portrait, detailed character illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (avoid hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, clean illustrated style. Create a pet portrait of'
+   WHERE lower(name) = 'pet portraits'
+     AND category = 'apparel'
+     AND prompt_prefix ILIKE '%avoid white, light colors%'`,
+  // Stronger DO NOT use hot pink language + dark-tier DB column (editable in Admin without redeploy).
+  `UPDATE style_presets SET prompt_prefix = 'T-shirt graphic, illustrated character motif, detailed illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of', prompt_prefix_dark = 'T-shirt graphic, illustrated character motif, detailed illustration, bright vibrant colors including white and light tones (avoid dark, black; DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of' WHERE lower(name) = 'illustrated motif'`,
+  `UPDATE style_presets SET prompt_prefix = 'T-shirt graphic, centered flat vector illustration, bold clean shapes, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of', prompt_prefix_dark = 'T-shirt graphic, centered flat vector illustration, bold clean shapes, bright vibrant colors including white and light tones (avoid dark, black; DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of' WHERE lower(name) = 'centered graphic'`,
+  `UPDATE style_presets SET prompt_prefix = 'T-shirt graphic, illustrated pet portrait, detailed character illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, clean illustrated style. Create a pet portrait of', prompt_prefix_dark = 'T-shirt graphic, illustrated pet portrait, detailed character illustration, bright vibrant colors including white and light tones (avoid dark, black; DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, clean illustrated style. Create a pet portrait of' WHERE lower(name) = 'pet portraits' AND category = 'apparel'`,
 ];
 
 // ── Table creation ─────────────────────────────────────────────────────────────
@@ -428,6 +468,37 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
     `,
   },
   {
+    name: "merchant_generation_health",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "merchant_generation_health" (
+        "id"                   SERIAL PRIMARY KEY,
+        "installation_id"      INTEGER NOT NULL UNIQUE,
+        "shop_domain"          TEXT NOT NULL,
+        "window_start"         TIMESTAMP NOT NULL,
+        "success_count"        INTEGER NOT NULL DEFAULT 0,
+        "failure_count"        INTEGER NOT NULL DEFAULT 0,
+        "last_failure_at"      TIMESTAMP,
+        "founder_alert_sent_at" TIMESTAMP,
+        "updated_at"           TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "founder_alerts",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "founder_alerts" (
+        "id"               SERIAL PRIMARY KEY,
+        "installation_id"  INTEGER,
+        "shop_domain"      TEXT NOT NULL,
+        "alert_type"       TEXT NOT NULL,
+        "failure_rate"     NUMERIC(5,4),
+        "attempts"         INTEGER,
+        "email_sent"       BOOLEAN NOT NULL DEFAULT FALSE,
+        "created_at"       TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
     name: "platform_catalog_blueprints",
     sql: `
       CREATE TABLE IF NOT EXISTS "platform_catalog_blueprints" (
@@ -521,6 +592,16 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     name: "flat_order_submissions_product_type_idx",
     sql: `CREATE INDEX IF NOT EXISTS "flat_order_submissions_product_type_idx"
       ON "flat_order_submissions" ("product_type_id")`,
+  },
+  {
+    name: "merchant_generation_health_shop_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "merchant_generation_health_shop_idx"
+      ON "merchant_generation_health" ("shop_domain")`,
+  },
+  {
+    name: "founder_alerts_shop_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "founder_alerts_shop_idx"
+      ON "founder_alerts" ("shop_domain", "created_at")`,
   },
 ];
 

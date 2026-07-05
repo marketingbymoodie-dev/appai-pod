@@ -37,10 +37,12 @@ export function isShopifyEmbedded(): boolean {
   const path = window.location.pathname;
   const params = new URLSearchParams(window.location.search);
 
-  // Path-based: /s/* is storefront — NEVER embedded admin
+  // Path-based: /s/* and /storefront/* are customer-facing — NEVER embedded admin
   if (path.startsWith('/s/')) return false;
+  if (path.startsWith('/storefront/')) return false;
   // App Proxy path: /apps/appai/s/* — also storefront, never admin
   if (path.startsWith(`${PROXY_PREFIX}/s/`)) return false;
+  if (path.startsWith(`${PROXY_PREFIX}/storefront/`)) return false;
 
   // Legacy query-param guard: storefront=true is NOT admin embedded
   if (params.get("storefront") === "true") return false;

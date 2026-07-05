@@ -84,7 +84,7 @@ export function getPlanOverageCappedAmountUsd(planName: string | null | undefine
 }
 
 /** Human-readable terms shown on the metered (usage) pricing line at approval. */
-export const OVERAGE_USAGE_TERMS = `$${OVERAGE_PRICE_USD.toFixed(2)} per additional AI generation beyond your monthly allotment`;
+export const OVERAGE_USAGE_TERMS = `$${OVERAGE_PRICE_USD.toFixed(2)} USD per additional AI generation beyond your monthly included allotment (pay-as-you-go; requires in-app opt-in; not a prepaid pack)`;
 
 export function getPageLimit(planName: string | null | undefined): number {
   if (!planName) return 0;

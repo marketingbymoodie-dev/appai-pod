@@ -3,6 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Skeleton } from "@/components/ui/skeleton";
 import { BarChart3, CheckCircle, AlertCircle, TrendingUp } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
+import GenerationQuotaUsage from "@/components/admin/GenerationQuotaUsage";
 import { BookOpen } from "lucide-react";
 
 interface GenerationStats {
@@ -23,6 +24,12 @@ export default function AdminDashboard() {
           <h1 className="text-2xl font-bold" data-testid="text-dashboard-title">Dashboard</h1>
           <p className="text-muted-foreground">Overview of your AI Art Studio performance</p>
         </div>
+
+        <GenerationQuotaUsage />
+
+        <p className="text-xs text-muted-foreground -mt-2">
+          Plan quota is your shop&apos;s AI generation allowance. Analytics below count logged generations from the last 30 days.
+        </p>
 
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
           <Card>

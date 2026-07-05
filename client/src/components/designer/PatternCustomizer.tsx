@@ -3747,6 +3747,7 @@ export function PatternCustomizer({
             data-hoodie-pad={productKind === "hoodie" ? HOODIE_PREVIEW_PAD : undefined}
             data-hoodie-front-gap-print-px={productKind === "hoodie" ? HOODIE_FRONT_CENTER_GAP_PX : undefined}
             data-hoodie-hood-gap-print-px={productKind === "hoodie" ? HOODIE_HOOD_CENTER_GAP_PX : undefined}
+            data-appai-wheel-forward="true"
           >
             <canvas
               ref={canvasRef}
@@ -3754,7 +3755,12 @@ export function PatternCustomizer({
               style={{
                 cursor: mode === "place" || mode === "pattern" ? "grab" : "default",
                 display: "block",
-                touchAction: "pan-y",
+                touchAction:
+                  typeof document !== "undefined" &&
+                  document.documentElement.dataset.appaiEmbed === "true" &&
+                  document.documentElement.dataset.appaiMobileNativeScroll !== "true"
+                    ? "auto"
+                    : "pan-y",
               }}
             />
           </div>

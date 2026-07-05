@@ -230,9 +230,20 @@ function getDataUrlMime(dataUrl: string): string {
   return mimeMatch ? mimeMatch[1].toLowerCase() : "application/octet-stream";
 }
 
-function getDataUrlExtension(dataUrl: string): "jpg" | "png" {
+function getDataUrlExtension(dataUrl: string): "jpg" | "png" | "svg" {
   const mime = getDataUrlMime(dataUrl);
-  return mime === "image/jpeg" || mime === "image/jpg" ? "jpg" : "png";
+  if (mime === "image/jpeg" || mime === "image/jpg") return "jpg";
+  if (mime === "image/svg+xml") return "svg";
+  return "png";
+}
+
+function isDirectPrintifyUploadMime(mime: string): boolean {
+  return (
+    mime === "image/png" ||
+    mime === "image/jpeg" ||
+    mime === "image/jpg" ||
+    mime === "image/svg+xml"
+  );
 }
 
 function normalizeImageUrl(url: string): string {
@@ -293,9 +304,14 @@ async function uploadImageToPrintify(
 
   if (Buffer.isBuffer(imageUrlOrBuffer)) {
     const base64Data = imageUrlOrBuffer.toString("base64");
-    uploadMethod = `buffer (${base64Data.length} chars base64)`;
+    const isSvg = imageUrlOrBuffer
+      .toString("utf8", 0, Math.min(256, imageUrlOrBuffer.length))
+      .trimStart()
+      .startsWith("<svg");
+    const ext = isSvg ? "svg" : "png";
+    uploadMethod = `buffer (${ext}, ${base64Data.length} chars base64)`;
     requestBody = {
-      file_name: `design-${Date.now()}.png`,
+      file_name: `design-${Date.now()}.${ext}`,
       contents: base64Data,
     };
   } else if (isDataUrl(imageUrlOrBuffer)) {
@@ -312,8 +328,10 @@ async function uploadImageToPrintify(
     };
   } else {
     uploadMethod = `url: ${imageUrlOrBuffer.substring(0, 100)}`;
+    const urlExt = imageUrlOrBuffer.match(/\.(svg|png|jpe?g)(?:\?|$)/i)?.[1]?.toLowerCase();
+    const ext = urlExt === "svg" ? "svg" : urlExt === "jpg" || urlExt === "jpeg" ? "jpg" : "png";
     requestBody = {
-      file_name: `design-${Date.now()}.png`,
+      file_name: `design-${Date.now()}.${ext}`,
       url: imageUrlOrBuffer,
     };
   }
@@ -860,7 +878,7 @@ export async function generatePrintifyMockup(
           let buf = Buffer.from(b64, "base64");
           const mime = getDataUrlMime(dataUrl);
           const metadata = await sharp(buf).metadata();
-          const isDirectPrintifyMime = mime === "image/png" || mime === "image/jpeg" || mime === "image/jpg";
+          const isDirectPrintifyMime = isDirectPrintifyUploadMime(mime);
           if (!isDirectPrintifyMime) {
             buf = await sharp(buf).png().toBuffer();
           }

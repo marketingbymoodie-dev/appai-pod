@@ -1,5 +1,14 @@
 import { generateImageBase64 } from "./replit_integrations/image/client";
-import { generatePattern, removeBackground, despillMagenta, type PatternType } from "./picsart-client";
+import { generatePattern, type PatternType } from "./replicate-bg-remover";
+import {
+  processApparelMotif,
+  trimTransparentBounds,
+  resolveApparelStylePrefix,
+  resolveApparelDarkTierPrefix,
+  resolveIsApparelGeneration,
+  APPAREL_CHROMA_STYLE_BY_NAME,
+  processApparelMotifToDataUrl,
+} from "./apparel-matting";
 import { tileImage, type TileMode } from "./sharp-tiler";
 import pg from "pg";
 import express, { type Express, Request, Response, NextFunction } from "express";
@@ -45,6 +54,8 @@ import {
   serializePrintifyCostsCache,
 } from "@shared/printifyProductionCosts";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
+import { getGoogleOAuthClientId, verifyGoogleIdToken } from "./storefront-google-auth";
+import { STOREFRONT_FREE_GENERATION_LIMIT, storefrontArtworksRemaining } from "@shared/storefront-credits";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
 import { detectPrintifyAllOverPrint } from "./printify-aop-detection";
 import {
@@ -58,9 +69,31 @@ import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { syncCreditEntitlementMetafield } from "./credit-entitlements";
 import { privacyPolicyHtml } from "./privacy-policy";
 import Stripe from "stripe";
-import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS } from "./customizer-plans";
+import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota } from "./customizer-plans";
 import { extractUsageLineItemId, retryPendingOverageCharges } from "./usage-billing";
-import { peekMerchantGenerationQuota, consumeMerchantGenerationQuota, quotaBlockBody } from "./generation-quota";
+import { peekMerchantGenerationQuota, quotaBlockBody } from "./generation-quota";
+import {
+  buildUpgradePreview,
+  buildDowngradePreview,
+  classifyPlanChange,
+  resolveCarryoverIncludedUsed,
+  trialToPaidMeteringReset,
+} from "./plan-transitions";
+import { maybeApplyPendingPlan } from "./plan-transition-apply";
+import {
+  finalizeGenerationBilling,
+  peekMerchantQuotaWithAlerts,
+  applyMerchantBillingOnSuccess,
+  applyCustomerBillingOnSuccess,
+  type GenerationBillingMode,
+} from "./generation-billing";
+import { recordGenerationOutcomeForFounder } from "./founder-generation-alerts";
+import {
+  planMaxOverageBudgetCents,
+  budgetCentsToOverageUnits,
+  OVERAGE_PRICE_CENTS,
+} from "./overage-settings";
+import { logMerchantGeneration } from "./merchant-generation-log";
 import type { CustomizerPage } from "@shared/schema";
 import { ObjectStorageService, registerObjectStorageRoutes, objectStorageClient, getStorageDir } from "./replit_integrations/object_storage";
 import {
@@ -435,7 +468,11 @@ async function fetchImageFromStorageAsBase64(objectPath: string): Promise<{ base
     if (!res.ok) throw new Error(`Failed to fetch image: ${res.status}`);
     buffer = Buffer.from(await res.arrayBuffer());
     const contentType = res.headers.get("content-type") || "";
-    extension = contentType.includes("png") ? "png" : "jpg";
+    extension = contentType.includes("svg")
+      ? "svg"
+      : contentType.includes("png")
+        ? "png"
+        : "jpg";
   } else {
     // Local path: /objects/designs/abc123.png
     const relativePath = objectPath.replace(/^\/objects\//, "");
@@ -445,12 +482,21 @@ async function fetchImageFromStorageAsBase64(objectPath: string): Promise<{ base
   }
 
   const base64 = buffer.toString("base64");
-  const mimeType = extension === "jpg" || extension === "jpeg" ? "image/jpeg" : "image/png";
+  const mimeType =
+    extension === "svg"
+      ? "image/svg+xml"
+      : extension === "jpg" || extension === "jpeg"
+        ? "image/jpeg"
+        : "image/png";
   return { base64, mimeType };
 }
 
-async function generateThumbnail(buffer: Buffer): Promise<Buffer> {
-  return sharp(buffer)
+async function generateThumbnail(buffer: Buffer, mimeType?: string): Promise<Buffer> {
+  const isSvg =
+    mimeType === "image/svg+xml" ||
+    buffer.toString("utf8", 0, Math.min(256, buffer.length)).trimStart().startsWith("<svg");
+  const pipeline = isSvg ? sharp(buffer, { density: 150 }) : sharp(buffer);
+  return pipeline
     .resize(THUMBNAIL_SIZE, THUMBNAIL_SIZE, {
       fit: 'inside',
       withoutEnlargement: true
@@ -564,217 +610,16 @@ function buildApparelChromaSizingRequirements(designColors: string): string {
 MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
 1. ISOLATED DESIGN: Create a SINGLE, centered graphic design that is ISOLATED from any background scenery.
 2. SOLID HOT PINK (#FF00FF) BACKGROUND: The ENTIRE background MUST be a flat, uniform hot pink (#FF00FF) color. Every pixel that is not part of the design must be exactly #FF00FF. DO NOT create scenic backgrounds, landscapes, or detailed environments.
-3. DESIGN COLORS: Use ${designColors} The design MUST NOT contain any hot pink or magenta (#FF00FF) pixels — this color is reserved exclusively for the background.
+3. DESIGN COLORS: Use ${designColors} White may appear inside the subject (teeth, eyes, highlights) but must NOT be used as a background mat. The design MUST NOT contain hot pink or magenta (#FF00FF) pixels — this color is reserved exclusively for the background.
 4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean #FF00FF space around it.
 5. CLEAN EDGES: The design must have crisp, clean edges against the hot pink background. No fuzzy, gradient, or semi-transparent edges.
 6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid hot pink background.
+6b. NO WHITE OR GREY PLATE: Do NOT render the subject on a white or grey mat — the ONLY background color is #FF00FF edge-to-edge.
 7. PRINT-READY: This is for t-shirt/apparel printing — create an isolated graphic that can be printed on fabric.
 8. COMPOSITION FORMAT: Fill the canvas matching the requested aspect ratio with the design centered.
 9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
 ${APPAREL_CHROMA_MATTING_LINE}
 `;
-}
-
-/**
- * Shrink the opaque alpha mask inward to discard chroma fringe on anti-aliased edges.
- */
-async function erodeAlphaChannel(buffer: Buffer, radiusPx: number = 2): Promise<Buffer> {
-  if (radiusPx <= 0) return buffer;
-  const { data, info } = await sharp(buffer)
-    .ensureAlpha()
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-  const { width, height, channels } = info;
-  const src = new Uint8Array(data);
-  const dst = new Uint8Array(src);
-  const alphaThreshold = 8;
-
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = (y * width + x) * channels;
-      if (src[idx + 3] <= alphaThreshold) continue;
-
-      let keep = true;
-      for (let dy = -radiusPx; dy <= radiusPx && keep; dy++) {
-        for (let dx = -radiusPx; dx <= radiusPx; dx++) {
-          const nx = x + dx;
-          const ny = y + dy;
-          if (nx < 0 || ny < 0 || nx >= width || ny >= height) {
-            keep = false;
-            break;
-          }
-          const nidx = (ny * width + nx) * channels;
-          if (src[nidx + 3] <= alphaThreshold) {
-            keep = false;
-            break;
-          }
-        }
-      }
-      if (!keep) dst[idx + 3] = 0;
-    }
-  }
-
-  return sharp(Buffer.from(dst), { raw: { width, height, channels } }).png().toBuffer();
-}
-
-/**
- * Chroma key background removal with smart fallback.
- *
- * 1. Try removing #FF00FF (hot pink) pixels — the intended chroma key.
- * 2. If <10% of pixels were pink (AI ignored the instruction), detect the actual
- *    background color by sampling the four corners, then remove that color instead.
- */
-async function removeChromaKeyBackground(buffer: Buffer, tolerance: number = 60): Promise<Buffer> {
-  console.log(`[Chroma Key] Starting background removal (tolerance=${tolerance})...`);
-  const startTime = Date.now();
-
-  const { data, info } = await sharp(buffer)
-    .ensureAlpha()
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-
-  const { width, height, channels } = info;
-  const pixels = new Uint8Array(data);
-  const total = width * height;
-
-  // Pass 1: try #FF00FF chroma key
-  let removed = 0;
-  const targetR = 255, targetG = 0, targetB = 255;
-
-  for (let i = 0; i < pixels.length; i += channels) {
-    const r = pixels[i], g = pixels[i + 1], b = pixels[i + 2];
-    const dist = Math.abs(r - targetR) + Math.abs(g - targetG) + Math.abs(b - targetB);
-    if (dist <= tolerance) {
-      pixels[i + 3] = 0;
-      removed++;
-    }
-  }
-
-  const pinkPct = (removed / total) * 100;
-  console.log(`[Chroma Key] Pink pass: removed ${removed}/${total} (${pinkPct.toFixed(1)}%)`);
-
-  // If pink removal worked (>10% of image was pink background), we're done
-  if (pinkPct >= 10) {
-    const elapsed = Date.now() - startTime;
-    console.log(`[Chroma Key] Complete in ${elapsed}ms — pink chroma key succeeded`);
-    return sharp(Buffer.from(pixels), { raw: { width, height, channels } }).png().toBuffer();
-  }
-
-  // Pass 2: pink didn't work — detect actual bg color from corners and remove it
-  console.log(`[Chroma Key] Pink pass removed <10%, falling back to corner-sample detection...`);
-
-  // Re-read raw pixels (undo the few pink removals)
-  const { data: data2 } = await sharp(buffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-  const px = new Uint8Array(data2);
-
-  // Sample the four corners (5x5 pixel blocks) to find the dominant background color
-  const cornerSamples: { r: number; g: number; b: number }[] = [];
-  const sampleSize = 5;
-  const corners = [
-    [0, 0], [width - sampleSize, 0],
-    [0, height - sampleSize], [width - sampleSize, height - sampleSize],
-  ];
-  for (const [cx, cy] of corners) {
-    for (let dy = 0; dy < sampleSize; dy++) {
-      for (let dx = 0; dx < sampleSize; dx++) {
-        const idx = ((cy + dy) * width + (cx + dx)) * channels;
-        cornerSamples.push({ r: px[idx], g: px[idx + 1], b: px[idx + 2] });
-      }
-    }
-  }
-
-  // Average the corner samples to get the background color
-  let avgR = Math.round(cornerSamples.reduce((s, c) => s + c.r, 0) / cornerSamples.length);
-  let avgG = Math.round(cornerSamples.reduce((s, c) => s + c.g, 0) / cornerSamples.length);
-  let avgB = Math.round(cornerSamples.reduce((s, c) => s + c.b, 0) / cornerSamples.length);
-  
-  // Special case: if corners are very bright (white/off-white), force pure white detection
-  // This helps with AI-generated images that have slight compression artifacts in the white background
-  if (avgR > 240 && avgG > 240 && avgB > 240) {
-    console.log(`[Chroma Key] Bright corners detected (${avgR},${avgG},${avgB}), forcing white background removal`);
-    avgR = 255; avgG = 255; avgB = 255;
-  }
-  
-  console.log(`[Chroma Key] Detected corner bg color: rgb(${avgR},${avgG},${avgB})`);
-
-  // Remove all pixels matching the detected background color (with tolerance)
-  let fallbackRemoved = 0;
-  const bgTolerance = 45;
-  for (let i = 0; i < px.length; i += channels) {
-    const r = px[i], g = px[i + 1], b = px[i + 2];
-    const dist = Math.abs(r - avgR) + Math.abs(g - avgG) + Math.abs(b - avgB);
-    if (dist <= bgTolerance) {
-      px[i + 3] = 0;
-      fallbackRemoved++;
-    }
-  }
-
-  const fallbackPct = (fallbackRemoved / total) * 100;
-  const elapsed = Date.now() - startTime;
-  console.log(`[Chroma Key] Fallback pass: removed ${fallbackRemoved}/${total} (${fallbackPct.toFixed(1)}%) in ${elapsed}ms`);
-
-  return sharp(Buffer.from(px), { raw: { width, height, channels } }).png().toBuffer();
-}
-
-/**
- * Crop fully transparent margins after background removal so repeated tiles use
- * the artwork bounds instead of the original empty canvas.
- */
-async function trimTransparentBounds(
-  buffer: Buffer,
-  alphaThreshold: number = 8,
-  padding: number = 8,
-): Promise<Buffer> {
-  const { data, info } = await sharp(buffer)
-    .ensureAlpha()
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-
-  const { width, height, channels } = info;
-  const pixels = new Uint8Array(data);
-
-  let minX = width;
-  let minY = height;
-  let maxX = -1;
-  let maxY = -1;
-
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = (y * width + x) * channels;
-      const alpha = pixels[idx + 3];
-      if (alpha > alphaThreshold) {
-        if (x < minX) minX = x;
-        if (y < minY) minY = y;
-        if (x > maxX) maxX = x;
-        if (y > maxY) maxY = y;
-      }
-    }
-  }
-
-  if (maxX < minX || maxY < minY) {
-    console.warn("[trimTransparentBounds] No opaque pixels found; leaving original image unchanged");
-    return buffer;
-  }
-
-  const left = Math.max(0, minX - padding);
-  const top = Math.max(0, minY - padding);
-  const right = Math.min(width - 1, maxX + padding);
-  const bottom = Math.min(height - 1, maxY + padding);
-  const cropWidth = Math.max(1, right - left + 1);
-  const cropHeight = Math.max(1, bottom - top + 1);
-
-  if (left === 0 && top === 0 && cropWidth === width && cropHeight === height) {
-    return buffer;
-  }
-
-  console.log(
-    `[trimTransparentBounds] Cropping ${width}x${height} -> ${cropWidth}x${cropHeight} (padding=${padding})`,
-  );
-
-  return sharp(buffer)
-    .extract({ left, top, width: cropWidth, height: cropHeight })
-    .png()
-    .toBuffer();
 }
 
 /**
@@ -950,18 +795,6 @@ interface SaveImageOptions {
   bgRemovalSensitivity?: number;
 }
 
-/** Alpha erosion radius after matting — lighter when remove.bg succeeded cleanly. */
-function resolveAlphaErosionRadius(opts: {
-  removeBgUsedApi: boolean;
-  bgRemovalSensitivity?: number;
-}): number {
-  if (typeof opts.bgRemovalSensitivity === "number" && Number.isFinite(opts.bgRemovalSensitivity)) {
-    const s = Math.max(0, Math.min(100, opts.bgRemovalSensitivity));
-    return Math.round((s / 100) * 2);
-  }
-  return opts.removeBgUsedApi ? 0 : 1;
-}
-
 async function saveImageToStorage(base64Data: string, mimeType: string, options?: SaveImageOptions): Promise<SaveImageResult> {
   const { isApparel = false, isAllOverPrint = false, targetDims, bgRemovalSensitivity } = options || {};
   const imageId = crypto.randomUUID();
@@ -971,73 +804,25 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
   let buffer: Buffer = Buffer.from(base64Data, "base64");
   let removeBgUsedApi = false;
 
-  // For apparel, remove background using Picsart — including AOP
+  // For apparel, remove background using Replicate — including AOP
   // This ensures the motif is clean before tiling or placement
   if (isApparel) {
-    console.log(`[saveImageToStorage] Removing background for apparel (AOP=${isAllOverPrint})...`);
-    try {
-      // 1. Upload temporary file to Supabase to get a public URL for Picsart
-      const tempImageId = `temp_${crypto.randomUUID()}`;
-      const tempFilename = `${tempImageId}.${extension}`;
-      const tempUrl = await uploadDesignFileToSupabase({
-        buffer,
-        filename: tempFilename,
-        contentType: actualMimeType,
-      });
-
-      if (tempUrl) {
-        // 2. Call remove.bg
-        const removeBgResult = await removeBackground({ imageUrl: tempUrl });
-        
-        // 3. Handle result — remove.bg returns a data URL directly
-        if (removeBgResult.url.startsWith("data:")) {
-          const base64Data = removeBgResult.url.split(",")[1];
-          buffer = Buffer.from(base64Data, "base64");
-          extension = "png";
-          actualMimeType = "image/png";
-          removeBgUsedApi = true;
-          console.log("[saveImageToStorage] remove.bg background removal successful");
-        } else {
-          // Legacy URL format fallback
-          const response = await fetch(removeBgResult.url);
-          if (response.ok) {
-            buffer = Buffer.from(await response.arrayBuffer());
-            extension = "png";
-            actualMimeType = "image/png";
-            removeBgUsedApi = true;
-            console.log("[saveImageToStorage] remove.bg background removal successful (URL)");
-          } else {
-            throw new Error(`Failed to download remove.bg result: ${response.statusText}`);
-          }
-        }
-      }
-    } catch (err) {
-      console.error("[saveImageToStorage] remove.bg failed, falling back to chroma key:", (err as Error).message);
-      // Fallback to chroma key if remove.bg fails
-      // We now enable this for AOP too, as it helps remove the white background AI often generates
-      buffer = await removeChromaKeyBackground(buffer);
-      extension = "png";
-      actualMimeType = "image/png";
+    console.log(`[saveImageToStorage] Chroma-first matting for apparel (AOP=${isAllOverPrint})...`);
+    const sourceBuffer = buffer;
+    const matting = await processApparelMotif(sourceBuffer, {
+      isAllOverPrint,
+      bgRemovalSensitivity,
+      allowWhiteKey: true,
+      useMlFallback: process.env.APPAREL_ML_BG_FALLBACK !== "false",
+      vectorize: process.env.APPAREL_VECTORIZE === "true",
+    });
+    buffer = matting.buffer;
+    extension = matting.mimeType === "image/svg+xml" ? "svg" : "png";
+    actualMimeType = matting.mimeType;
+    removeBgUsedApi = matting.usedMlFallback;
+    if (matting.qa.softAlphaRatio > 0.03 || matting.qa.cornerBgOpaqueRatio > 0.5) {
+      console.warn("[saveImageToStorage] Matting QA:", JSON.stringify(matting.qa));
     }
-
-    // Decontaminate the #FF00FF chroma-key spill left on anti-aliased edges
-    // (the "hot pink fringe"). Runs for whichever removal path succeeded above.
-    try {
-      buffer = await despillMagenta(buffer);
-    } catch (despillErr) {
-      console.warn("[saveImageToStorage] magenta despill skipped:", (despillErr as Error).message);
-    }
-
-    const erosionRadius = resolveAlphaErosionRadius({ removeBgUsedApi, bgRemovalSensitivity });
-    if (erosionRadius > 0) {
-      try {
-        buffer = await erodeAlphaChannel(buffer, erosionRadius);
-      } catch (erodeErr) {
-        console.warn("[saveImageToStorage] alpha erosion skipped:", (erodeErr as Error).message);
-      }
-    }
-
-    buffer = await trimTransparentBounds(buffer, 8, removeBgUsedApi ? 4 : 8);
   } else if (targetDims && targetDims.width !== targetDims.height) {
     const outputFormat =
       actualMimeType.includes("jpeg") || actualMimeType.includes("jpg")
@@ -1049,7 +834,7 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
   }
 
   const filename = `${imageId}.${extension}`;
-  const thumbnailBuffer = await generateThumbnail(buffer);
+  const thumbnailBuffer = await generateThumbnail(buffer, actualMimeType);
 
   // Prefer Supabase Storage when configured (persists across Railway redeploys)
   if (isSupabaseDesignsConfigured()) {
@@ -1058,7 +843,7 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
         imageBuffer: buffer,
         thumbnailBuffer,
         imageId,
-        extension: extension as "png" | "jpg",
+        extension: extension as "png" | "jpg" | "svg",
       });
       if (result) return result;
     } catch (err) {
@@ -1302,46 +1087,25 @@ async function findCustomizerParent(
 }
 
 function buildCustomizerBootHtml(): string {
+  // IMPORTANT: #appai-boot is a fixed, full-viewport OVERLAY (like the
+  // #appai-nav-transition overlay used elsewhere), not a CSS rule that hides
+  // the theme's real header/nav/footer. Earlier this used
+  // `body:has(#appai-boot) header { display:none }` — but if the config fetch
+  // ever hangs (e.g. a slow/cold backend), #appai-boot never gets removed, and
+  // that CSS permanently nukes the header/nav (breaking the dropdown) and caps
+  // the page to viewport height (breaking scroll), even after the fallback UI
+  // below appears. An overlay avoids that failure mode entirely: the header/nav
+  // are NEVER touched by CSS, only visually covered while this div exists.
   return `
 <style id="appai-boot-style">
   @keyframes appai-boot-title-shimmer {
     0% { background-position: 200% center; }
     100% { background-position: -200% center; }
   }
-  html:has(#appai-boot),
-  body:has(#appai-boot) {
-    scrollbar-gutter: stable both-edges;
-  }
-  html:has(#appai-boot) {
-    overflow-y: scroll;
-  }
-  body:has(#appai-boot) header,
-  body:has(#appai-boot) .shopify-section-group-header-group,
-  body:has(#appai-boot) .shopify-section-header,
-  body:has(#appai-boot) .section-header,
-  body:has(#appai-boot) .header-wrapper,
-  body:has(#appai-boot) .header,
-  body:has(#appai-boot) .site-header,
-  body:has(#appai-boot) .announcement-bar,
-  body:has(#appai-boot) .utility-bar,
-  body:has(#appai-boot) nav,
-  body:has(#appai-boot) main h1,
-  body:has(#appai-boot) main h2,
-  body:has(#appai-boot) .page-title,
-  body:has(#appai-boot) .title,
-  body:has(#appai-boot) .title--primary,
-  body:has(#appai-boot) .main-page-title,
-  body:has(#appai-boot) .rte > :not(#appai-boot):not(#appai-boot-style),
-  body:has(#appai-boot) .page__content > :not(#appai-boot):not(#appai-boot-style),
-  body:has(#appai-boot) footer,
-  body:has(#appai-boot) .shopify-section-group-footer-group {
-    display: none !important;
-  }
-  body:has(#appai-boot) {
-    background: #f4f4f5;
-    overflow-y: scroll;
-  }
   #appai-boot {
+    position: fixed;
+    inset: 0;
+    z-index: 2147483647;
     min-height: 100vh;
     display: flex;
     align-items: center;
@@ -1373,7 +1137,32 @@ function buildCustomizerBootHtml(): string {
 </style>
 <div id="appai-boot" aria-live="polite" aria-busy="true">
   <div class="appai-boot-title">Loading AI Art Studio</div>
-</div>`.trim();
+</div>
+<link rel="stylesheet" href="/apps/appai/theme-asset/appai-art-embed.css">
+<script>
+(function(){
+  // Stuck-loading safety net: if the studio iframe has not appeared after 25s
+  // (e.g. the config fetch/retry both hung, or BRIDGE_ACK never arrived),
+  // surface a Reload instead of an infinite "Loading AI Art Studio" shimmer.
+  // 25s gives appaiFetchCustomizerConfig's own 10s+10s timeout/retry room to
+  // finish and show its own error UI first in the common case.
+  setTimeout(function(){
+    var el = document.getElementById('appai-boot');
+    if (!el) return;
+    if (document.querySelector('iframe[title="AI Art Design Studio"]')) return;
+    el.innerHTML = '<div style="text-align:center;font-family:system-ui,-apple-system,sans-serif;color:#374151;max-width:420px;padding:24px;">'
+      + '<p style="font-size:18px;font-weight:700;margin:0 0 6px;">Still loading</p>'
+      + '<p style="font-size:14px;margin:0 0 16px;color:#6b7280;">The studio is taking longer than usual to open. Please reload the page.</p>'
+      + '<button type="button" id="appai-boot-retry" style="border:none;background:#111827;color:#fff;font-size:15px;font-weight:600;padding:10px 20px;border-radius:8px;cursor:pointer;">Reload</button>'
+      + '</div>';
+    var b = document.getElementById('appai-boot-retry');
+    if (b) b.onclick = function(){ location.reload(); };
+  }, 25000);
+})();
+</script>
+<script src="/apps/appai/theme-asset/appai-art-embed.js" defer></script>
+<script src="/apps/appai/theme-asset/appai-saved-designs-nav.js" defer></script>
+<script src="/apps/appai/theme-asset/appai-customizer-tray.js" defer></script>`.trim();
 }
 
 const customizerBootBackfillCache = new Set<string>();
@@ -1641,6 +1430,78 @@ async function removeNavigationLink(
   } catch (err: any) {
     console.warn(`[nav] removeNavigationLink failed for ${shop}: ${err.message}`);
     return { removed: false, warning: err.message };
+  }
+}
+
+/**
+ * One-time cleanup: removes the app-created "Customizer" dropdown from the
+ * main menu. The floating tray launcher (appai-customizer-tray.js) replaced
+ * theme-menu navigation entirely — theme dropdowns proved unreliable across
+ * themes (hover-from-below bugs, blank-page clicks), so the app no longer
+ * creates or maintains menu links.
+ *
+ * Conservative: only removes child links that point to known customizer
+ * pages, and removes the parent itself only when nothing else is left under
+ * it (a merchant may have added their own links under the parent manually).
+ */
+const customizerNavCleanupCache = new Set<string>();
+
+async function removeCustomizerNavParent(
+  shop: string,
+  accessToken: string,
+): Promise<void> {
+  if (customizerNavCleanupCache.has(shop)) return;
+  try {
+    const menu = await getMainMenu(shop, accessToken);
+    if (!menu?.id) { customizerNavCleanupCache.add(shop); return; }
+
+    const knownPages = await storage.listCustomizerPages(shop);
+    const knownHandles = knownPages.map((p: any) => p.handle);
+    const customizerParent = await findCustomizerParent(menu.items ?? [], knownHandles);
+    if (!customizerParent) { customizerNavCleanupCache.add(shop); return; }
+
+    const isCustomizerLink = (sub: any) =>
+      knownHandles.some((h: string) => sub.url === `/pages/${h}` || sub.url?.endsWith(`/pages/${h}`));
+    const remainingSubItems = (customizerParent.items ?? []).filter((sub: any) => !isCustomizerLink(sub));
+
+    let newMenuItems: any[];
+    if (remainingSubItems.length === 0) {
+      newMenuItems = (menu.items ?? [])
+        .filter((item: any) => item.id !== customizerParent.id)
+        .map(menuItemToInput);
+      console.log(`[nav] Cleanup: removing "${customizerParent.title}" parent from main-menu for ${shop}`);
+    } else {
+      newMenuItems = (menu.items ?? []).map((item: any) => {
+        if (item.id === customizerParent.id) {
+          return {
+            title: item.title,
+            type: "HTTP",
+            url: item.url ?? "/",
+            items: remainingSubItems.map(menuItemToInput),
+          };
+        }
+        return menuItemToInput(item);
+      });
+      console.log(`[nav] Cleanup: removing customizer links from "${customizerParent.title}" (keeping ${remainingSubItems.length} merchant item(s)) for ${shop}`);
+    }
+
+    const updateRes = await shopifyGraphQL(shop, accessToken, `
+      mutation UpdateMenu($id: ID!, $title: String!, $items: [MenuItemUpdateInput!]!) {
+        menuUpdate(id: $id, title: $title, items: $items) {
+          menu { id }
+          userErrors { field message }
+        }
+      }
+    `, { id: menu.id, title: menu.title, items: newMenuItems });
+
+    const userErrors = updateRes?.data?.menuUpdate?.userErrors ?? [];
+    if (userErrors.length > 0) {
+      console.warn(`[nav] Cleanup menuUpdate userErrors for ${shop}: ${userErrors.map((e: any) => e.message).join("; ")}`);
+      return; // do not cache — retry on next admin load
+    }
+    customizerNavCleanupCache.add(shop);
+  } catch (err: any) {
+    console.warn(`[nav] removeCustomizerNavParent failed for ${shop}: ${err.message}`);
   }
 }
 
@@ -2436,7 +2297,7 @@ export async function registerRoutes(
           genShopDomain.toLowerCase().replace(/^https?:\/\//, "")
         );
         if (genInstall) {
-          const genQuota = await consumeMerchantGenerationQuota(genInstall);
+          const genQuota = await peekMerchantQuotaWithAlerts(genInstall);
           if (!genQuota.allowed) {
             return res.status(genQuota.status ?? 402).json(quotaBlockBody(genQuota));
           }
@@ -2451,6 +2312,8 @@ export async function registerRoutes(
 
       // Look up style preset and get its promptSuffix
       let stylePromptPrefix = "";
+      let styleName = "";
+      let stylePromptPrefixDark: string | null = null;
       let styleCategory = "all"; // Track category for base prompt enforcement
       let styleBaseImageUrl: string | undefined; // Style-level base reference image
       if (stylePreset) {
@@ -2458,11 +2321,14 @@ export async function registerRoutes(
         const merchantId = productType?.merchantId;
         if (merchantId) {
           const dbStyles = await storage.getStylePresetsByMerchant(merchantId);
-          const selectedStyle = dbStyles.find((s: { id: number; promptPrefix: string | null; category?: string | null; baseImageUrl?: string | null }) => s.id.toString() === stylePreset);
-          if (selectedStyle && selectedStyle.promptPrefix) {
-            stylePromptPrefix = selectedStyle.promptPrefix;
+          const selectedStyle = dbStyles.find((s: { id: number; name?: string; promptPrefix: string | null; category?: string | null; baseImageUrl?: string | null }) => s.id.toString() === stylePreset);
+          if (selectedStyle) {
+            styleName = selectedStyle.name || "";
             styleCategory = selectedStyle.category || "all";
-            // Prefer baseImageUrls array, fall back to single baseImageUrl
+            if (selectedStyle.promptPrefix) {
+              stylePromptPrefix = selectedStyle.promptPrefix;
+            }
+            stylePromptPrefixDark = (selectedStyle as any).promptPrefixDark ?? null;
             const dbBaseUrls: string[] = (selectedStyle as any).baseImageUrls ||
               (selectedStyle.baseImageUrl ? [selectedStyle.baseImageUrl] : []);
             if (dbBaseUrls.length > 0) styleBaseImageUrl = dbBaseUrls[0];
@@ -2471,11 +2337,14 @@ export async function registerRoutes(
           }
         }
         // Fall back to hardcoded STYLE_PRESETS only if no merchant context or no match
-        if (!stylePromptPrefix) {
+        if (!stylePromptPrefix && !styleName) {
           const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
-          if (hardcodedStyle && hardcodedStyle.promptPrefix) {
-            stylePromptPrefix = hardcodedStyle.promptPrefix;
+          if (hardcodedStyle) {
+            styleName = hardcodedStyle.name;
             styleCategory = hardcodedStyle.category || "all";
+            if (hardcodedStyle.promptPrefix) {
+              stylePromptPrefix = hardcodedStyle.promptPrefix;
+            }
           }
         }
       }
@@ -2548,11 +2417,11 @@ export async function registerRoutes(
       
       // Check if this is an apparel product - either from productType or from style preset category
       // This covers both hardcoded and merchant-created styles via styleCategory
-      let isApparel = productType?.designerType === "apparel";
-      
-      // Also detect apparel from style category (works for both DB and hardcoded styles)
-      if (!isApparel && styleCategory === "apparel") {
-        isApparel = true;
+      // AOP zip hoodies use designerType "all-over-print" — still need chroma matting.
+      let isApparel = resolveIsApparelGeneration(productType, styleCategory);
+
+      if (isApparel) {
+        stylePromptPrefix = resolveApparelStylePrefix(styleName, stylePromptPrefix);
       }
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);      // Determine color tier for apparel products
@@ -2596,9 +2465,8 @@ export async function registerRoutes(
       const userDescAdmin = (rawUserPromptAdmin || "").trim();
       let fullPrompt: string;
       
-      if (isApparel && colorTier === "dark" && stylePreset && APPAREL_DARK_TIER_PROMPTS[stylePreset]) {
-        // Use dark tier prompt for dark apparel (light designs on dark background)
-        const darkTierPrompt = APPAREL_DARK_TIER_PROMPTS[stylePreset];
+      if (isApparel && colorTier === "dark" && stylePreset) {
+        const darkTierPrompt = resolveApparelDarkTierPrefix(stylePreset, stylePromptPrefixDark);
         if (darkTierPrompt) {
           fullPrompt = userDescAdmin ? `${userDescAdmin}, ${darkTierPrompt}` : darkTierPrompt;
         } else {
@@ -2618,7 +2486,7 @@ export async function registerRoutes(
       
       if (isApparel) {
         sizingRequirements = buildApparelChromaSizingRequirements(
-          "VIBRANT colors. AVOID white, light colors, and hot pink/magenta in the design.",
+          "VIBRANT colors. White may be used inside the subject (teeth, eyes, highlights) but NOT as a background mat. AVOID hot pink/magenta in the design.",
         );
       } else {
         // Wall art needs full-bleed edge-to-edge designs
@@ -2827,6 +2695,16 @@ console.log("[api/shopify/generate] saved image", result);
         status: "completed",
       });
 
+      // Merchant plan quota — consume only after successful generation.
+      if (genShopDomain) {
+        const genInstallAfter = await getAuthorizedInstallation(
+          genShopDomain.toLowerCase().replace(/^https?:\/\//, "")
+        );
+        if (genInstallAfter) {
+          await applyMerchantBillingOnSuccess(genInstallAfter);
+        }
+      }
+
       // Deduct credit (skipped for app owner)
       if (!isOwner) {
         await storage.updateCustomer(customer.id, {
@@ -2928,11 +2806,10 @@ console.log("[api/shopify/generate] saved image", result);
       const stylePreset = originalDesign.stylePreset;
       
       if (stylePreset) {
-        // For dark tier, use the dark tier prompt variants
-        if (newColorTier === "dark" && APPAREL_DARK_TIER_PROMPTS[stylePreset]) {
-          stylePromptPrefix = APPAREL_DARK_TIER_PROMPTS[stylePreset];
-        } else {
-          // Use regular prompt
+        if (newColorTier === "dark") {
+          stylePromptPrefix = resolveApparelDarkTierPrefix(stylePreset, null);
+        }
+        if (!stylePromptPrefix) {
           const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
           if (hardcodedStyle && hardcodedStyle.promptPrefix) {
             stylePromptPrefix = hardcodedStyle.promptPrefix;
@@ -2948,7 +2825,7 @@ console.log("[api/shopify/generate] saved image", result);
       const isDarkTier = newColorTier === "dark";
       const designColors = isDarkTier 
         ? "BRIGHT, VIBRANT colors including white and light tones. AVOID dark, black, and hot pink/magenta colors in the design."
-        : "VIBRANT colors. AVOID white, light colors, and hot pink/magenta in the design.";
+        : "VIBRANT colors. White may be used inside the subject (teeth, eyes, highlights) but NOT as a background mat. AVOID hot pink/magenta in the design.";
       
       fullPrompt += buildApparelChromaSizingRequirements(designColors);
 
@@ -3206,6 +3083,7 @@ console.log("[shopify/session] installation ok", {
   // Shopify Storefront Generate (for embedded design studio)
   // Requires valid session token from /api/shopify/session
   app.post("/api/shopify/generate", async (req: Request, res: Response) => {
+    let embedInstallation: Awaited<ReturnType<typeof getAuthorizedInstallation>> = null;
     try {
       const { prompt, userPrompt: rawUserPromptEmbed, stylePreset, size, frameColor, referenceImage, referenceImages: referenceImagesArr, shop, sessionToken, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrlEmbed } = req.body;
 
@@ -3238,38 +3116,36 @@ console.log("[shopify/session] installation ok", {
       }
 
       // Verify shop is installed
-      const installation = await getAuthorizedInstallation(shop);
-      if (!installation) {
+      embedInstallation = await getAuthorizedInstallation(shop);
+      if (!embedInstallation) {
         return res.status(403).json({ error: "Shop not authorized" });
       }
-
-      // Per-merchant monthly plan quota — fail fast before touching customer credits.
-      const embedQuotaPeek = await peekMerchantGenerationQuota(installation);
-      if (!embedQuotaPeek.allowed) {
-        return res.status(embedQuotaPeek.status ?? 402).json(quotaBlockBody(embedQuotaPeek));
-      }
+      const installation = embedInstallation;
 
       // For Shopify embedded mode, customer login is OPTIONAL
       // Business model: Shop pays for generation capacity via rate limits.
       // If a customer is logged in with personal credits, we deduct from their credits first.
-      // If no credits or not logged in, generation is allowed under shop's rate limit.
+      // Customer-paid credits do NOT consume the merchant's plan quota.
       let customer = null;
-      let creditDeducted = false;
+      let usedCustomerPaidCredit = false;
       if (session.internalCustomerId) {
         customer = await storage.getCustomer(session.internalCustomerId);
-        if (customer && customer.credits > 0) {
-          // Atomically decrement credits BEFORE generation
-          const updatedCustomer = await storage.decrementCreditsIfAvailable(customer.id);
-          if (updatedCustomer) {
-            customer = updatedCustomer;
-            creditDeducted = true;
+        if (customer) {
+          const balance = await storage.ensureCustomerBalance(customer.id);
+          if (balance.credits > 0) {
+            usedCustomerPaidCredit = true;
+            console.log(`[Shopify Generate] customer ${customer.id} has paid credits — merchant plan quota skipped on success`);
           }
-          // If decrement fails (race condition), still allow generation via shop's rate limit
         }
-        // If customer has no personal credits, generation is allowed via shop's rate limit
-        // This is intentional - shop is paying for capacity, individual credits are optional
       }
       // Anonymous Shopify customers are allowed - shop-level rate limiting handles abuse
+
+      if (!usedCustomerPaidCredit) {
+        const embedQuotaPeek = await peekMerchantQuotaWithAlerts(installation);
+        if (!embedQuotaPeek.allowed) {
+          return res.status(embedQuotaPeek.status ?? 402).json(quotaBlockBody(embedQuotaPeek));
+        }
+      }
 
       // Rate limiting per shop
       const now = Date.now();
@@ -3295,33 +3171,34 @@ console.log("[shopify/session] installation ok", {
         return res.status(400).json({ error: "Prompt and size are required" });
       }
 
-      // Atomically consume one unit of the merchant's plan quota right before generation.
-      const embedQuota = await consumeMerchantGenerationQuota(installation);
-      if (!embedQuota.allowed) {
-        return res.status(embedQuota.status ?? 402).json(quotaBlockBody(embedQuota));
-      }
-
-      // Look up style preset and get its promptSuffix
+      const embedBillingReqId = `shopify-gen-${Date.now().toString(36)}`;
       let stylePromptPrefix = "";
+      let styleName = "";
       let embedStyleCategory = "all";
       let embedStyleBaseImageUrl: string | undefined;
       let embedStyleBaseImageUrls: string[] = [];
       if (stylePreset && installation.merchantId) {
         const dbStyles = await storage.getStylePresetsByMerchant(installation.merchantId);
-        const selectedStyle = dbStyles.find((s: { id: number; promptPrefix: string | null; category?: string | null; baseImageUrl?: string | null }) => s.id.toString() === stylePreset);
-        if (selectedStyle && selectedStyle.promptPrefix) {
-          stylePromptPrefix = selectedStyle.promptPrefix;
+        const selectedStyle = dbStyles.find((s: { id: number; name?: string; promptPrefix: string | null; category?: string | null; baseImageUrl?: string | null }) => s.id.toString() === stylePreset);
+        if (selectedStyle) {
+          styleName = selectedStyle.name || "";
           embedStyleCategory = selectedStyle.category || "all";
+          if (selectedStyle.promptPrefix) {
+            stylePromptPrefix = selectedStyle.promptPrefix;
+          }
           const dbBaseUrls: string[] = (selectedStyle as any).baseImageUrls ||
             (selectedStyle.baseImageUrl ? [selectedStyle.baseImageUrl] : []);
           embedStyleBaseImageUrls = dbBaseUrls;
           if (dbBaseUrls.length > 0) embedStyleBaseImageUrl = dbBaseUrls[0];
         }
-        if (!stylePromptPrefix) {
+        if (!stylePromptPrefix && !styleName) {
           const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
-          if (hardcodedStyle && hardcodedStyle.promptPrefix) {
-            stylePromptPrefix = hardcodedStyle.promptPrefix;
+          if (hardcodedStyle) {
+            styleName = hardcodedStyle.name;
             embedStyleCategory = hardcodedStyle.category || "all";
+            if (hardcodedStyle.promptPrefix) {
+              stylePromptPrefix = hardcodedStyle.promptPrefix;
+            }
           }
         }
       }
@@ -3334,6 +3211,11 @@ console.log("[shopify/session] installation ok", {
       let productType = null;
       if (productTypeId) {
         productType = await storage.getProductType(parseInt(productTypeId));
+      }
+
+      const embedIsApparelEarly = resolveIsApparelGeneration(productType, embedStyleCategory);
+      if (embedIsApparelEarly) {
+        stylePromptPrefix = resolveApparelStylePrefix(styleName, stylePromptPrefix);
       }
 
 
@@ -3500,10 +3382,7 @@ ${textEdgeRestrictions}
       const embedCustomerImageUrl: string | null = embedCustomerImageUrls[0] || null;
 
       // Check if this is an apparel product (covers both DB and hardcoded styles)
-      let isApparel = productType?.designerType === "apparel";
-      if (!isApparel && embedStyleCategory === "apparel") {
-        isApparel = true;
-      }
+      let isApparel = resolveIsApparelGeneration(productType, embedStyleCategory);
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);
       const embedImageInputUrls: string[] = [];
@@ -3540,6 +3419,7 @@ ${textEdgeRestrictions}
 
       if (!base64Data) {
         console.error("[Shopify Generate] Replicate returned no image data");
+        void recordGenerationOutcomeForFounder(installation, false);
         return res.status(500).json({ error: "Failed to generate image" });
       }
 
@@ -3587,15 +3467,39 @@ ${textEdgeRestrictions}
 
       const designId = `shopify-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
-      // Log the generation only if credits were deducted from a customer account
-      if (creditDeducted && customer) {
+      // Bill merchant or customer only after successful generation.
+      if (usedCustomerPaidCredit && customer) {
+        const consumed = await applyCustomerBillingOnSuccess({
+          customerId: customer.id,
+          mode: "customer_paid",
+          idempotencyKey: `shopify-generation:${embedBillingReqId}`,
+          externalRef: embedBillingReqId,
+        });
+        if (!consumed) {
+          return res.status(403).json({ error: "INSUFFICIENT_CREDITS", message: "You've run out of credits." });
+        }
+        customer = (await storage.getCustomer(customer.id)) ?? customer;
         await storage.createCreditTransaction({
           customerId: customer.id,
           type: "generation",
           amount: -1,
           description: `Shopify artwork: ${prompt.substring(0, 50)}...`,
         });
+      } else {
+        await applyMerchantBillingOnSuccess(installation);
       }
+
+      void logMerchantGeneration({
+        installation,
+        customerId: customer?.id ?? session.internalCustomerId ?? null,
+        designId,
+        promptLength: String(rawUserPromptEmbed ?? prompt ?? "").length,
+        hadReferenceImage:
+          !!(Array.isArray(referenceImagesArr) && referenceImagesArr.length > 0) || !!referenceImage,
+        stylePreset: stylePreset ?? null,
+        size: size ?? null,
+        success: true,
+      });
 
       res.json({
         imageUrl,
@@ -3606,7 +3510,7 @@ ${textEdgeRestrictions}
       });
     } catch (error) {
       console.error("Error generating Shopify artwork:", error);
-      // Note: Credit was already deducted. In production, consider refunding on failure.
+      void recordGenerationOutcomeForFounder(embedInstallation, false);
       res.status(500).json({ error: "Failed to generate artwork" });
     }
   });
@@ -7102,19 +7006,14 @@ ${textEdgeRestrictions}
         });
       }
 
-      // Per-merchant monthly plan quota — fail fast before consuming any
-      // per-customer free generation / credit below.
-      const sfQuotaPeek = await peekMerchantGenerationQuota(installation);
-      if (!sfQuotaPeek.allowed) {
-        return res.status(sfQuotaPeek.status ?? 402).json(quotaBlockBody(sfQuotaPeek));
-      }
+      // Per-merchant monthly plan quota — fail fast before job creation.
+      // Customer-paid credits ($1 packs) are billed to the customer, not the shop plan.
+      let usedCustomerPaidCredit = false;
+      let storefrontBillingMode: GenerationBillingMode = "merchant";
 
       // Generation limit logic (10 free generations total per customer/session)
       const FREE_GENERATION_LIMIT = 10;
 
-      // Credit/limit check is handled in the block below (single deduction).
-      // Store the internal customer id on the job so status polling reads the
-      // same ledger-backed balance that generation consumed from.
       let customer: any = null;
       let resolvedJobCustomerId: string | null = null;
 
@@ -7129,18 +7028,15 @@ ${textEdgeRestrictions}
           console.warn(P, reqId, `customer ${customerId} could not be resolved:`, err?.message);
           return null;
         });
-        
+
         if (customer) {
           resolvedJobCustomerId = customer.id;
           const balance = await storage.ensureCustomerBalance(customer.id);
           if (balance.credits > 0) {
-            console.log(P, reqId, `customer ${customer.id} has ${balance.credits} ledger credits, deducting 1`);
-            const result = await storage.consumePaidCredit(customer.id, `storefront-generation:${reqId}`, reqId.toString());
-            if (!result.consumed) {
-              return res.status(403).json({ error: "INSUFFICIENT_CREDITS", message: "You've run out of credits. Purchase more to continue." });
-            }
+            usedCustomerPaidCredit = true;
+            storefrontBillingMode = "customer_paid";
+            console.log(P, reqId, `customer ${customer.id} has ${balance.credits} ledger credits — will deduct on success`);
           } else {
-            // No credits, check free limit
             const freeUsed = balance.freeGenerationsUsed || 0;
             if (freeUsed >= FREE_GENERATION_LIMIT) {
               return res.status(403).json({
@@ -7150,20 +7046,11 @@ ${textEdgeRestrictions}
                 limit: FREE_GENERATION_LIMIT,
               });
             }
-            const result = await storage.consumeFreeGeneration(customer.id, `storefront-free-generation:${reqId}`, reqId.toString());
-            if (!result.consumed) {
-              return res.status(403).json({
-                error: "FREE_LIMIT_REACHED",
-                message: "You've used all 10 free generations. Purchase credits to continue.",
-                generationsUsed: freeUsed,
-                limit: FREE_GENERATION_LIMIT,
-              });
-            }
-            console.log(P, reqId, `customer ${customer.id} used free generation ${freeUsed + 1}/${FREE_GENERATION_LIMIT}`);
+            storefrontBillingMode = "customer_free";
+            console.log(P, reqId, `customer ${customer.id} will use free generation on success (${freeUsed + 1}/${FREE_GENERATION_LIMIT})`);
           }
         }
       } else if (sessionId) {
-        // Anonymous session limit
         const count = await storage.countSessionGenerations(shop, sessionId);
         if (count >= FREE_GENERATION_LIMIT) {
           return res.status(403).json({
@@ -7172,6 +7059,14 @@ ${textEdgeRestrictions}
             generationsUsed: count,
             limit: FREE_GENERATION_LIMIT,
           });
+        }
+        storefrontBillingMode = "session";
+      }
+
+      if (!usedCustomerPaidCredit && storefrontBillingMode === "merchant") {
+        const sfQuotaPeek = await peekMerchantQuotaWithAlerts(installation);
+        if (!sfQuotaPeek.allowed) {
+          return res.status(sfQuotaPeek.status ?? 402).json(quotaBlockBody(sfQuotaPeek));
         }
       }
 
@@ -7221,14 +7116,10 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "Prompt and size are required" });
       }
 
-      // Atomically consume one unit of the merchant's plan quota right before generation.
-      const sfQuota = await consumeMerchantGenerationQuota(installation);
-      if (!sfQuota.allowed) {
-        return res.status(sfQuota.status ?? 402).json(quotaBlockBody(sfQuota));
-      }
-
-      // Look up style preset
+      // Merchant plan quota is consumed in the worker after success (peek-only here).
       let stylePromptPrefix = "";
+      let styleName = "";
+      let stylePromptPrefixDark: string | null = null;
       let sfStyleCategory = "all";
       let sfStyleBaseImageUrl: string | undefined;
       let sfStyleBaseImageUrls: string[] = [];
@@ -7238,20 +7129,27 @@ ${textEdgeRestrictions}
           storage.getStylePresetsByMerchant(installation.merchantId), 5000, "getStylePresetsByMerchant"
         );
         console.log(P, reqId, `style presets lookup ok in ${Date.now() - t1}ms`);
-        const selectedStyle = dbStyles.find((s: { id: number; promptPrefix: string | null; category?: string | null; baseImageUrl?: string | null }) => s.id.toString() === stylePreset);
-        if (selectedStyle && selectedStyle.promptPrefix) {
-          stylePromptPrefix = selectedStyle.promptPrefix;
+        const selectedStyle = dbStyles.find((s: { id: number; name?: string; promptPrefix: string | null; category?: string | null; baseImageUrl?: string | null }) => s.id.toString() === stylePreset);
+        if (selectedStyle) {
+          styleName = selectedStyle.name || "";
           sfStyleCategory = selectedStyle.category || "all";
+          if (selectedStyle.promptPrefix) {
+            stylePromptPrefix = selectedStyle.promptPrefix;
+          }
+          stylePromptPrefixDark = (selectedStyle as any).promptPrefixDark ?? null;
           const dbBaseUrls: string[] = (selectedStyle as any).baseImageUrls ||
             (selectedStyle.baseImageUrl ? [selectedStyle.baseImageUrl] : []);
           sfStyleBaseImageUrls = dbBaseUrls;
           if (dbBaseUrls.length > 0) sfStyleBaseImageUrl = dbBaseUrls[0];
         }
-        if (!stylePromptPrefix) {
+        if (!stylePromptPrefix && !styleName) {
           const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
-          if (hardcodedStyle && hardcodedStyle.promptPrefix) {
-            stylePromptPrefix = hardcodedStyle.promptPrefix;
+          if (hardcodedStyle) {
+            styleName = hardcodedStyle.name;
             sfStyleCategory = hardcodedStyle.category || "all";
+            if (hardcodedStyle.promptPrefix) {
+              stylePromptPrefix = hardcodedStyle.promptPrefix;
+            }
           }
         }
       }
@@ -7342,12 +7240,18 @@ ${textEdgeRestrictions}
       }
 
       // Determine apparel status early — affects both prompt and dimensions
-      let isApparel = productType?.designerType === "apparel";
-      if (!isApparel && sfStyleCategory === "apparel") {
-        isApparel = true;
+      let isApparel = resolveIsApparelGeneration(productType, sfStyleCategory);
+
+      if (isApparel) {
+        stylePromptPrefix = resolveApparelStylePrefix(styleName, stylePromptPrefix);
       }
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);
+      console.log(
+        P,
+        reqId,
+        `matting flags isApparel=${isApparel} designerType=${productType?.designerType ?? "none"} isAOP=${isAllOverPrint} styleCat=${sfStyleCategory}`,
+      );
       if (sizeConfig && isApparel && !isAllOverPrint) {
         const normalized = resolveGenerationAspectRatio(sizeConfig.aspectRatio, { isApparel, isAllOverPrint });
         if (normalized !== sizeConfig.aspectRatio) {
@@ -7377,15 +7281,16 @@ ${textEdgeRestrictions}
       let sizingRequirements: string;
 
       if (isApparel && isAllOverPrint) {
-        // AOP: solid white background so Picsart removebg can cleanly strip it
+        // AOP: hot pink chroma key — stripped server-side after generation
         sizingRequirements = `
 MANDATORY IMAGE REQUIREMENTS FOR ALL-OVER PRINT (AOP) - FOLLOW EXACTLY:
 1. ISOLATED MOTIF: Create a SINGLE, centered graphic design that is ISOLATED from any background scenery. This motif will be tiled into a repeating pattern.
-2. SOLID FLAT WHITE BACKGROUND: The ENTIRE background MUST be a flat, solid, uniform pure white (#FFFFFF) color. Every pixel that is not part of the design must be exactly #FFFFFF. DO NOT create scenic backgrounds, gradients, or detailed environments.
-3. DESIGN COLORS: Use VIBRANT, BOLD colors. The design MUST NOT contain any pure white pixels in the main subject — white is reserved exclusively for the background.
-4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean white space around it.
-5. CLEAN EDGES: The design must have crisp, clean edges against the white background. No fuzzy, gradient, or semi-transparent edges.
-6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid white background.
+2. SOLID HOT PINK CHROMA KEY BACKGROUND: The ENTIRE background MUST be a flat, solid, uniform hot pink (#FF00FF) color. Every pixel that is not part of the design must be exactly #FF00FF. DO NOT create scenic backgrounds, gradients, or detailed environments.
+3. DESIGN COLORS: Use VIBRANT, BOLD colors. The design MUST NOT contain any hot pink/magenta pixels in the main subject — #FF00FF is reserved exclusively for the background.
+4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean hot pink space around it.
+5. CLEAN EDGES: The design must have crisp, hard vector-like edges against the hot pink background. No fuzzy, gradient, or semi-transparent edges.
+6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid hot pink background.
+6b. NO WHITE OR GREY PLATE: Do NOT render the subject on a white or grey mat — the ONLY background color is #FF00FF edge-to-edge.
 7. PRINT-READY: This is for all-over print fabric — create an isolated motif graphic.
 8. COMPOSITION FORMAT: Fill the canvas matching the requested aspect ratio with the design centered.
 9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
@@ -7404,11 +7309,11 @@ MANDATORY IMAGE REQUIREMENTS FOR ALL-OVER PRINT (AOP) - FOLLOW EXACTLY:
         const isDarkTier = colorTier === "dark";
         const designColors = isDarkTier
           ? "BRIGHT, VIBRANT colors including white and light tones. AVOID dark, black, and hot pink/magenta colors in the design."
-          : "VIBRANT colors. AVOID white, light colors, and hot pink/magenta in the design.";
+          : "VIBRANT colors. White may be used inside the subject (teeth, eyes, highlights) but NOT as a background mat. AVOID hot pink/magenta in the design.";
 
         // Use dark tier prompt variant if available
-        if (isDarkTier && stylePreset && APPAREL_DARK_TIER_PROMPTS[stylePreset]) {
-          const darkTierPrompt = APPAREL_DARK_TIER_PROMPTS[stylePreset];
+        if (isDarkTier && stylePreset) {
+          const darkTierPrompt = resolveApparelDarkTierPrefix(stylePreset, stylePromptPrefixDark);
           if (darkTierPrompt) {
             fullPrompt = userDescSf ? `${userDescSf}, ${darkTierPrompt}` : darkTierPrompt;
           }
@@ -7508,6 +7413,7 @@ ${textEdgeRestrictions}
         frameColor: frameColor ?? null,
         productTypeId: productTypeId ? String(productTypeId) : null,
         referenceImageUrl: null,
+        billingMode: storefrontBillingMode,
         expiresAt,
       }), 8000, "createGenerationJob");
       const jobId = job.id;
@@ -7589,6 +7495,18 @@ ${textEdgeRestrictions}
 
           if (!base64Data) {
             await storage.updateGenerationJob(jobId, { status: "failed", errorMessage: "AI model returned no image data" });
+            void logMerchantGeneration({
+              installation,
+              customerId: resolvedJobCustomerId,
+              promptLength: String(rawUserPrompt ?? prompt ?? "").length,
+              hadReferenceImage:
+                !!(Array.isArray(referenceImagesArrSf) && referenceImagesArrSf.length > 0) ||
+                !!referenceImage,
+              stylePreset: stylePreset ?? null,
+              size: size ?? null,
+              success: false,
+              errorMessage: "AI model returned no image data",
+            });
             console.error(`${W} AI returned no image data — job failed`);
             return;
           }
@@ -7623,7 +7541,19 @@ ${textEdgeRestrictions}
               console.log(`${W} storage save OK on retry ${Date.now() - saveStart}ms`);
             } catch (retryError) {
               console.error(`${W} Storage save failed on retry, using data URL:`, retryError);
-              imageUrl = `data:${mimeType};base64,${base64Data}`;
+              if (isApparel) {
+                const matted = await processApparelMotif(Buffer.from(base64Data, "base64"), {
+                  isAllOverPrint,
+                  bgRemovalSensitivity:
+                    typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
+                  allowWhiteKey: true,
+                  useMlFallback: process.env.APPAREL_ML_BG_FALLBACK !== "false",
+                  vectorize: process.env.APPAREL_VECTORIZE === "true",
+                });
+                imageUrl = `data:${matted.mimeType};base64,${matted.buffer.toString("base64")}`;
+              } else {
+                imageUrl = `data:${mimeType};base64,${base64Data}`;
+              }
             }
           }
 
@@ -7636,6 +7566,28 @@ ${textEdgeRestrictions}
             designId,
           });
 
+          await finalizeGenerationBilling({
+            installation,
+            billingMode: storefrontBillingMode,
+            customerId: resolvedJobCustomerId,
+            idempotencyKey: reqId.toString(),
+          });
+
+          void recordGenerationOutcomeForFounder(installation, true);
+
+          void logMerchantGeneration({
+            installation,
+            customerId: resolvedJobCustomerId,
+            designId,
+            promptLength: String(rawUserPrompt ?? prompt ?? "").length,
+            hadReferenceImage:
+              !!(Array.isArray(referenceImagesArrSf) && referenceImagesArrSf.length > 0) ||
+              !!referenceImage,
+            stylePreset: stylePreset ?? null,
+            size: size ?? null,
+            success: true,
+          });
+
           console.log(`${W} complete designId=${designId} total=${Date.now() - wStart}ms`);
         } catch (workerErr: any) {
           console.error(`${W} worker failed +${Date.now() - wStart}ms stage=unknown:`, workerErr.message ?? workerErr);
@@ -7643,6 +7595,19 @@ ${textEdgeRestrictions}
             status: "failed",
             errorMessage: workerErr.message ?? "Unknown generation error",
           }).catch(() => {});
+          void logMerchantGeneration({
+            installation,
+            customerId: resolvedJobCustomerId,
+            promptLength: String(rawUserPrompt ?? prompt ?? "").length,
+            hadReferenceImage:
+              !!(Array.isArray(referenceImagesArrSf) && referenceImagesArrSf.length > 0) ||
+              !!referenceImage,
+            stylePreset: stylePreset ?? null,
+            size: size ?? null,
+            success: false,
+            errorMessage: workerErr.message ?? "Unknown generation error",
+          });
+          void recordGenerationOutcomeForFounder(installation, false);
         }
       })();
 
@@ -7696,12 +7661,21 @@ ${textEdgeRestrictions}
 
       if (job.status === "complete") {
         let creditsRemaining = 0;
+        let freeGenerationsUsed = 0;
+        let artworksRemaining = 0;
         if (job.customerId) {
           const balance = await storage.ensureCustomerBalance(job.customerId);
           creditsRemaining = balance.credits;
+          freeGenerationsUsed = balance.freeGenerationsUsed || 0;
+          artworksRemaining = storefrontArtworksRemaining({
+            freeGenerationsUsed,
+            paidCredits: balance.credits,
+          });
         } else if (job.sessionId) {
           const count = await storage.countSessionGenerations(shop, job.sessionId);
-          creditsRemaining = Math.max(0, 10 - count);
+          freeGenerationsUsed = count;
+          creditsRemaining = Math.max(0, STOREFRONT_FREE_GENERATION_LIMIT - count);
+          artworksRemaining = creditsRemaining;
         }
 
         return res.json({
@@ -7710,6 +7684,8 @@ ${textEdgeRestrictions}
           thumbnailUrl: job.thumbnailUrl,
           designId: job.designId,
           creditsRemaining,
+          freeGenerationsUsed,
+          artworksRemaining,
           mockupUrls: (job as any).mockupUrls || null,
           designState: (job as any).designState || null,
           prompt: (job as any).userPrompt || job.prompt || null,
@@ -9005,7 +8981,105 @@ ${textEdgeRestrictions}
     }
   });
 
-  // ==================== STOREFRONT OTP AUTH ====================
+  // ==================== STOREFRONT AUTH (Google + OTP) ====================
+
+  app.get("/api/storefront/auth/config", async (req: Request, res: Response) => {
+    try {
+      const { shop } = req.query;
+      if (!shop || typeof shop !== "string") {
+        return res.status(400).json({ error: "Shop domain required" });
+      }
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
+        return res.status(400).json({ error: "Invalid shop domain" });
+      }
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+      return res.json({
+        googleClientId: getGoogleOAuthClientId(),
+        freeGenerationLimit: STOREFRONT_FREE_GENERATION_LIMIT,
+        appUrl: (process.env.PUBLIC_APP_URL || process.env.APP_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/, ""),
+      });
+    } catch (error: any) {
+      console.error("[Auth Config] error:", error);
+      return res.status(500).json({ error: "Failed to load auth config" });
+    }
+  });
+
+  app.post("/api/storefront/auth/google", async (req: Request, res: Response) => {
+    try {
+      const { credential, shop } = req.body;
+      if (!credential || !shop) {
+        return res.status(400).json({ error: "Google credential and shop are required" });
+      }
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
+        return res.status(400).json({ error: "Invalid shop domain" });
+      }
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+      if (!getGoogleOAuthClientId()) {
+        return res.status(503).json({ error: "Google sign-in is not configured" });
+      }
+
+      const payload = await verifyGoogleIdToken(String(credential));
+      if (!payload) {
+        return res.status(401).json({ error: "Invalid Google sign-in. Please try again." });
+      }
+
+      const googleSub = payload.sub;
+      const emailNorm = payload.email?.toLowerCase().trim();
+
+      let customer = await storage.findCustomerByAlias("google", googleSub, shop);
+      if (!customer && emailNorm) {
+        customer = await storage.findCustomerByAlias("otp_email", emailNorm, shop);
+      }
+      if (!customer) {
+        customer = await storage.resolveOrCreateCustomerAlias({
+          aliasType: "google",
+          aliasValue: googleSub,
+          shop,
+          legacyUserId: `google:${shop}:${googleSub}`,
+        });
+      } else {
+        await storage.addCustomerAlias(customer.id, {
+          aliasType: "google",
+          aliasValue: googleSub,
+          shop,
+        });
+      }
+
+      if (emailNorm) {
+        await storage.addCustomerAlias(customer.id, {
+          aliasType: "otp_email",
+          aliasValue: emailNorm,
+          shop,
+        });
+        await pool.query(`UPDATE customers SET email = $1 WHERE id = $2`, [emailNorm, customer.id]);
+      }
+
+      await storage.ensureCustomerBalance(customer.id);
+      const balance = await storage.getCreditBalance(customer.id);
+      console.log(`[Google Auth] Signed in ${emailNorm || googleSub} for shop ${shop}, customer ${customer.id}`);
+
+      return res.json({
+        ok: true,
+        customerId: customer.id,
+        identityToken: signStorefrontIdentityToken(customer.id, shop),
+        credits: balance?.credits ?? customer.credits,
+        freeGenerationsUsed: balance?.freeGenerationsUsed ?? customer.freeGenerationsUsed,
+        discountEntitlementCents: balance?.discountEntitlementCents ?? 0,
+        email: emailNorm || undefined,
+        name: payload.name,
+      });
+    } catch (error: any) {
+      console.error("[Google Auth] error:", error);
+      return res.status(500).json({ error: "Google sign-in failed" });
+    }
+  });
+
   // Email-based OTP login for storefront customers.
   // Uses Resend to send 6-digit codes; codes expire after 10 minutes.
 
@@ -9032,7 +9106,7 @@ ${textEdgeRestrictions}
       if (!customer) {
         customer = await storage.createCustomer({
           userId,
-          credits: 5,
+          credits: 0,
           freeGenerationsUsed: 0,
           totalGenerations: 0,
           totalSpent: "0.00",
@@ -9924,9 +9998,11 @@ ${textEdgeRestrictions}
         sourceBuffer = Buffer.from(await srcRes.arrayBuffer());
       }
 
-      const { removeBackground } = await import("./picsart-client");
-      const result = await removeBackground({ imageBuffer: sourceBuffer });
-      res.json({ url: result.url });
+      const url = await processApparelMotifToDataUrl(sourceBuffer, {
+        allowWhiteKey: true,
+        useMlFallback: process.env.APPAREL_ML_BG_FALLBACK !== "false",
+      });
+      res.json({ url });
     } catch (err: any) {
       console.error("[Remove BG] Error:", err.message);
       res.status(500).json({ error: err.message ?? "Background removal failed" });
@@ -10944,7 +11020,35 @@ ${textEdgeRestrictions}
       startDate.setDate(startDate.getDate() - 30);
 
       const stats = await storage.getGenerationStats(merchant.id, startDate, endDate);
-      res.json(stats);
+
+      let planQuota: Record<string, unknown> | null = null;
+      const merchantShop = (req as any).shopDomain as string | undefined;
+      if (merchantShop) {
+        try {
+          const inst = await getAuthorizedInstallation(
+            merchantShop.toLowerCase().replace(/^https?:\/\//, "")
+          );
+          if (inst) {
+            const q = await peekMerchantGenerationQuota(inst);
+            planQuota = {
+              plan: q.planName,
+              unlimited: q.unlimited,
+              freeQuota: Number.isFinite(q.freeQuota) ? q.freeQuota : null,
+              overageCap: q.overageCap,
+              limit: Number.isFinite(q.hardCap) ? q.hardCap : null,
+              used: q.used,
+              remaining: Number.isFinite(q.remaining) ? q.remaining : null,
+              overageUsed: q.overageUsed,
+              isOverage: q.isOverage,
+              isTrial: q.planName === "trial",
+            };
+          }
+        } catch (e: any) {
+          console.warn("[/api/admin/stats] planQuota derive failed:", e?.message ?? e);
+        }
+      }
+
+      res.json({ ...stats, planQuota });
     } catch (error) {
       console.error("Error fetching stats:", error);
       res.status(500).json({ error: "Failed to fetch stats" });
@@ -11347,7 +11451,7 @@ ${textEdgeRestrictions}
         return res.status(404).json({ error: "Merchant not found" });
       }
 
-      const { name, promptPrefix, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options } = req.body;
+      const { name, promptPrefix, promptPrefixDark, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options } = req.body;
       
       if (!name) {
         return res.status(400).json({ error: "Style name is required" });
@@ -11356,6 +11460,7 @@ ${textEdgeRestrictions}
         merchantId: merchant.id,
         name,
         promptPrefix: promptPrefix || "",
+        promptPrefixDark: promptPrefixDark ?? null,
         category: category || "all",
         isActive: isActive !== undefined ? isActive : true,
         sortOrder: sortOrder || 0,
@@ -11389,11 +11494,13 @@ ${textEdgeRestrictions}
         return res.status(404).json({ error: "Style preset not found" });
       }
 
-      const { name, promptPrefix, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options } = req.body;
+      const { name, promptPrefix, promptPrefixDark, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options } = req.body;
       
       const updated = await storage.updateStylePreset(presetId, {
         name: name !== undefined ? name : preset.name,
         promptPrefix: promptPrefix !== undefined ? promptPrefix : preset.promptPrefix,
+        promptPrefixDark:
+          promptPrefixDark !== undefined ? (promptPrefixDark || null) : (preset as any).promptPrefixDark,
         category: category !== undefined ? category : preset.category,
         isActive: isActive !== undefined ? isActive : preset.isActive,
         sortOrder: sortOrder !== undefined ? sortOrder : preset.sortOrder,
@@ -11519,7 +11626,20 @@ ${textEdgeRestrictions}
         }
       }
 
-      res.json({ 
+      // Sync canonical apparel chroma prefixes for merchant styles matched by name
+      for (const existing of existingStyles) {
+        const key = existing.name.trim().toLowerCase();
+        const canonicalPrefix = APPAREL_CHROMA_STYLE_BY_NAME[key];
+        if (canonicalPrefix === undefined) continue;
+        if (existing.promptPrefix === canonicalPrefix && existing.category === "apparel") continue;
+        const updated = await storage.updateStylePreset(existing.id, {
+          category: "apparel",
+          promptPrefix: canonicalPrefix,
+        });
+        if (updated) updatedStyles.push(updated);
+      }
+
+      res.json({
         message: "Styles reseeded successfully",
         updated: updatedStyles.length,
         created: createdStyles.length,
@@ -15800,6 +15920,21 @@ ${textEdgeRestrictions}
       console.warn("[backfill] Some backfill tasks rejected unexpectedly");
     }
 
+    // Refresh each active page's body_html to the latest boot loader so existing
+    // pages pick up the self-bootstrapping <script> that mounts the studio even
+    // on themes where the "AI Art Studio" app embed is turned off. Fire-and-forget;
+    // ensureCustomizerBootHtml is cached per deploy so this is cheap on repeat loads.
+    Promise.allSettled(
+      pages
+        .filter((p) => p.status === "active" && p.shopifyPageId)
+        .map((p) => ensureCustomizerBootHtml(shop, installation.accessToken, p.shopifyPageId))
+    ).catch(() => {});
+
+    // Sweep the legacy "Customizer" dropdown out of the theme main menu — the
+    // floating tray launcher replaced theme-menu navigation. Fire-and-forget,
+    // cached per shop per deploy.
+    removeCustomizerNavParent(shop, installation.accessToken).catch(() => {});
+
     const plan = getEffectivePlan(installation as any, shop);
 
     return res.json({
@@ -16299,22 +16434,13 @@ ${textEdgeRestrictions}
       }
     }
 
-    // ── Add navigation menu link (only if active) ──────────────────────────────
-    let navWarning: string | null = null;
-    if (initialStatus === "active") {
-      try {
-        const navResult = await ensureNavigationLink(shop, installation.accessToken, handle.trim(), title.trim());
-        if (navResult.warning) navWarning = navResult.warning;
-      } catch (navErr: any) {
-        navWarning = navErr.message ?? "Navigation link could not be added";
-        console.warn(`[customizer-pages] Nav link step failed: ${navWarning}`);
-      }
-    }
-
+    // Note: no theme-menu navigation link is created. The floating tray
+    // launcher (appai-customizer-tray.js) lists all active customizer pages,
+    // replacing the unreliable theme dropdown entirely.
     return res.status(201).json({
       page,
       storefrontUrl: `/pages/${page.handle}`,
-      navWarning,
+      navWarning: null,
     });
   }));
 
@@ -16452,17 +16578,10 @@ ${textEdgeRestrictions}
         .catch((e: Error) => console.warn("[PATCH customizer-page] Could not backfill boot HTML:", e.message));
     }
 
-    // Manage navigation menu link on status change (best-effort)
-    if (updates.status === "disabled" && dbPage.status === "active") {
-      // Page is being disabled — remove from menu
-      await removeNavigationLink(shop, installation.accessToken, dbPage.handle)
-        .catch((e: Error) => console.warn("[PATCH customizer-page] Could not remove nav link:", e.message));
-    } else if (updates.status === "active" && dbPage.status === "disabled") {
-      // Page is being re-enabled — add back to menu
-      const pageTitle = updates.title ?? dbPage.title;
-      await ensureNavigationLink(shop, installation.accessToken, dbPage.handle, pageTitle)
-        .catch((e: Error) => console.warn("[PATCH customizer-page] Could not re-add nav link:", e.message));
-    }
+    // Theme-menu links are no longer managed — the floating tray launcher
+    // handles storefront navigation. Disabled pages already redirect to the
+    // fallback hub via appai-customizer-embed.js, and the tray only lists
+    // active pages. Stale links (if any) are swept by removeCustomizerNavParent.
 
     const updated = await storage.updateCustomizerPage(dbPage.id, updates);
     return res.json({ page: updated });
@@ -17013,6 +17132,50 @@ ${textEdgeRestrictions}
     next();
   }
 
+  /**
+   * GET /api/proxy/theme-asset/:name — serve the theme-extension asset files
+   * (the same JS/CSS shipped in the app embed) through the App Proxy.
+   *
+   * Why: the "AI Art Studio" app embed (target: body) is per-theme and OFF by
+   * default, so switching themes silently disables the customizer page. The
+   * customizer page's body_html loads appai-art-embed.js from here so the page
+   * mounts, scrolls, and works on ANY theme regardless of the embed toggle.
+   * appai-art-embed.js self-guards (__APPAI_CUSTOMIZER_INIT__), so if the embed
+   * is also on it simply no-ops the second copy — no double mount.
+   *
+   * Public asset (no secrets); no proxy signature required. Served same-origin
+   * via /apps/appai/theme-asset/... so no CORS or hardcoded app URL is needed.
+   */
+  const THEME_ASSET_ALLOWLIST = new Set([
+    "appai-art-embed.js",
+    "appai-art-embed.css",
+    "appai-saved-designs-nav.js",
+    "appai-customizer-tray.js",
+    "appai-customizer-embed.js",
+    "appai-cart-guard.js",
+    "appai-cart-images.js",
+  ]);
+  app.get("/api/proxy/theme-asset/:name", (req: Request, res: Response) => {
+    const name = String(req.params.name || "");
+    if (!THEME_ASSET_ALLOWLIST.has(name)) {
+      return res.status(404).type("text/plain").send("Not found");
+    }
+    const filePath = path.join(process.cwd(), "extensions", "theme-extension", "assets", name);
+    const contentType = name.endsWith(".css")
+      ? "text/css; charset=utf-8"
+      : "application/javascript; charset=utf-8";
+    fs.readFile(filePath, (err, buf) => {
+      if (err) {
+        console.error(`[theme-asset] failed to read ${name}:`, err?.message || err);
+        return res.status(404).type("text/plain").send("Not found");
+      }
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Cache-Control", "public, max-age=300");
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      return res.send(buf);
+    });
+  });
+
   /** GET /api/proxy/customizer-pages — returns all pages for this shop (active + disabled) plus fallbackUrl */
   app.get("/api/proxy/customizer-pages", proxyAuth, async (req: Request, res: Response) => {
     const shop: string = (req as any).proxyShop;
@@ -17184,7 +17347,7 @@ ${textEdgeRestrictions}
       baseVariantTitle: page.baseVariantTitle ?? null,
       baseProductPrice: page.baseProductPrice ?? null,
       productTypeId: page.productTypeId ?? null,
-      appUrl: process.env.APP_URL || "https://appai-pod-production.up.railway.app",
+      appUrl: (process.env.PUBLIC_APP_URL || process.env.APP_URL || "https://appai-pod-production.up.railway.app").replace(/\/$/, ""),
       designerConfig,
       variants,
       stylePresets,
@@ -17534,24 +17697,72 @@ ${textEdgeRestrictions}
     const resolved = await resolveShopInstallation(req);
     if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
 
-    const { installation } = resolved;
+    const { installation: rawInstallation } = resolved;
+    const installation = await maybeApplyPendingPlan(rawInstallation);
     const plan = getEffectivePlan(installation as any, installation.shopDomain);
     const pagesCount = await storage.countCustomizerPages(installation.shopDomain);
 
     // Generation quota status (free allotment + overage usage this bucket).
-    const q = await peekMerchantGenerationQuota(installation);
+    const q = await peekMerchantQuotaWithAlerts(installation);
     const finite = (n: number) => (Number.isFinite(n) ? n : null);
     const generationQuota = {
       plan: q.planName,
       unlimited: q.unlimited,
       freeQuota: finite(q.freeQuota),
       overageCap: q.overageCap,
+      planOverageCap: q.planOverageCap,
       limit: finite(q.hardCap),
       used: q.used,
       remaining: finite(q.remaining),
       overageUsed: q.overageUsed,
       overagePriceUsd: q.overagePriceUsd,
       isOverage: q.isOverage,
+      includedUsed: q.includedUsed,
+      includedLimit: finite(q.includedLimit),
+      includedRemaining: finite(q.includedRemaining),
+      extraUsed: q.extraUsed,
+      extraLimit: q.extraLimit,
+      extraBudgetCents: q.extraBudgetCents,
+      extraSpentCents: q.extraSpentCents,
+      extraRemainingCents: q.extraRemainingCents,
+      overageOptInEnabled: q.overageOptInEnabled,
+      overageRecurring: q.overageRecurring,
+      showOptInForm: q.showOptInForm,
+      includedExhausted: q.includedExhausted,
+      currency: "USD",
+    };
+
+    const planMaxBudgetCents = planMaxOverageBudgetCents(plan.planName);
+    const overage = {
+      priceCents: OVERAGE_PRICE_CENTS,
+      priceUsd: q.overagePriceUsd,
+      currency: "USD",
+      optInEnabled: q.overageOptInEnabled,
+      recurring: q.overageRecurring,
+      budgetCents: q.extraBudgetCents,
+      spentCents: q.extraSpentCents,
+      remainingCents: q.extraRemainingCents,
+      planMaxBudgetCents: planMaxBudgetCents,
+      planMaxUnits: q.planOverageCap,
+      effectiveUnitCap: q.extraLimit,
+      requiresOptIn: q.includedExhausted && !q.overageOptInEnabled,
+      showOptInForm: q.showOptInForm,
+    };
+
+    const included = {
+      used: q.includedUsed,
+      limit: finite(q.includedLimit),
+      remaining: finite(q.includedRemaining),
+      currency: "USD",
+    };
+
+    const extra = {
+      used: q.extraUsed,
+      unitLimit: q.extraLimit,
+      budgetCents: q.extraBudgetCents,
+      spentCents: q.extraSpentCents,
+      remainingCents: q.extraRemainingCents,
+      currency: "USD",
     };
 
     // Overage billing readiness. A paid, active plan that can incur overages but
@@ -17582,7 +17793,130 @@ ${textEdgeRestrictions}
       overageBillingActive: hasUsageLine,
       needsOverageBillingUpgrade,
       generationQuota,
+      included,
+      extra,
+      overage,
+      usdDisclaimer: "All prices in USD.",
+      pendingPlanName: (installation as any).pendingPlanName ?? null,
+      pendingPlanEffectiveAt: (installation as any).pendingPlanEffectiveAt ?? null,
     });
+  }));
+
+  /** GET /api/appai/billing/upgrade-preview?plan=starter — confirm before Shopify redirect */
+  app.get("/api/appai/billing/upgrade-preview", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveShopInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
+
+    const { installation } = resolved;
+    const newPlan = String(req.query.plan || "");
+    if (!newPlan || !(PAID_PLANS as readonly string[]).includes(newPlan)) {
+      return res.status(400).json({ error: `Invalid plan. Must be one of: ${PAID_PLANS.join(", ")}` });
+    }
+
+    const current = getEffectivePlan(installation as any, installation.shopDomain);
+    const q = await peekMerchantGenerationQuota(installation);
+    const newPriceUsd = PLAN_PRICES_USD[newPlan] ?? 0;
+    const newQuota = resolveGenerationQuota(newPlan, true);
+
+    const currentPlanName = current.planName ?? "trial";
+    const changeKind = classifyPlanChange(currentPlanName, newPlan);
+
+    if (changeKind === "paid_downgrade") {
+      return res.json(
+        buildDowngradePreview({
+          currentPlan: currentPlanName,
+          newPlan,
+          effectiveAt: (installation as any).pendingPlanEffectiveAt ?? (installation as any).billingCurrentPeriodEnd ?? null,
+          currentPeriodEnd: (installation as any).billingCurrentPeriodEnd ?? null,
+        }),
+      );
+    }
+
+    const carryoverIncludedUsed = resolveCarryoverIncludedUsed({
+      fromPlan: currentPlanName,
+      toPlan: newPlan,
+      includedUsed: q.includedUsed,
+    });
+
+    return res.json(
+      buildUpgradePreview({
+        currentPlan: currentPlanName,
+        newPlan,
+        carryoverIncludedUsed,
+        newFreeQuota: newQuota.freeQuota,
+        newPriceUsd,
+      }),
+    );
+  }));
+
+  /** POST /api/appai/billing/overage-opt-in — enable pay-as-you-go extra usage */
+  app.post("/api/appai/billing/overage-opt-in", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveShopInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
+
+    const { installation } = resolved;
+    const { budgetCents, recurring, acknowledged } = req.body as {
+      budgetCents?: number;
+      recurring?: boolean;
+      acknowledged?: boolean;
+    };
+
+    if (!acknowledged) {
+      return res.status(400).json({ error: "You must acknowledge the pay-as-you-go terms." });
+    }
+
+    const plan = getEffectivePlan(installation as any, installation.shopDomain);
+    if (!plan.isActive || !plan.planName || plan.planName === "trial") {
+      return res.status(400).json({ error: "Overage opt-in requires an active paid plan." });
+    }
+
+    const budget = Number(budgetCents);
+    if (!Number.isFinite(budget) || budget < OVERAGE_PRICE_CENTS) {
+      return res.status(400).json({ error: `Budget must be at least $${(OVERAGE_PRICE_CENTS / 100).toFixed(2)} USD.` });
+    }
+
+    const planMaxCents = planMaxOverageBudgetCents(plan.planName);
+    if (budget > planMaxCents) {
+      return res.status(400).json({
+        error: `Budget cannot exceed $${(planMaxCents / 100).toFixed(2)} USD for your plan.`,
+        planMaxBudgetCents: planMaxCents,
+      });
+    }
+
+    const quota = resolveGenerationQuota(plan.planName, true);
+    const units = budgetCentsToOverageUnits(budget);
+    if (units <= 0) {
+      return res.status(400).json({ error: "Budget too low for any extra generations." });
+    }
+
+    const updated = await storage.setMerchantOverageOptIn({
+      installationId: installation.id,
+      budgetCents: budget,
+      recurring: !!recurring,
+      bucketKey: quota.bucketKey,
+    });
+
+    const q = await peekMerchantQuotaWithAlerts(updated ?? installation);
+    return res.json({
+      success: true,
+      overageOptInEnabled: true,
+      budgetCents: budget,
+      recurring: !!recurring,
+      extraUnitCap: Math.min(units, quota.overageCap),
+      currency: "USD",
+      quota: q,
+    });
+  }));
+
+  /** POST /api/appai/billing/overage-opt-out — disable extra usage for current bucket */
+  app.post("/api/appai/billing/overage-opt-out", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveShopInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
+
+    const { installation } = resolved;
+    await storage.disableMerchantOverageOptIn(installation.id);
+    const q = await peekMerchantQuotaWithAlerts(installation);
+    return res.json({ success: true, overageOptInEnabled: false, quota: q });
   }));
 
   /** POST /api/appai/billing/start-trial — activate the trial plan (no credit card) */
@@ -17691,7 +18025,9 @@ ${textEdgeRestrictions}
       variables: {
         name: `${displayName} Plan`,
         returnUrl,
-        test: process.env.NODE_ENV !== "production",
+        test:
+          process.env.SHOPIFY_BILLING_TEST === "true" ||
+          process.env.NODE_ENV !== "production",
         lineItems,
       },
     });
@@ -17807,14 +18143,40 @@ ${textEdgeRestrictions}
       }
 
       if (subscriptionStatus === "ACTIVE" || subscriptionStatus === "PENDING") {
-        await storage.updateShopifyInstallation(installation.id, {
-          planName: plan,
-          planStatus: "active",
+        const currentPlanName = installation.planName ?? "trial";
+        const changeKind = classifyPlanChange(currentPlanName, plan);
+        const billingFields = {
           billingSubscriptionId: charge_id,
           billingUsageLineItemId: usageLineItemId,
           billingCurrentPeriodEnd: currentPeriodEnd ?? undefined,
-        } as any);
-        console.log(`[Billing] Activated ${plan} plan for ${shop} (usageLine=${usageLineItemId ? "yes" : "none"})`);
+        };
+
+        if (changeKind === "paid_downgrade") {
+          const effectiveAt =
+            currentPeriodEnd ?? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+          await storage.updateShopifyInstallation(installation.id, {
+            ...billingFields,
+            pendingPlanName: plan,
+            pendingPlanEffectiveAt: effectiveAt,
+          } as any);
+          console.log(
+            `[Billing] Scheduled downgrade ${currentPlanName} → ${plan} for ${shop} effective ${effectiveAt.toISOString()}`,
+          );
+        } else {
+          const planUpdates: Record<string, unknown> = {
+            ...billingFields,
+            planName: plan,
+            planStatus: "active",
+            pendingPlanName: null,
+            pendingPlanEffectiveAt: null,
+          };
+          if (changeKind === "trial_to_paid") {
+            Object.assign(planUpdates, trialToPaidMeteringReset());
+          }
+          await storage.updateShopifyInstallation(installation.id, planUpdates as any);
+          console.log(`[Billing] Activated ${plan} plan for ${shop} (usageLine=${usageLineItemId ? "yes" : "none"})`);
+        }
+
         // A re-subscribe may have just attached a usage line — flush any overage
         // charges that were recorded as skipped/failed while it was missing.
         if (usageLineItemId) {
@@ -17826,12 +18188,27 @@ ${textEdgeRestrictions}
       }
     } catch (err: any) {
       console.error(`[Billing] Callback verification failed for ${shop}:`, err.message);
-      // Still mark as active optimistically — Shopify wouldn't redirect here without approval
-      await storage.updateShopifyInstallation(installation.id, {
-        planName: plan,
-        planStatus: "active",
-        billingSubscriptionId: charge_id,
-      } as any);
+      const currentPlanName = installation.planName ?? "trial";
+      const changeKind = classifyPlanChange(currentPlanName, plan);
+      if (changeKind === "paid_downgrade") {
+        await storage.updateShopifyInstallation(installation.id, {
+          billingSubscriptionId: charge_id,
+          pendingPlanName: plan,
+          pendingPlanEffectiveAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+        } as any);
+      } else {
+        const planUpdates: Record<string, unknown> = {
+          planName: plan,
+          planStatus: "active",
+          billingSubscriptionId: charge_id,
+          pendingPlanName: null,
+          pendingPlanEffectiveAt: null,
+        };
+        if (changeKind === "trial_to_paid") {
+          Object.assign(planUpdates, trialToPaidMeteringReset());
+        }
+        await storage.updateShopifyInstallation(installation.id, planUpdates as any);
+      }
     }
 
     // Redirect back to the Shopify Admin app
@@ -17902,6 +18279,8 @@ ${textEdgeRestrictions}
   registerPlatformCalibrationRoutes(app, { storage, isAuthenticated });
   const { registerOperatorCatalogRoutes } = await import("./routes/operator-catalog");
   registerOperatorCatalogRoutes(app, { storage, isAuthenticated });
+  const { registerPlatformAopMapperRoutes } = await import("./routes/platform-aop-mapper");
+  registerPlatformAopMapperRoutes(app, { storage, isAuthenticated });
   if (process.env.NODE_ENV !== "production") {
     const { registerAopCalibrationMapperRoutes } = await import("./routes/aop-calibration-mapper");
     registerAopCalibrationMapperRoutes(app);

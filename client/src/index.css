@@ -457,6 +457,17 @@ html[data-appai-embed][data-appai-mobile-native-scroll] body {
      handoff fired by the boundary touch handler in embed-design.tsx. */
   overscroll-behavior-y: none;
   -webkit-overflow-scrolling: touch;
+  /* The iframe scrolls internally on mobile, but its scrollbar would render
+     right next to the Shopify page's scrollbar (a confusing double bar).
+     Hide OUR internal one — scrolling itself is untouched. */
+  scrollbar-width: none;
+}
+
+html[data-appai-embed][data-appai-mobile-native-scroll]::-webkit-scrollbar,
+html[data-appai-embed][data-appai-mobile-native-scroll] body::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
 }
 
 /* Mobile native scroll only: tell iOS that taps on interactive controls are
@@ -474,6 +485,24 @@ html[data-appai-embed][data-appai-mobile-native-scroll] input,
 html[data-appai-embed][data-appai-mobile-native-scroll] textarea,
 html[data-appai-embed][data-appai-mobile-native-scroll] label {
   touch-action: manipulation;
+}
+
+/* Desktop embed: parent Shopify page owns scroll — iframe grows to content height. */
+html[data-appai-embed]:not([data-appai-mobile-native-scroll]) [data-hoodie-aop-controls] {
+  max-height: none !important;
+  overflow-y: visible !important;
+  overscroll-behavior: auto;
+}
+
+/* Never use touch-action:pan-y on large preview surfaces in desktop embed — Chrome
+   may consume wheel at the compositor before JS can forward to the parent page. */
+html[data-appai-embed]:not([data-appai-mobile-native-scroll]) [data-appai-wheel-forward],
+html[data-appai-embed]:not([data-appai-mobile-native-scroll]) [data-appai-pc],
+html[data-appai-embed]:not([data-appai-mobile-native-scroll]) [data-testid="container-mockup"],
+html[data-appai-embed]:not([data-appai-mobile-native-scroll]) [data-testid="product-mockup"],
+html[data-appai-embed]:not([data-appai-mobile-native-scroll]) [data-testid="hoodie-aop-canvas-area"],
+html[data-appai-embed]:not([data-appai-mobile-native-scroll]) [data-testid="hoodie-aop-placer-canvas"] {
+  touch-action: auto !important;
 }
 
 /* Don't apply touch-action: manipulation to the canvas / artwork drag surfaces

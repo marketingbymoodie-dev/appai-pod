@@ -1,0 +1,48 @@
+# Iframe scrolling — LOCKED, ask the user before ANY edit
+
+The iframe scrolling system (desktop wheel forwarding + mobile internal
+scroll + live mode switching for the Shopify theme editor's mobile-preview
+toggle) is **working and verified** as of `ai-art-studio-189` (2026-07-04)
+after many failed iterations. The user has explicitly required that it not be
+modified without their approval.
+
+## Hard rules
+
+1. **Before editing ANY of the locked parts below, STOP and ask the user for
+   explicit approval first** — even for "small" or "obviously safe" changes,
+   refactors, or drive-by cleanups. Describe what you want to change and why,
+   and wait for their go-ahead.
+2. Read `docs/iframe-scroll-architecture.md` in full before proposing a change.
+   Every non-obvious rule in there fixed a real production bug (e.g. all scroll
+   writes must use `appaiInstantScrollBy` because themes set CSS
+   `scroll-behavior: smooth`, which silently freezes plain `scrollTop` writes;
+   `mobileNativeScroll` can change LIVE after mount via the theme editor's
+   mobile-preview toggle, so it must never be treated as a value fixed once at
+   mount).
+3. After ANY approved change, run all four verification scripts against the
+   live dev store and check the pass criteria in the doc:
+   `npx tsx scripts/diagnose-scroll.ts`, `npx tsx scripts/diagnose-savor.ts`,
+   `npx tsx scripts/diagnose-mobile.ts`, `npx tsx scripts/diagnose-resize.ts`.
+4. **If any verification fails, revert immediately and redeploy** (Railway
+   `production` push + `npx shopify app deploy -f`). Do not iterate forward on
+   a broken state.
+
+## Locked parts
+
+- `extensions/theme-extension/assets/appai-art-embed.js`:
+  `appaiInstantScrollBy`, `appaiAnimateWheelScroll`, `appaiScrollParentPage`,
+  `appaiGetPageScrollElement`, `appaiScrollRootForEmbedIframe`,
+  `appaiCanScroll`, `appaiAttachIframeWheelForward`, `appaiIsMobileScrollMode`,
+  the wheel-attach calls in `cleanupDuplicateGenerators`, the
+  `resize`/`wheel`/`touchscroll`/`touchfling`/`touchcancel`/`set-scroll-mode`
+  message handlers, `mobileNativeScroll` detection, `applyMobileNativeScrollFrame`,
+  `clearMobileNativeScrollFrame`, and the `matchMedia(...).addEventListener('change', ...)`
+  live mode-switch block.
+- `client/src/pages/embed-design.tsx`: `mobileNativeScroll` state and its
+  `set-scroll-mode` message handler, the resize-report effect, the
+  wheel-forward effect (incl. the `__APPAI_PARENT_WHEEL_FORWARD__` dedupe
+  check and the mobile boundary hand-off / explicit `scrollBy`), both
+  touch-scroll effects.
+- `client/src/index.css`: all `html[data-appai-embed]` scroll / overflow /
+  scrollbar rules.
+- `server/routes.ts`: the script tags injected by `buildCustomizerBootHtml()`.

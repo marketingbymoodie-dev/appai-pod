@@ -17,6 +17,7 @@ import {
   Check,
   Sparkles,
   CloudUpload,
+  Download,
 } from "lucide-react";
 import type { HoodieToolId, HoodieView } from "@shared/hoodieTemplate";
 import { useHoodieMapperStore } from "./store";
@@ -25,6 +26,7 @@ import {
   publishTemplateToSupabase,
   saveTemplate,
   uploadMockup,
+  downloadPrintifyBlankMockups,
   type SaveTemplatePublishResult,
 } from "./api";
 import AopPreviewModal from "./AopPreviewModal";
@@ -146,6 +148,48 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
       toast({ title: `Loaded ${targetView} mockup`, description: `${width}×${height}px` });
     } catch (err: any) {
       toast({ title: "Upload failed", description: err?.message || String(err), variant: "destructive" });
+    } finally {
+      actions.setBusy(false);
+    }
+  }
+
+  function loadImageDimensionsFromUrl(url: string): Promise<{ width: number; height: number }> {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () =>
+        resolve({ width: img.naturalWidth, height: img.naturalHeight });
+      img.onerror = reject;
+      img.src = url;
+    });
+  }
+
+  async function handleDownloadPrintifyBlanks() {
+    if (!template.blueprintId) {
+      toast({
+        title: "Set blueprint first",
+        description: "Enter the Printify blueprint ID in the sidebar before downloading blanks.",
+        variant: "destructive",
+      });
+      return;
+    }
+    actions.setBusy(true);
+    try {
+      await saveTemplate(template.name, template);
+      const result = await downloadPrintifyBlankMockups(template.name);
+      for (const d of result.downloaded) {
+        const dims = await loadImageDimensionsFromUrl(d.url);
+        actions.setMockup(d.view, { src: d.url, width: dims.width, height: dims.height });
+      }
+      toast({
+        title: "Blank mockups downloaded",
+        description: `Printify bp ${result.blueprintId}: ${result.downloaded.map((d) => d.view).join(", ")}`,
+      });
+    } catch (err: any) {
+      toast({
+        title: "Printify download failed",
+        description: err?.message || String(err),
+        variant: "destructive",
+      });
     } finally {
       actions.setBusy(false);
     }
@@ -281,6 +325,18 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
       >
         <Upload className="h-3.5 w-3.5" />
         Upload back
+      </Button>
+      <Button
+        size="sm"
+        variant="outline"
+        className="h-8 gap-1 text-xs"
+        onClick={() => void handleDownloadPrintifyBlanks()}
+        disabled={busy || !template.blueprintId}
+        title="Create a temp Printify product with transparent print and download blank garment photos"
+        data-testid="hoodie-download-printify-blanks"
+      >
+        <Download className="h-3.5 w-3.5" />
+        Printify blanks
       </Button>
       <input
         ref={frontInputRef}

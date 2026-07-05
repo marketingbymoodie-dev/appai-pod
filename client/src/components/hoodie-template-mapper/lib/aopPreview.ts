@@ -479,12 +479,12 @@ export function computeGroupRects(
       (l) => l.panelKey && group.panelKeys.includes(l.panelKey),
     );
     if (groupLayers.length === 0) continue;
-    // Note: the back-view hood placement-inherit hack lived here in
+    // Note: the back-view hood/sleeve placement-inherit hack lived here in
     // an earlier pass. It's been removed because the renderer now
-    // bridges the back-view hood through a flat printable panel
-    // derived from the front-view layer's mesh + placement (see
-    // `renderHoodFlatPanel`). The back-view hood group's stored
-    // placement is therefore unused at render time.
+    // bridges back-view hood and sleeve panels through a flat printable
+    // panel derived from the front-view layer's mesh + placement (see
+    // `renderHoodFlatPanel`). Back-view hood/sleeve stored placements
+    // are therefore unused at render time.
     const placement = resolveGroupPlacement(
       group,
       view,
@@ -834,10 +834,15 @@ export function renderHoodFlatPanel(
 
 /**
  * Panel keys that participate in the front→back flat-panel bridge.
- * Hood is the only continuous fabric piece that needs it today
- * (sleeves get tile mode, back body has no front view, etc.).
+ * Hood and sleeves are continuous fabric pieces across front/back views
+ * in single-sheet (place-on-item) mode.
  */
-const HOOD_BRIDGE_PANEL_KEYS = new Set<string>(["left_hood", "right_hood"]);
+const FLAT_PANEL_BRIDGE_PANEL_KEYS = new Set<string>([
+  "left_hood",
+  "right_hood",
+  "left_sleeve",
+  "right_sleeve",
+]);
 
 /**
  * Find a matching front-view layer by panel key. Used by the back-
@@ -1378,10 +1383,10 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
       artwork &&
       layer.mesh &&
       layer.panelKey &&
-      HOOD_BRIDGE_PANEL_KEYS.has(layer.panelKey)
+      FLAT_PANEL_BRIDGE_PANEL_KEYS.has(layer.panelKey)
     ) {
-      // Hood flat-panel bridge: the back-of-hood is anatomically the
-      // continuation of the front-of-hood (one fabric piece). We
+      // Hood/sleeve flat-panel bridge: the back panel is anatomically the
+      // continuation of the front panel (one fabric piece). We
       // build the flat printable panel from the FRONT-view layer's
       // mesh + the user's front-view placement, then warp THAT
       // through this back-view layer's mesh. Because both meshes

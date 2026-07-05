@@ -21,10 +21,12 @@ import {
   customizerPages, type CustomizerPage, type InsertCustomizerPage,
   publishedProducts, type PublishedProduct, type InsertPublishedProduct,
   generationJobs, type GenerationJob, type InsertGenerationJob,
+  merchantGenerationHealth, type MerchantGenerationHealth,
+  founderAlerts,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, gte, lte, desc, sql, isNull } from "drizzle-orm";
-import { computeGenerationConsume } from "./customizer-plans";
+import { eq, and, gte, lte, desc, asc, inArray, sql, isNull } from "drizzle-orm";
+import { computeGenerationConsume, getEffectivePlan, resolveGenerationQuota } from "./customizer-plans";
 
 export interface IStorage {
   // Customers
@@ -38,6 +40,7 @@ export interface IStorage {
   getCreditBalance(customerId: string): Promise<CreditBalance | undefined>;
   getCustomerAliases(customerId: string): Promise<CustomerAlias[]>;
   resolveOrCreateCustomerAlias(alias: InsertCustomerAlias & { legacyUserId?: string }): Promise<Customer>;
+  findCustomerByAlias(aliasType: string, aliasValue: string, shop?: string | null): Promise<Customer | undefined>;
   addCustomerAlias(customerId: string, alias: Omit<InsertCustomerAlias, "customerId">): Promise<CustomerAlias | undefined>;
   applyCreditLedgerEntry(entry: InsertCreditLedger): Promise<{ inserted: boolean; balance: CreditBalance | undefined }>;
   consumePaidCredit(customerId: string, idempotencyKey: string, externalRef?: string): Promise<{ consumed: boolean; balance: CreditBalance | undefined }>;
@@ -116,6 +119,39 @@ export interface IStorage {
   // either a "YYYY-MM" calendar-month key (paid plans) or "trial" (cumulative).
   getMerchantGenerationUsage(installationId: number, bucketKey: string): Promise<{ used: number; overageUsed: number }>;
   consumeMerchantGeneration(params: { installationId: number; bucketKey: string; freeQuota: number; overageCap: number }): Promise<{ allowed: boolean; used: number; overageUsed: number; isOverage: boolean }>;
+  syncOverageOptInForBucket(installationId: number, installation: ShopifyInstallation): Promise<void>;
+  setMerchantOverageOptIn(params: {
+    installationId: number;
+    budgetCents: number;
+    recurring: boolean;
+    bucketKey: string;
+  }): Promise<ShopifyInstallation | undefined>;
+  disableMerchantOverageOptIn(installationId: number): Promise<ShopifyInstallation | undefined>;
+  refundPaidCredit(customerId: string, idempotencyKey: string, externalRef?: string): Promise<{ refunded: boolean }>;
+  refundFreeGeneration(customerId: string, idempotencyKey: string, externalRef?: string): Promise<{ refunded: boolean }>;
+  recordGenerationHealthEvent(
+    installationId: number,
+    shopDomain: string,
+    success: boolean,
+  ): Promise<MerchantGenerationHealth>;
+  insertFounderAlert(row: {
+    installationId: number | null;
+    shopDomain: string;
+    alertType: string;
+    failureRate?: number;
+    attempts?: number;
+    emailSent: boolean;
+  }): Promise<void>;
+  listGenerationHealthSummary(): Promise<
+    Array<{
+      shopDomain: string;
+      installationId: number;
+      successCount: number;
+      failureCount: number;
+      failureRate: number;
+      lastFailureAt: Date | null;
+    }>
+  >;
   
   // Product Types
   getProductType(id: number): Promise<ProductType | undefined>;
@@ -153,7 +189,11 @@ export interface IStorage {
   deleteCustomizerPage(id: string): Promise<void>;
   countCustomizerPages(shop: string): Promise<number>;
   countActiveCustomizerPages(shop: string): Promise<number>;
-
+  enforceCustomizerPageLimit(
+    shop: string,
+    limit: number,
+  ): Promise<{ deactivatedIds: string[]; keptActiveCount: number }>;
+  
   // Published Products (design → native Shopify product)
   getPublishedProduct(shop: string, designId: string): Promise<PublishedProduct | undefined>;
   createPublishedProduct(product: InsertPublishedProduct): Promise<PublishedProduct>;
@@ -260,6 +300,21 @@ export class DatabaseStorage implements IStorage {
 
   async getCustomerAliases(customerId: string): Promise<CustomerAlias[]> {
     return db.select().from(customerAliases).where(eq(customerAliases.customerId, customerId));
+  }
+
+  async findCustomerByAlias(aliasType: string, aliasValue: string, shop?: string | null): Promise<Customer | undefined> {
+    const [existingAlias] = await db
+      .select()
+      .from(customerAliases)
+      .where(and(
+        eq(customerAliases.aliasType, aliasType),
+        eq(customerAliases.aliasValue, aliasValue),
+        shop === null || shop === undefined
+          ? isNull(customerAliases.shop)
+          : eq(customerAliases.shop, shop),
+      ));
+    if (!existingAlias) return undefined;
+    return this.getCustomer(existingAlias.customerId);
   }
 
   async resolveOrCreateCustomerAlias(alias: InsertCustomerAlias & { legacyUserId?: string }): Promise<Customer> {
@@ -877,6 +932,291 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
     });
   }
 
+  /** Reset or carry overage opt-in when the calendar bucket rolls. */
+  async syncOverageOptInForBucket(installationId: number, installation: ShopifyInstallation): Promise<void> {
+    const eff = getEffectivePlan(installation as any, installation.shopDomain);
+    const quota = resolveGenerationQuota(eff.planName, eff.isActive);
+    if (!quota.monthly) return;
+
+    const currentBucket = quota.bucketKey;
+    const storedMonth = installation.generationMonth;
+    const optInBucket = installation.overageOptInBucketKey;
+    const updates: Partial<ShopifyInstallation> = {};
+
+    if (storedMonth && storedMonth !== currentBucket && /^\d{4}-\d{2}$/.test(storedMonth)) {
+      updates.quotaAlert90BucketKey = null;
+      updates.quotaAlert100BucketKey = null;
+    }
+
+    if (installation.overageOptInEnabled && optInBucket && optInBucket !== currentBucket) {
+      if (installation.overageRecurring) {
+        updates.overageOptInBucketKey = currentBucket;
+      } else {
+        updates.overageOptInEnabled = false;
+        updates.overageBudgetCents = null;
+        updates.overageOptInAt = null;
+        updates.overageOptInBucketKey = null;
+      }
+    }
+
+    if (Object.keys(updates).length > 0) {
+      await db
+        .update(shopifyInstallations)
+        .set(updates)
+        .where(eq(shopifyInstallations.id, installationId));
+    }
+  }
+
+  async setMerchantOverageOptIn(params: {
+    installationId: number;
+    budgetCents: number;
+    recurring: boolean;
+    bucketKey: string;
+  }): Promise<ShopifyInstallation | undefined> {
+    const [updated] = await db
+      .update(shopifyInstallations)
+      .set({
+        overageOptInEnabled: true,
+        overageBudgetCents: params.budgetCents,
+        overageRecurring: params.recurring,
+        overageOptInAt: new Date(),
+        overageOptInBucketKey: params.bucketKey,
+        quotaAlert90BucketKey: null,
+        quotaAlert100BucketKey: null,
+      })
+      .where(eq(shopifyInstallations.id, params.installationId))
+      .returning();
+    return updated;
+  }
+
+  async disableMerchantOverageOptIn(installationId: number): Promise<ShopifyInstallation | undefined> {
+    const [updated] = await db
+      .update(shopifyInstallations)
+      .set({
+        overageOptInEnabled: false,
+        overageBudgetCents: null,
+        overageOptInAt: null,
+        overageOptInBucketKey: null,
+      })
+      .where(eq(shopifyInstallations.id, installationId))
+      .returning();
+    return updated;
+  }
+
+  async refundPaidCredit(
+    customerId: string,
+    idempotencyKey: string,
+    externalRef?: string,
+  ): Promise<{ refunded: boolean }> {
+    const refundKey = `refund:${idempotencyKey}`;
+    return db.transaction(async (tx) => {
+      const [existingRefund] = await tx
+        .select()
+        .from(creditLedger)
+        .where(eq(creditLedger.idempotencyKey, refundKey));
+      if (existingRefund) return { refunded: true };
+
+      const [original] = await tx
+        .select()
+        .from(creditLedger)
+        .where(eq(creditLedger.idempotencyKey, idempotencyKey));
+      if (!original || original.deltaCredits >= 0) return { refunded: false };
+
+      const [balance] = await tx
+        .update(creditBalances)
+        .set({
+          credits: sql`${creditBalances.credits} + 1`,
+          version: sql`${creditBalances.version} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(eq(creditBalances.customerId, customerId))
+        .returning();
+
+      if (!balance) return { refunded: false };
+
+      await tx.insert(creditLedger).values({
+        customerId,
+        deltaCredits: 1,
+        deltaEntitlementCents: 0,
+        reason: "generation_refund",
+        idempotencyKey: refundKey,
+        externalRef: externalRef ?? idempotencyKey,
+        metadata: null,
+      });
+
+      await tx
+        .update(customers)
+        .set({
+          credits: balance.credits,
+          totalGenerations: sql`GREATEST(${customers.totalGenerations} - 1, 0)`,
+          updatedAt: new Date(),
+        })
+        .where(eq(customers.id, customerId));
+
+      return { refunded: true };
+    });
+  }
+
+  async refundFreeGeneration(
+    customerId: string,
+    idempotencyKey: string,
+    externalRef?: string,
+  ): Promise<{ refunded: boolean }> {
+    const refundKey = `refund-free:${idempotencyKey}`;
+    return db.transaction(async (tx) => {
+      const [existingRefund] = await tx
+        .select()
+        .from(creditLedger)
+        .where(eq(creditLedger.idempotencyKey, refundKey));
+      if (existingRefund) return { refunded: true };
+
+      const [original] = await tx
+        .select()
+        .from(creditLedger)
+        .where(eq(creditLedger.idempotencyKey, idempotencyKey));
+      if (!original || original.reason !== "free_generation") return { refunded: false };
+
+      const [balance] = await tx
+        .update(creditBalances)
+        .set({
+          freeGenerationsUsed: sql`GREATEST(${creditBalances.freeGenerationsUsed} - 1, 0)`,
+          version: sql`${creditBalances.version} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(creditBalances.customerId, customerId),
+            sql`${creditBalances.freeGenerationsUsed} > 0`,
+          ),
+        )
+        .returning();
+
+      if (!balance) return { refunded: false };
+
+      await tx.insert(creditLedger).values({
+        customerId,
+        deltaCredits: 0,
+        deltaEntitlementCents: 0,
+        reason: "free_generation_refund",
+        idempotencyKey: refundKey,
+        externalRef: externalRef ?? idempotencyKey,
+        metadata: null,
+      });
+
+      await tx
+        .update(customers)
+        .set({
+          freeGenerationsUsed: balance.freeGenerationsUsed,
+          totalGenerations: sql`GREATEST(${customers.totalGenerations} - 1, 0)`,
+          updatedAt: new Date(),
+        })
+        .where(eq(customers.id, customerId));
+
+      return { refunded: true };
+    });
+  }
+
+  async recordGenerationHealthEvent(
+    installationId: number,
+    shopDomain: string,
+    success: boolean,
+  ): Promise<MerchantGenerationHealth> {
+    const now = new Date();
+    const windowMs = 60 * 60 * 1000;
+
+    const [existing] = await db
+      .select()
+      .from(merchantGenerationHealth)
+      .where(eq(merchantGenerationHealth.installationId, installationId));
+
+    if (!existing || now.getTime() - existing.windowStart.getTime() > windowMs) {
+      const [row] = await db
+        .insert(merchantGenerationHealth)
+        .values({
+          installationId,
+          shopDomain,
+          windowStart: now,
+          successCount: success ? 1 : 0,
+          failureCount: success ? 0 : 1,
+          lastFailureAt: success ? null : now,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: merchantGenerationHealth.installationId,
+          set: {
+            shopDomain,
+            windowStart: now,
+            successCount: success ? 1 : 0,
+            failureCount: success ? 0 : 1,
+            lastFailureAt: success ? null : now,
+            updatedAt: now,
+          },
+        })
+        .returning();
+      return row;
+    }
+
+    const [row] = await db
+      .update(merchantGenerationHealth)
+      .set({
+        successCount: success
+          ? sql`${merchantGenerationHealth.successCount} + 1`
+          : merchantGenerationHealth.successCount,
+        failureCount: success
+          ? merchantGenerationHealth.failureCount
+          : sql`${merchantGenerationHealth.failureCount} + 1`,
+        lastFailureAt: success ? merchantGenerationHealth.lastFailureAt : now,
+        updatedAt: now,
+      })
+      .where(eq(merchantGenerationHealth.installationId, installationId))
+      .returning();
+    return row;
+  }
+
+  async insertFounderAlert(row: {
+    installationId: number | null;
+    shopDomain: string;
+    alertType: string;
+    failureRate?: number;
+    attempts?: number;
+    emailSent: boolean;
+  }): Promise<void> {
+    await db.insert(founderAlerts).values({
+      installationId: row.installationId,
+      shopDomain: row.shopDomain,
+      alertType: row.alertType,
+      failureRate: row.failureRate != null ? String(row.failureRate) : null,
+      attempts: row.attempts ?? null,
+      emailSent: row.emailSent,
+    });
+  }
+
+  async listGenerationHealthSummary(): Promise<
+    Array<{
+      shopDomain: string;
+      installationId: number;
+      successCount: number;
+      failureCount: number;
+      failureRate: number;
+      lastFailureAt: Date | null;
+    }>
+  > {
+    const rows = await db.select().from(merchantGenerationHealth);
+    return rows
+      .map((r) => {
+        const total = r.successCount + r.failureCount;
+        return {
+          shopDomain: r.shopDomain,
+          installationId: r.installationId,
+          successCount: r.successCount,
+          failureCount: r.failureCount,
+          failureRate: total > 0 ? r.failureCount / total : 0,
+          lastFailureAt: r.lastFailureAt,
+        };
+      })
+      .sort((a, b) => b.failureRate - a.failureRate);
+  }
+
   // Product Types
   async getProductType(id: number): Promise<ProductType | undefined> {
     const [productType] = await db.select().from(productTypes).where(eq(productTypes.id, id));
@@ -1051,6 +1391,48 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
     return result?.count ?? 0;
   }
 
+  /**
+   * Keep oldest active pages live; disable newest excess (not deleted).
+   */
+  async enforceCustomizerPageLimit(
+    shop: string,
+    limit: number,
+  ): Promise<{ deactivatedIds: string[]; keptActiveCount: number }> {
+    if (limit <= 0) {
+      const active = await db
+        .select({ id: customizerPages.id })
+        .from(customizerPages)
+        .where(and(eq(customizerPages.shop, shop), eq(customizerPages.status, "active")));
+      const ids = active.map((p) => p.id);
+      if (ids.length > 0) {
+        await db
+          .update(customizerPages)
+          .set({ status: "disabled", updatedAt: new Date() })
+          .where(inArray(customizerPages.id, ids));
+      }
+      return { deactivatedIds: ids, keptActiveCount: 0 };
+    }
+
+    const active = await db
+      .select()
+      .from(customizerPages)
+      .where(and(eq(customizerPages.shop, shop), eq(customizerPages.status, "active")))
+      .orderBy(asc(customizerPages.createdAt));
+
+    if (active.length <= limit) {
+      return { deactivatedIds: [], keptActiveCount: active.length };
+    }
+
+    const toDisable = active.slice(limit);
+    const deactivatedIds = toDisable.map((p) => p.id);
+    await db
+      .update(customizerPages)
+      .set({ status: "disabled", updatedAt: new Date() })
+      .where(inArray(customizerPages.id, deactivatedIds));
+
+    return { deactivatedIds, keptActiveCount: limit };
+  }
+
   // Published Products
   async getPublishedProduct(shop: string, designId: string): Promise<PublishedProduct | undefined> {
     const [row] = await db
@@ -1152,6 +1534,7 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
         and(
           eq(generationJobs.shop, shop),
           eq(generationJobs.sessionId, sessionId),
+          eq(generationJobs.status, "complete"),
         )
       );
     return row?.count ?? 0;

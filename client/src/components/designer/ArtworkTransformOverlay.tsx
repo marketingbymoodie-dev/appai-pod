@@ -188,7 +188,7 @@ export default function ArtworkTransformOverlay({
 
   return (
     <div
-      className="absolute inset-0 z-10 touch-none"
+      className="absolute inset-0 z-10"
       data-appai-drag-surface
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}

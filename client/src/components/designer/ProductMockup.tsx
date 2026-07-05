@@ -1,4 +1,4 @@
-import { useRef, useCallback } from "react";
+import { useRef, useCallback, type CSSProperties } from "react";
 import { Sparkles, Loader2 } from "lucide-react";
 import { useState, useEffect } from "react";
 import type { PrintSize, FrameColor, ImageTransform, PrintShape, DesignerType } from "./types";
@@ -607,13 +607,25 @@ export function ProductMockup({
   };
 
   const showTransformOverlay = !!imageUrl && enableDrag && !mockupUrl && !isLoading;
+  // Desktop Shopify embed: parent page owns scroll. `touch-action: pan-y` makes Chrome
+  // consume wheel at the compositor on this box before our forward handler runs.
+  const isDesktopEmbed =
+    typeof document !== "undefined" &&
+    document.documentElement.dataset.appaiEmbed === "true" &&
+    document.documentElement.dataset.appaiMobileNativeScroll !== "true";
+  const touchAction: CSSProperties["touchAction"] = showTransformOverlay
+    ? "none"
+    : isDesktopEmbed
+      ? "auto"
+      : "pan-y";
 
   return (
     <div
       ref={containerRef}
       className="relative rounded-md w-full h-full"
-      style={{ touchAction: showTransformOverlay ? "none" : "pan-y" }}
+      style={{ touchAction }}
       data-testid="product-mockup"
+      data-appai-wheel-forward={isDesktopEmbed ? "true" : undefined}
     >
       {renderProductMockup()}
       {showTransformOverlay && (

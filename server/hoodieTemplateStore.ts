@@ -45,6 +45,7 @@ const PUBLIC_TEMPLATE_NAMES = new Set<string>([
   "unisex-zip-hoodie-aop-L",
   "unisex-pullover-hoodie-aop-L",
   "unisex-sweatshirt-aop-L",
+  "spun-polyester-pillow-wrap-L",
 ]);
 
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
@@ -89,6 +90,7 @@ const DEV_LOCAL_NAME: Record<string, string> = {
   "unisex-zip-hoodie-aop-L": "zip-hoodie-aop-L",
   "unisex-pullover-hoodie-aop-L": "pullover-hoodie-aop-L",
   "unisex-sweatshirt-aop-L": "sweatshirt-aop-L",
+  "spun-polyester-pillow-wrap-L": "Spun_Polyester",
 };
 
 function resolveLocalAdminCandidates(publicName: string): string[] {

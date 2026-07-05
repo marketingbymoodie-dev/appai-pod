@@ -10,7 +10,7 @@ import { Switch } from "@/components/ui/switch";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, Share2, Upload, ExternalLink, CheckCircle, ChevronLeft, ChevronRight, ChevronDown, Info, Plus, Download } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
@@ -48,6 +48,15 @@ import {
   renderFlatMockupDataUrl,
 } from "@/components/designer/FlatProductPlacer/lib/flatMockupPreview";
 import { resolveFlatBlankColorId, resolveFlatPlacementGeometryKey } from "@/components/designer/FlatProductPlacer/lib/flatAssets";
+import { STOREFRONT_FREE_GENERATION_LIMIT, storefrontArtworksRemaining } from "@shared/storefront-credits";
+import {
+  isAllowedCentralAuthOrigin,
+  isStorefrontGoogleAuthMessage,
+  STOREFRONT_GOOGLE_AUTH_FAILED_MESSAGE,
+  STOREFRONT_GOOGLE_AUTH_POPUP_CLOSED_MESSAGE,
+  STOREFRONT_OPEN_GOOGLE_AUTH_MESSAGE,
+} from "@shared/storefront-auth";
+import { buildCentralAppUrl } from "@/lib/storefrontAuth";
 import { hasExactVariantMapping, hasVariantMappingForColor } from "@shared/variantMapResolve";
 
 /** Printify mockup cache key — size affects variant resolution for apparel. */
@@ -953,6 +962,29 @@ export interface EmbedDesignProps {
   };
 }
 
+/**
+ * Persisted-storage mirror of `storefrontLoggedIn`
+ * (`customer?.isLoggedIn ?? !!storefrontCustomerId`). IMPORTANT: the anonymous
+ * identity bootstrap ALSO writes `appai_customer_id` (and `appai_customer`
+ * with `isLoggedIn: false`), so id presence alone does NOT mean signed in.
+ */
+function hasStoredLoggedInIdentity(): boolean {
+  // Must stay in sync with isSignedIn() in appai-customizer-tray.js.
+  // ONLY appai_customer.isLoggedIn === true counts. Never fall back to
+  // appai_customer_id presence: the anonymous bootstrap writes that id for
+  // every visitor, and older app versions wrote it WITHOUT the
+  // appai_customer record — that legacy state suppressed the sign-in panel
+  // for anonymous visitors ("just opens a customizer page").
+  try {
+    const raw = localStorage.getItem('appai_customer');
+    if (raw) {
+      const c = JSON.parse(raw);
+      if (c && c.isLoggedIn === true) return true;
+    }
+  } catch {}
+  return false;
+}
+
 export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) {
   const searchParams = new URLSearchParams(window.location.search);
 
@@ -972,7 +1004,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // storefront=true and shopify=true appear in the URL, storefront wins.
   const isEmbedded = !isAdminTester && searchParams.get("embedded") === "true";
   const isShopify = !isStorefront && !isAdminTester && searchParams.get("shopify") === "true";
-  const mobileNativeScroll = searchParams.get("mobileNativeScroll") === "1";
+  // State (not a plain const) so it can react LIVE to the parent embed
+  // script's `ai-art-studio:set-scroll-mode` message. Shopify's theme editor
+  // "mobile preview" toggle resizes the SAME iframe without a reload, so a
+  // value frozen at mount from the URL param would leave the wrong scroll
+  // mode (and stale CSS/effects) active after the toggle. See
+  // docs/iframe-scroll-architecture.md before changing this.
+  const [mobileNativeScroll, setMobileNativeScroll] = useState(
+    () => searchParams.get("mobileNativeScroll") === "1",
+  );
 
   // Key behavioral flags based on runtime mode
   const requiresSessionToken = runtimeMode === 'admin-embedded';
@@ -1205,7 +1245,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
     requestAnimationFrame(() => {
       const target = previewLandingRef.current ?? artworkColumnRef.current;
-      target?.scrollIntoView({ block: 'start', behavior: 'auto' });
+      if (target) {
+        // Scroll ONLY this document — never ancestors. The storefront embeds
+        // this page in a SAME-ORIGIN iframe (app proxy), so scrollIntoView
+        // here also scrolled the parent storefront page, pushing non-sticky
+        // theme headers (Ritual) off-screen on every load ("menu removed").
+        // Parent-side landing is handled by the guarded
+        // ai-art-studio:scroll-to-preview handler in appai-art-embed.js.
+        const se = document.scrollingElement || document.documentElement;
+        se.scrollTop += target.getBoundingClientRect().top;
+      }
       try {
         window.parent.postMessage({ type: 'ai-art-studio:scroll-to-preview' }, '*');
       } catch {
@@ -1320,8 +1369,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [freeLimitReached, setFreeLimitReached] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [isSharing, setIsSharing] = useState(false);
-  // OTP login state for storefront — restore from localStorage if available
-  const [showOtpLogin, setShowOtpLogin] = useState(false);
+  // OTP login state for storefront — restore from localStorage if available.
+  // openSignIn=1 is set by the customizer tray's "Sign in" item when it
+  // navigates here from a page without a designer iframe; skip when a stored
+  // identity already exists (the panel would be redundant next to "Sign out").
+  const [showOtpLogin, setShowOtpLogin] = useState(
+    () => searchParams.get('openSignIn') === '1' && !hasStoredLoggedInIdentity(),
+  );
   const [otpEmail, setOtpEmail] = useState(() => {
     try { return localStorage.getItem('appai_otp_email') || ''; } catch { return ''; }
   });
@@ -1329,6 +1383,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [otpStep, setOtpStep] = useState<"email" | "code">("email");
   const [otpLoading, setOtpLoading] = useState(false);
   const [otpError, setOtpError] = useState<string | null>(null);
+  const [googleAuthEnabled, setGoogleAuthEnabled] = useState(false);
+  const [centralAppUrl, setCentralAppUrl] = useState<string | null>(null);
+  const [googleAuthLoading, setGoogleAuthLoading] = useState(false);
+  const googleAuthNonceRef = useRef<string | null>(null);
+  const googleAuthPopupRef = useRef<Window | null>(null);
   const [storefrontCustomerId, setStorefrontCustomerId] = useState<string | null>(() => {
     try { return localStorage.getItem('appai_customer_id') || null; } catch { return null; }
   });
@@ -1380,6 +1439,189 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       .catch((err) => console.warn('[EmbedDesign] identity bootstrap failed', err));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isStorefront, shopDomain, anonSessionId]);
+
+  const completeStorefrontLogin = useCallback((data: {
+    customerId: string;
+    identityToken?: string;
+    credits?: number;
+    freeGenerationsUsed?: number;
+    email?: string;
+    galleryLimit?: number;
+  }) => {
+    const newCustomerId = data.customerId;
+    const loginEmail = data.email || otpEmail.trim() || undefined;
+    setStorefrontCustomerId(newCustomerId);
+    if (data.identityToken) setStorefrontIdentityToken(data.identityToken);
+    setCustomer({
+      email: loginEmail,
+      id: newCustomerId,
+      credits: data.credits ?? 0,
+      freeGenerationsUsed: data.freeGenerationsUsed ?? 0,
+      isLoggedIn: true,
+    });
+    setGalleryLimit(data.galleryLimit || 10);
+    try {
+      localStorage.setItem('appai_customer_id', newCustomerId);
+      if (data.identityToken) localStorage.setItem('appai_identity_token', data.identityToken);
+      if (loginEmail) localStorage.setItem('appai_otp_email', loginEmail);
+      localStorage.setItem('appai_customer', JSON.stringify({
+        email: loginEmail,
+        id: newCustomerId,
+        credits: data.credits ?? 0,
+        freeGenerationsUsed: data.freeGenerationsUsed ?? 0,
+        isLoggedIn: true,
+      }));
+    } catch {}
+    setShowOtpLogin(false);
+    setOtpStep('email');
+    setOtpCode('');
+    setOtpError(null);
+    if (anonSessionId && shopDomain) {
+      safeFetch(`${API_BASE}/api/storefront/merge-session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: anonSessionId, customerId: newCustomerId, shop: shopDomain }),
+      }).catch(() => {});
+    }
+    if (shopDomain) {
+      setSavedDesignsLoading(true);
+      safeFetch(`${API_BASE}/api/storefront/customizer/my-designs?shop=${encodeURIComponent(shopDomain)}&customerId=${encodeURIComponent(newCustomerId)}`)
+        .then(r => r.json()).then(d => { if (d.designs) setSavedDesigns(d.designs); })
+        .catch(() => {}).finally(() => setSavedDesignsLoading(false));
+    }
+  }, [anonSessionId, shopDomain, otpEmail]);
+
+  useEffect(() => {
+    if (!isStorefront || !shopDomain) return;
+    safeFetch(`${API_BASE}/api/storefront/auth/config?shop=${encodeURIComponent(shopDomain)}`)
+      .then(r => r.json())
+      .then(data => {
+        setGoogleAuthEnabled(!!data.googleClientId);
+        setCentralAppUrl(typeof data.appUrl === "string" ? data.appUrl.replace(/\/$/, "") : buildCentralAppUrl(""));
+      })
+      .catch(() => {
+        setGoogleAuthEnabled(false);
+        setCentralAppUrl(buildCentralAppUrl(""));
+      });
+  }, [isStorefront, shopDomain]);
+
+  useEffect(() => {
+    if (!isStorefront) return;
+
+    const onMessage = (event: MessageEvent) => {
+      if (event.data?.type === STOREFRONT_GOOGLE_AUTH_FAILED_MESSAGE) {
+        if (event.origin !== window.location.origin) return;
+        if (event.data.nonce && event.data.nonce !== googleAuthNonceRef.current) return;
+        googleAuthNonceRef.current = null;
+        setGoogleAuthLoading(false);
+        setOtpError(event.data.error || "Popup blocked. Allow popups for this site and try again.");
+        return;
+      }
+      if (event.data?.type === STOREFRONT_GOOGLE_AUTH_POPUP_CLOSED_MESSAGE) {
+        if (event.origin !== window.location.origin) return;
+        if (event.data.nonce && event.data.nonce !== googleAuthNonceRef.current) return;
+        googleAuthNonceRef.current = null;
+        setGoogleAuthLoading(false);
+        return;
+      }
+
+      let trustedOrigin = false;
+      if (centralAppUrl) {
+        try {
+          trustedOrigin = event.origin === new URL(centralAppUrl).origin;
+        } catch {}
+      }
+      if (!trustedOrigin) trustedOrigin = isAllowedCentralAuthOrigin(event.origin);
+      if (!trustedOrigin && event.origin === window.location.origin) trustedOrigin = true;
+      if (!trustedOrigin) return;
+      if (!isStorefrontGoogleAuthMessage(event.data)) return;
+      if (!googleAuthNonceRef.current || event.data.nonce !== googleAuthNonceRef.current) return;
+
+      googleAuthNonceRef.current = null;
+      setGoogleAuthLoading(false);
+
+      if (event.data.ok && event.data.customerId) {
+        completeStorefrontLogin({
+          customerId: event.data.customerId,
+          identityToken: event.data.identityToken,
+          credits: event.data.credits,
+          freeGenerationsUsed: event.data.freeGenerationsUsed,
+          email: event.data.email,
+        });
+      } else {
+        setOtpError(event.data.error || "Google sign-in failed");
+      }
+    };
+
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [isStorefront, completeStorefrontLogin, centralAppUrl]);
+
+  const openGoogleAuthPopup = useCallback(() => {
+    if (!shopDomain) return;
+    const appUrl = (centralAppUrl || buildCentralAppUrl("")).replace(/\/$/, "");
+    if (!appUrl || !googleAuthEnabled) {
+      setOtpError("Google sign-in is not available right now.");
+      return;
+    }
+
+    const nonce = crypto.randomUUID();
+    googleAuthNonceRef.current = nonce;
+    setGoogleAuthLoading(true);
+    setOtpError(null);
+
+    const popupUrl = new URL(`${appUrl}/storefront/google-auth`);
+    popupUrl.searchParams.set("shop", shopDomain);
+    // Popup posts back to the storefront page (parent), which forwards into the iframe.
+    const returnOrigin = (() => {
+      try {
+        if (window.parent !== window) return window.location.origin;
+      } catch {}
+      return window.location.origin;
+    })();
+    popupUrl.searchParams.set("openerOrigin", returnOrigin);
+    popupUrl.searchParams.set("nonce", nonce);
+
+    const url = popupUrl.toString();
+    const inIframe = (() => {
+      try {
+        return window.parent !== window;
+      } catch {
+        return true;
+      }
+    })();
+
+    if (inIframe) {
+      try {
+        window.parent.postMessage(
+          { type: STOREFRONT_OPEN_GOOGLE_AUTH_MESSAGE, url, nonce },
+          returnOrigin,
+        );
+        return;
+      } catch {
+        // Fall through to direct open when parent bridge is unavailable.
+      }
+    }
+
+    const popup = window.open(url, "appaiGoogleAuth", "popup=yes,width=520,height=640");
+    googleAuthPopupRef.current = popup;
+
+    if (!popup) {
+      googleAuthNonceRef.current = null;
+      setGoogleAuthLoading(false);
+      setOtpError("Popup blocked. Allow popups for this site and try again.");
+      return;
+    }
+
+    const poll = window.setInterval(() => {
+      if (!googleAuthPopupRef.current?.closed) return;
+      window.clearInterval(poll);
+      if (googleAuthNonceRef.current) {
+        googleAuthNonceRef.current = null;
+        setGoogleAuthLoading(false);
+      }
+    }, 500);
+  }, [shopDomain, centralAppUrl, googleAuthEnabled]);
   const [savedDesigns, setSavedDesigns] = useState<Array<{id: string; artworkUrl: string; mockupUrls?: string[]; designState?: Record<string, any> | null; prompt: string; stylePreset?: string | null; size?: string | null; frameColor?: string | null; baseTitle: string | null; pageHandle: string | null; productTypeId: string | null; customerId?: string | null; createdAt: string}>>([]);
   const [showGalleryFullModal, setShowGalleryFullModal] = useState(false);
   const [savedDesignsLoading, setSavedDesignsLoading] = useState(false);
@@ -1392,6 +1634,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [couponSuccess, setCouponSuccess] = useState<string | null>(null);
   const [creditsPopoverOpen, setCreditsPopoverOpen] = useState(false);
   const [creditsPurchaseLoading, setCreditsPurchaseLoading] = useState(false);
+  const paidCredits = customer?.credits ?? 0;
+  const freeGenerationsUsedCount = customer?.freeGenerationsUsed ?? 0;
+  const artworksRemaining = storefrontArtworksRemaining({
+    freeGenerationsUsed: freeGenerationsUsedCount,
+    paidCredits,
+  });
+  const hasGenerationCapacity = artworksRemaining > 0;
+  const storefrontLoggedIn = customer?.isLoggedIn ?? !!storefrontCustomerId;
   const [activeTab, setActiveTab] = useState<"generate" | "import">("generate");
   const [isImporting, setIsImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
@@ -1524,6 +1774,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   ]);
   const useAopCustomizer =
     productTypeConfig?.useAopCustomizer ?? !!productTypeConfig?.isAllOverPrint;
+  /** Drag-to-scale artwork overlay — Printify mockup products only (not AOP/flat/mesh). */
+  const printifyTransformEligible = !!(
+    productTypeConfig?.hasPrintifyMockups &&
+    !useAopCustomizer &&
+    productTypeConfig?.onTheFlyTier !== "flat" &&
+    productTypeConfig?.onTheFlyTier !== "mesh"
+  );
   const toteFoldedLayout = productTypeConfig?.effectiveFulfillmentLayout === "tote_folded_v1";
   const defaultZoom = isApparel ? 135 : 100;
   const maxZoom = isApparel ? 135 : 200;
@@ -3385,6 +3642,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   // Mark mockups as stale when transform changes and mockups already exist
   useEffect(() => {
+    if (!printifyTransformEligible) return;
     if (
       (productTypeConfig?.onTheFlyTier === "flat" ||
         productTypeConfig?.onTheFlyTier === "mesh") &&
@@ -3935,27 +4193,47 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         imageUrl: imageUrl,
         prompt: prompt,
       });
-      // Update credits from the response
-      if (data.creditsRemaining !== undefined) {
-        console.log('[EmbedDesign] Updating credits from', customer?.credits, 'to', data.creditsRemaining);
-        if (customer) {
-          const updatedCust = { ...customer, credits: data.creditsRemaining };
-          setCustomer(updatedCust);
-          try { localStorage.setItem('appai_customer', JSON.stringify(updatedCust)); } catch {}
-        } else {
-          // If no customer object yet, create one with the credits
-          setCustomer({
-            id: 'anonymous',
-            credits: data.creditsRemaining,
-            isLoggedIn: false,
-          });
-        }
-        // Show remaining credits notification
-        if (data.creditsRemaining > 0) {
+      // Update credit balance from the async status response
+      if (
+        data.creditsRemaining !== undefined ||
+        data.freeGenerationsUsed !== undefined ||
+        data.artworksRemaining !== undefined
+      ) {
+        const nextPaidCredits = storefrontCustomerId
+          ? (typeof data.creditsRemaining === 'number'
+              ? data.creditsRemaining
+              : customer?.credits ?? 0)
+          : 0;
+        const nextFreeUsed =
+          typeof data.freeGenerationsUsed === 'number'
+            ? data.freeGenerationsUsed
+            : customer?.freeGenerationsUsed ?? 0;
+        const remaining =
+          typeof data.artworksRemaining === 'number'
+            ? data.artworksRemaining
+            : storefrontArtworksRemaining({
+                freeGenerationsUsed: nextFreeUsed,
+                paidCredits: nextPaidCredits,
+              });
+
+        console.log('[EmbedDesign] Updating balance — paid:', nextPaidCredits, 'freeUsed:', nextFreeUsed, 'remaining:', remaining);
+
+        const updatedCust = {
+          ...(customer || {
+            id: storefrontCustomerId || 'anonymous',
+            isLoggedIn: !!storefrontCustomerId,
+          }),
+          credits: nextPaidCredits,
+          freeGenerationsUsed: nextFreeUsed,
+          isLoggedIn: customer?.isLoggedIn ?? !!storefrontCustomerId,
+        };
+        setCustomer(updatedCust);
+        try { localStorage.setItem('appai_customer', JSON.stringify(updatedCust)); } catch {}
+
+        if (remaining > 0) {
+          const noun = storefrontCustomerId && nextPaidCredits > 0 ? 'Artwork' : 'Free Artwork';
           toast({
-            title: storefrontCustomerId
-              ? `${data.creditsRemaining} Artwork${data.creditsRemaining === 1 ? '' : 's'} Remaining`
-              : `${data.creditsRemaining} Free Artwork${data.creditsRemaining === 1 ? '' : 's'} Remaining`,
+            title: `${remaining} ${noun}${remaining === 1 ? '' : 's'} Remaining`,
             description: storefrontCustomerId
               ? 'Credits are refunded when you complete a purchase.'
               : "Tap \u24D8 next to 'Free artworks' for details on getting more.",
@@ -4217,7 +4495,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     const activePresetForCheck = filteredStylePresets.find(p => p.id === selectedPreset);
     if (!prompt.trim() && !activePresetForCheck?.descriptionOptional) return;
 
-    if ((isShopify || isStorefront) && customer && credits <= 0) {
+    if ((isShopify || isStorefront) && customer && !hasGenerationCapacity) {
       notifyInsufficientCredits();
       return;
     }
@@ -5774,6 +6052,30 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           setIsInAppProductSwitching(false);
         });
       }
+
+      // Live scroll-mode switch from the parent embed script (appai-art-embed.js),
+      // sent when its matchMedia breakpoint crosses WITHOUT a page reload — e.g.
+      // Shopify theme editor's mobile-preview toggle resizes the same iframe in
+      // place. See docs/iframe-scroll-architecture.md.
+      if (type === "ai-art-studio:set-scroll-mode" && typeof event.data.mobile === "boolean") {
+        setMobileNativeScroll(event.data.mobile);
+      }
+
+      // Customizer tray "Sign in" item (parent page) — open the OTP panel.
+      // Read localStorage (via hasStoredLoggedInIdentity) instead of React
+      // state: this handler's closure can be stale. Do NOT check only
+      // appai_customer_id — the anonymous bootstrap writes that too, which
+      // silently swallowed this message for any visitor who had already
+      // loaded the designer once.
+      if (type === "ai-art-studio:open-sign-in") {
+        if (!hasStoredLoggedInIdentity()) {
+          setShowOtpLogin(true);
+          setTimeout(() => {
+            document.querySelector('[data-testid="text-login-prompt"]')
+              ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }, 150);
+        }
+      }
     };
 
     window.addEventListener("message", handleMessage);
@@ -5891,7 +6193,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // controls column) so the inner panel can scroll with the mouse wheel.
   useEffect(() => {
     if (!isEmbedded && !isStorefront) return;
-    let fallbackRaf = 0;
 
     const findScrollableAncestor = (el: Element | null): Element | null => {
       let node = el;
@@ -5922,66 +6223,97 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     };
 
     const postWheelToParent = (e: WheelEvent) => {
+      const normalizeDelta = (delta: number, mode: number, pageSize: number) => {
+        if (mode === 1) return delta * 16;
+        if (mode === 2) return delta * pageSize;
+        return delta;
+      };
       window.parent.postMessage({
         type: 'ai-art-studio:wheel',
-        deltaX: e.deltaX,
-        deltaY: e.deltaY,
+        deltaX: normalizeDelta(e.deltaX, e.deltaMode, window.innerWidth || 1200),
+        deltaY: normalizeDelta(e.deltaY, e.deltaMode, window.innerHeight || 800),
         deltaZ: e.deltaZ,
-        deltaMode: e.deltaMode,
+        deltaMode: 0,
       }, '*');
     };
     const handleWheel = (e: WheelEvent) => {
-      const scrollParent = findScrollableAncestor(e.target as Element | null);
+      const target = e.target as Element | null;
+
+      // Let Radix portaled overlays scroll internally when the pointer is over them.
+      if (
+        target?.closest(
+          '[data-radix-select-content],[data-radix-popper-content-wrapper],[data-radix-dropdown-menu-content],[data-radix-popover-content]',
+        )
+      ) {
+        return;
+      }
+
+      // Desktop iframe embed: html/body overflow is hidden and the iframe auto-sizes
+      // to content — the Shopify parent page is the scroll container. Forward wheel
+      // unless the pointer is over a small opt-in inner-scroll panel.
+      if (!mobileNativeScroll) {
+        const innerScroll = target?.closest("[data-appai-inner-scroll]");
+        if (innerScroll && canScrollInDirection(innerScroll, e)) {
+          return;
+        }
+        // Parent theme JS attaches a capture-phase wheel listener on our document
+        // when same-origin; posting again scrolls the parent twice (jittery).
+        if (!(window as Window & { __APPAI_PARENT_WHEEL_FORWARD__?: boolean }).__APPAI_PARENT_WHEEL_FORWARD__) {
+          postWheelToParent(e);
+        }
+        return;
+      }
+
+      const scrollParent = findScrollableAncestor(target);
       if (scrollParent && canScrollInDirection(scrollParent, e)) {
         return;
       }
 
-      // Check if a Radix dropdown/popover is currently open
-      const isRadixOpen = !!document.querySelector(
-        '[data-radix-select-content],[data-radix-popper-content-wrapper],[data-radix-dropdown-menu-content],[data-radix-popover-content]'
-      );
-      if (isRadixOpen) {
-        // A dropdown is open — check if the wheel target is INSIDE the dropdown
-        const target = e.target as Element | null;
-        const insideDropdown = target?.closest(
-          '[data-radix-select-content],[data-radix-popper-content-wrapper],[data-radix-dropdown-menu-content],[data-radix-popover-content]'
-        );
-        if (insideDropdown) return; // let the dropdown scroll naturally
-        // Mouse is outside the dropdown but a dropdown is open — still forward to parent
-        // so the background page can scroll while the dropdown is open
-      }
-      if (mobileNativeScroll) {
-        const scrollEl = document.scrollingElement || document.documentElement;
-        const beforeTop = scrollEl.scrollTop;
-        const beforeLeft = scrollEl.scrollLeft;
-        const deltaX = e.deltaX;
-        const deltaY = e.deltaY;
-        const deltaZ = e.deltaZ;
-        const deltaMode = e.deltaMode;
-        if (fallbackRaf) window.cancelAnimationFrame(fallbackRaf);
-        fallbackRaf = window.requestAnimationFrame(() => {
-          fallbackRaf = 0;
-          const topUnchanged = Math.abs(scrollEl.scrollTop - beforeTop) < 1;
-          const leftUnchanged = Math.abs(scrollEl.scrollLeft - beforeLeft) < 1;
-          if (topUnchanged && leftUnchanged) {
-            window.parent.postMessage({
-              type: 'ai-art-studio:wheel',
-              deltaX,
-              deltaY,
-              deltaZ,
-              deltaMode,
-            }, '*');
-          }
-        });
+      // Mirror the verified touch boundary hand-off (onTouchMove below): only
+      // when the iframe's own scroll is pinned to the edge in the wheel
+      // direction does it hand off to the parent page. Otherwise we scroll
+      // the iframe explicitly ourselves — do NOT rely on the browser's
+      // native wheel-to-scroll default action here. That default action can
+      // silently fail to fire immediately after this iframe transitions from
+      // desktop to mobile-native mode live (Shopify editor's mobile-preview
+      // toggle resizes the same iframe without a reload), even though
+      // overflow/CSS have already switched correctly. See
+      // docs/iframe-scroll-architecture.md before changing this.
+      const scrollEl = document.scrollingElement || document.documentElement;
+      const maxScrollTop = scrollEl.scrollHeight - scrollEl.clientHeight;
+      const maxScrollLeft = scrollEl.scrollWidth - scrollEl.clientWidth;
+      const atBottom = scrollEl.scrollTop >= maxScrollTop - 1;
+      const atTop = scrollEl.scrollTop <= 1;
+      const atRight = scrollEl.scrollLeft >= maxScrollLeft - 1;
+      const atLeft = scrollEl.scrollLeft <= 1;
+      const pinnedY = e.deltaY === 0 || (e.deltaY > 0 && atBottom) || (e.deltaY < 0 && atTop);
+      const pinnedX = e.deltaX === 0 || (e.deltaX > 0 && atRight) || (e.deltaX < 0 && atLeft);
+
+      if (pinnedY && pinnedX) {
+        window.parent.postMessage({
+          type: 'ai-art-studio:wheel',
+          deltaX: e.deltaX,
+          deltaY: e.deltaY,
+          deltaZ: e.deltaZ,
+          deltaMode: e.deltaMode,
+        }, '*');
         return;
       }
-      postWheelToParent(e);
+
+      e.preventDefault();
+      try {
+        scrollEl.scrollBy({ top: e.deltaY, left: e.deltaX, behavior: 'instant' as ScrollBehavior });
+      } catch {
+        scrollEl.scrollTop += e.deltaY;
+        scrollEl.scrollLeft += e.deltaX;
+      }
     };
-    // Passive because we do not block native iframe scrolling.
-    window.addEventListener('wheel', handleWheel, { passive: true });
+    // Capture phase so canvas/drag overlays cannot stop propagation before we forward.
+    // Not passive: the mobile-native branch calls preventDefault so it can take
+    // over scrolling explicitly instead of depending on native wheel-scroll.
+    window.addEventListener('wheel', handleWheel, { passive: false, capture: true });
     return () => {
-      if (fallbackRaf) window.cancelAnimationFrame(fallbackRaf);
-      window.removeEventListener('wheel', handleWheel);
+      window.removeEventListener('wheel', handleWheel, { capture: true } as EventListenerOptions);
     };
   }, [isEmbedded, isStorefront, mobileNativeScroll]);
 
@@ -6447,8 +6779,18 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   }, [selectedSize, selectedFrameColor, shopifyVariants, isStorefront]);
 
   // Fetch saved designs when logged in
-  const isLoggedIn = customer?.isLoggedIn ?? !!storefrontCustomerId;
-  const credits = customer?.credits ?? 0;
+  const isLoggedIn = storefrontLoggedIn;
+  const credits = paidCredits;
+  const artworksRemainingLabel = (() => {
+    if (sessionLoading && !customer) {
+      return `${STOREFRONT_FREE_GENERATION_LIMIT} free artworks`;
+    }
+    if (artworksRemaining > 0) {
+      const noun = isLoggedIn ? 'artwork' : 'free artwork';
+      return `${artworksRemaining} ${noun}${artworksRemaining !== 1 ? 's' : ''} remaining`;
+    }
+    return '0 artworks remaining';
+  })();
   useEffect(() => {
     if (!isStorefront || creditsReturnHandledRef.current || !shopDomain) return;
     const params = new URLSearchParams(window.location.search);
@@ -6647,6 +6989,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     getPreferredMockupUrl()
   );
   const canShowDragHint = !!(
+    printifyTransformEligible &&
     generatedDesign?.imageUrl &&
     selectedMockupIndex === 0 &&
     !showingMockupAtArtworkSlot
@@ -6743,7 +7086,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         ) : (
           <Button
             onClick={() => {
-              if ((isShopify || isStorefront) && customer && credits <= 0) {
+              if ((isShopify || isStorefront) && customer && !hasGenerationCapacity) {
                 notifyInsufficientCredits();
                 return;
               }
@@ -6825,46 +7168,33 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               <Plus className="w-3 h-3" />
               Start Fresh Design
             </button>
+            {isStorefront && (
+              <div className="text-xs text-muted-foreground flex items-center justify-center gap-1">
+                {artworksRemainingLabel}
+                <button
+                  type="button"
+                  className="inline-flex items-center"
+                  aria-label="Pricing info"
+                  onClick={() => setCreditsPopoverOpen(true)}
+                >
+                  <Info className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground transition-colors" />
+                </button>
+              </div>
+            )}
           </div>
         ) : (
           (isShopify || isStorefront) && (
-            <p className="text-xs text-muted-foreground mt-1 flex items-center justify-center gap-1">
-              {(() => {
-                if (storefrontCustomerId && credits > 0) return `${credits} artwork${credits !== 1 ? 's' : ''} remaining`;
-                if (credits > 0) return `${credits} free artwork${credits !== 1 ? 's' : ''}`;
-                if (customer) return '0 artworks remaining';
-                return '10 free artworks';
-              })()}
-              <Popover open={creditsPopoverOpen} onOpenChange={setCreditsPopoverOpen}>
-                <PopoverTrigger asChild>
-                  <button type="button" className="inline-flex items-center" aria-label="Pricing info">
-                    <Info className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground transition-colors" />
-                  </button>
-                </PopoverTrigger>
-                <PopoverContent className="text-sm space-y-2 w-72" side="bottom" align="start">
-                  <p className="font-medium">Artwork Credits</p>
-                  <p className="text-muted-foreground">You get 10 free AI-generated artworks to try.</p>
-                  <p className="text-muted-foreground">After that, it&apos;s just $1 for 10 more credits.</p>
-                  <p className="text-muted-foreground">Credits are fully refunded when you complete a physical product purchase!</p>
-                  <Button
-                    type="button"
-                    size="sm"
-                    className="w-full"
-                    onClick={handleBuyMoreCredits}
-                    disabled={creditsPurchaseLoading}
-                  >
-                    {creditsPurchaseLoading ? (
-                      <>
-                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                        Opening Checkout...
-                      </>
-                    ) : (
-                      "More Credits"
-                    )}
-                  </Button>
-                </PopoverContent>
-              </Popover>
-            </p>
+            <div className="text-xs text-muted-foreground mt-1 flex items-center justify-center gap-1">
+              {artworksRemainingLabel}
+              <button
+                type="button"
+                className="inline-flex items-center"
+                aria-label="Pricing info"
+                onClick={() => setCreditsPopoverOpen(true)}
+              >
+                <Info className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground transition-colors" />
+              </button>
+            </div>
           )
         )}
       </div>
@@ -6873,6 +7203,32 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   return (
     <div className={`p-3 sm:p-4 ${isEmbedded || isStorefront ? "bg-transparent" : "bg-background min-h-screen"}`}>
+      <Dialog open={creditsPopoverOpen} onOpenChange={setCreditsPopoverOpen}>
+        <DialogContent className="text-sm space-y-3 sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Artwork Credits</DialogTitle>
+          </DialogHeader>
+          <p className="text-muted-foreground">You get {STOREFRONT_FREE_GENERATION_LIMIT} free AI-generated artworks to try.</p>
+          <p className="text-muted-foreground">After that, it&apos;s just $1 for 10 more credits.</p>
+          <p className="text-muted-foreground">Credits are fully refunded when you complete a physical product purchase!</p>
+          <Button
+            type="button"
+            size="sm"
+            className="w-full"
+            onClick={handleBuyMoreCredits}
+            disabled={creditsPurchaseLoading}
+          >
+            {creditsPurchaseLoading ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                Opening Checkout...
+              </>
+            ) : (
+              "More Credits"
+            )}
+          </Button>
+        </DialogContent>
+      </Dialog>
       {/* Guide box shimmer + title shimmer animations */}
       <style>{`
         /* Single graceful left-to-right shimmer sweep on guide boxes */
@@ -7055,17 +7411,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     data-testid="text-login-prompt"
                   >
                     <LogIn className="w-4 h-4" />
-                    Sign in to save designs
+                    Sign in or Create an Account to save designs
                   </button>
                 )}
 
-                {/* OTP Login — absolute overlay, doesn't push content */}
+                {/* Auth panel — absolute overlay, doesn't push content */}
                 {showOtpLogin && (
                   <div className="absolute left-0 top-full mt-2 z-50" style={{ maxWidth: '400px', width: '100%' }}>
                     <Card className="border-primary bg-background shadow-lg">
                       <CardContent className="py-4">
                         <div className="flex items-center justify-between mb-3">
-                          <h3 className="text-sm font-semibold">Sign in with Email</h3>
+                          <h3 className="text-sm font-semibold">Sign in or create account</h3>
                           <button
                             onClick={() => { setShowOtpLogin(false); setOtpStep('email'); setOtpError(null); setOtpCode(''); }}
                             className="text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-1"
@@ -7073,11 +7429,41 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             <X className="w-4 h-4" />
                           </button>
                         </div>
+                        <p className="text-xs text-muted-foreground mb-3">
+                          Save designs, track credits, and pick up where you left off. New here? We&apos;ll create your account automatically.
+                        </p>
                         {otpError && (
                           <p className="text-destructive text-xs mb-2">{otpError}</p>
                         )}
+                        {googleAuthEnabled && (
+                          <div className="space-y-3 mb-3">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="w-full"
+                              disabled={googleAuthLoading}
+                              onClick={openGoogleAuthPopup}
+                            >
+                              {googleAuthLoading ? (
+                                <>
+                                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                  Signing in with Google…
+                                </>
+                              ) : (
+                                "Continue with Google"
+                              )}
+                            </Button>
+                            <div className="flex items-center gap-2">
+                              <div className="h-px flex-1 bg-border" />
+                              <span className="text-xs text-muted-foreground">or</span>
+                              <div className="h-px flex-1 bg-border" />
+                            </div>
+                          </div>
+                        )}
                         {otpStep === 'email' ? (
-                          <div className="flex gap-2">
+                          <div className="space-y-2">
+                            <p className="text-xs text-muted-foreground">Continue with email</p>
+                            <div className="flex gap-2">
                             <input
                               type="email"
                               placeholder="Enter your email"
@@ -7128,6 +7514,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                               {otpLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Send Code'}
                             </Button>
                           </div>
+                          </div>
                         ) : (
                           <div className="space-y-2">
                             <p className="text-xs text-muted-foreground">Enter the 6-digit code sent to {otpEmail}</p>
@@ -7153,33 +7540,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                                       .then(r => r.json())
                                       .then(data => {
                                         if (data.ok) {
-                                          const newCustomerId = data.customerId;
-                                          setStorefrontCustomerId(newCustomerId);
-                                          if (data.identityToken) setStorefrontIdentityToken(data.identityToken);
-                                          setCustomer({ email: otpEmail.trim(), id: newCustomerId, credits: data.credits || 0, freeGenerationsUsed: data.freeGenerationsUsed ?? 0, isLoggedIn: true });
-                                          setGalleryLimit(data.galleryLimit || 10);
-                                          try {
-                                            localStorage.setItem('appai_customer_id', newCustomerId);
-                                            if (data.identityToken) localStorage.setItem('appai_identity_token', data.identityToken);
-                                            localStorage.setItem('appai_otp_email', otpEmail.trim());
-                                            localStorage.setItem('appai_customer', JSON.stringify({ email: otpEmail.trim(), id: newCustomerId, credits: data.credits || 0, freeGenerationsUsed: data.freeGenerationsUsed ?? 0, isLoggedIn: true }));
-                                          } catch {}
-                                          setShowOtpLogin(false);
-                                          setOtpStep('email');
-                                          setOtpCode('');
-                                          if (anonSessionId && shopDomain) {
-                                            safeFetch(`${API_BASE}/api/storefront/merge-session`, {
-                                              method: 'POST',
-                                              headers: { 'Content-Type': 'application/json' },
-                                              body: JSON.stringify({ sessionId: anonSessionId, customerId: newCustomerId, shop: shopDomain }),
-                                            }).catch(() => {});
-                                          }
-                                          if (shopDomain) {
-                                            setSavedDesignsLoading(true);
-                                            safeFetch(`${API_BASE}/api/storefront/customizer/my-designs?shop=${encodeURIComponent(shopDomain)}&customerId=${encodeURIComponent(newCustomerId)}`)
-                                              .then(r => r.json()).then(d => { if (d.designs) setSavedDesigns(d.designs); })
-                                              .catch(() => {}).finally(() => setSavedDesignsLoading(false));
-                                          }
+                                          completeStorefrontLogin({ ...data, email: otpEmail.trim() });
                                         } else {
                                           setOtpError(data.error || 'Invalid code');
                                         }
@@ -7203,33 +7564,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                                     .then(r => r.json())
                                     .then(data => {
                                       if (data.ok) {
-                                        const newCustomerId = data.customerId;
-                                        setStorefrontCustomerId(newCustomerId);
-                                        if (data.identityToken) setStorefrontIdentityToken(data.identityToken);
-                                        setCustomer({ email: otpEmail.trim(), id: newCustomerId, credits: data.credits || 0, freeGenerationsUsed: data.freeGenerationsUsed ?? 0, isLoggedIn: true });
-                                        setGalleryLimit(data.galleryLimit || 10);
-                                        try {
-                                          localStorage.setItem('appai_customer_id', newCustomerId);
-                                          if (data.identityToken) localStorage.setItem('appai_identity_token', data.identityToken);
-                                          localStorage.setItem('appai_otp_email', otpEmail.trim());
-                                          localStorage.setItem('appai_customer', JSON.stringify({ email: otpEmail.trim(), id: newCustomerId, credits: data.credits || 0, freeGenerationsUsed: data.freeGenerationsUsed ?? 0, isLoggedIn: true }));
-                                        } catch {}
-                                        setShowOtpLogin(false);
-                                        setOtpStep('email');
-                                        setOtpCode('');
-                                        if (anonSessionId && shopDomain) {
-                                          safeFetch(`${API_BASE}/api/storefront/merge-session`, {
-                                            method: 'POST',
-                                            headers: { 'Content-Type': 'application/json' },
-                                            body: JSON.stringify({ sessionId: anonSessionId, customerId: newCustomerId, shop: shopDomain }),
-                                          }).catch(() => {});
-                                        }
-                                        if (shopDomain) {
-                                          setSavedDesignsLoading(true);
-                                          safeFetch(`${API_BASE}/api/storefront/customizer/my-designs?shop=${encodeURIComponent(shopDomain)}&customerId=${encodeURIComponent(newCustomerId)}`)
-                                            .then(r => r.json()).then(d => { if (d.designs) setSavedDesigns(d.designs); })
-                                            .catch(() => {}).finally(() => setSavedDesignsLoading(false));
-                                        }
+                                        completeStorefrontLogin({ ...data, email: otpEmail.trim() });
                                       } else {
                                         setOtpError(data.error || 'Invalid code');
                                       }
@@ -7287,6 +7622,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                           <p className="text-sm text-muted-foreground py-2">No saved designs yet. Generate a design to see it here.</p>
                         ) : (
                           <div
+                            data-appai-inner-scroll
                             className="grid grid-cols-2 sm:grid-cols-3 gap-3 max-h-[360px] overflow-y-auto overscroll-contain pr-1"
                             onWheel={(e) => {
                               const el = e.currentTarget;
@@ -7620,7 +7956,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     /* ── Generate state ── */
                     <Button
                       onClick={() => {
-                        if ((isShopify || isStorefront) && customer && credits <= 0) {
+                        if ((isShopify || isStorefront) && customer && !hasGenerationCapacity) {
                           notifyInsufficientCredits();
                           return;
                         }
@@ -7699,46 +8035,33 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         <Plus className="w-3 h-3" />
                         Start Fresh Design
                       </button>
+                      {isStorefront && (
+                        <div className="text-xs text-muted-foreground flex items-center justify-center gap-1">
+                          {artworksRemainingLabel}
+                          <button
+                            type="button"
+                            className="inline-flex items-center"
+                            aria-label="Pricing info"
+                            onClick={() => setCreditsPopoverOpen(true)}
+                          >
+                            <Info className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground transition-colors" />
+                          </button>
+                        </div>
+                      )}
                     </div>
                   ) : (
                     (isShopify || isStorefront) && (
-                      <p className="text-xs text-muted-foreground mt-1 flex items-center justify-center gap-1">
-                        {(() => {
-                          if (storefrontCustomerId && credits > 0) return `${credits} artwork${credits !== 1 ? 's' : ''} remaining`;
-                          if (credits > 0) return `${credits} free artwork${credits !== 1 ? 's' : ''}`;
-                          if (customer) return '0 artworks remaining';
-                          return '10 free artworks';
-                        })()}
-                        <Popover open={creditsPopoverOpen} onOpenChange={setCreditsPopoverOpen}>
-                          <PopoverTrigger asChild>
-                            <button type="button" className="inline-flex items-center" aria-label="Pricing info">
-                              <Info className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground transition-colors" />
-                            </button>
-                          </PopoverTrigger>
-                          <PopoverContent className="text-sm space-y-2 w-72" side="bottom" align="start">
-                            <p className="font-medium">Artwork Credits</p>
-                            <p className="text-muted-foreground">You get 10 free AI-generated artworks to try.</p>
-                            <p className="text-muted-foreground">After that, it&apos;s just $1 for 10 more credits.</p>
-                            <p className="text-muted-foreground">Credits are fully refunded when you complete a physical product purchase!</p>
-                            <Button
-                              type="button"
-                              size="sm"
-                              className="w-full"
-                              onClick={handleBuyMoreCredits}
-                              disabled={creditsPurchaseLoading}
-                            >
-                              {creditsPurchaseLoading ? (
-                                <>
-                                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                                  Opening Checkout...
-                                </>
-                              ) : (
-                                "More Credits"
-                              )}
-                            </Button>
-                          </PopoverContent>
-                        </Popover>
-                      </p>
+                      <div className="text-xs text-muted-foreground mt-1 flex items-center justify-center gap-1">
+                        {artworksRemainingLabel}
+                        <button
+                          type="button"
+                          className="inline-flex items-center"
+                          aria-label="Pricing info"
+                          onClick={() => setCreditsPopoverOpen(true)}
+                        >
+                          <Info className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground transition-colors" />
+                        </button>
+                      </div>
                     )
                   )}
                 </div>
@@ -8395,6 +8718,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 maxHeight: "520px",
               }}
               data-testid="container-mockup"
+              data-appai-wheel-forward="true"
             >
               <div className="absolute inset-0">
                 {(() => {
@@ -8451,7 +8775,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       selectedFrameColor={selectedFrameColorConfig}
                       transform={transform}
                       onTransformChange={setTransform}
-                      enableDrag={!!generatedDesign?.imageUrl && selectedMockupIndex === 0}
+                      enableDrag={!!generatedDesign?.imageUrl && selectedMockupIndex === 0 && printifyTransformEligible}
                       designerType={productTypeConfig?.designerType || "generic"}
                       printShape={productTypeConfig?.printShape || "rectangle"}
                       canvasConfig={productTypeConfig?.canvasConfig}
@@ -8526,7 +8850,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               })()}
 
               {/* Stale mockups overlay */}
-              {atcMockupsStaleBlocks && !mockupLoading && generatedDesign?.imageUrl && (
+              {atcHasMockups && atcMockupsStaleBlocks && !mockupLoading && generatedDesign?.imageUrl && (
                 <div className="absolute inset-0 flex items-end justify-center pb-3 pointer-events-none z-20">
                   <span className="text-white text-sm font-semibold bg-black/60 rounded-full px-3 py-1 animate-pulse">
                     Refresh your Mockups

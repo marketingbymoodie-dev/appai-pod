@@ -37,6 +37,20 @@ export function serveStatic(app: Express) {
   const indexPath = path.join(publicDir, "index.html");
   const indexExists = fs.existsSync(indexPath);
 
+  /** Storefront routes must not load App Bridge — the `shop` query param would trigger admin redirect. */
+  let indexHtml = "";
+  let storefrontIndexHtml = "";
+  if (indexExists) {
+    indexHtml = fs.readFileSync(indexPath, "utf-8");
+    storefrontIndexHtml = indexHtml
+      .replace(/<meta name="shopify-api-key"[^>]*>\s*/g, "")
+      .replace(/<script src="https:\/\/cdn\.shopify\.com\/shopifycloud\/app-bridge\.js"><\/script>\s*/g, "");
+  }
+
+  function isStorefrontSpaPath(pathname: string): boolean {
+    return pathname.startsWith("/s/") || pathname.startsWith("/storefront/");
+  }
+
   // Startup log (only once)
   if (!staticInitialized) {
     staticInitialized = true;
@@ -76,6 +90,11 @@ export function serveStatic(app: Express) {
 
     // Log SPA fallback requests in production
     console.log(`[SPA fallback] ${req.method} ${req.originalUrl}`);
+
+    if (isStorefrontSpaPath(req.path) && storefrontIndexHtml) {
+      res.status(200).set({ "Content-Type": "text/html; charset=UTF-8" }).end(storefrontIndexHtml);
+      return;
+    }
 
     res.sendFile(indexPath, (err) => {
       if (err) {

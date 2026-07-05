@@ -56,7 +56,10 @@ export async function setupVite(server: Server, app: Express) {
       // The storefront designer uses the public storefront API and does NOT need
       // App Bridge, so it's safe to remove it for these routes in development.
       // Production is unaffected: this file is only used when NODE_ENV=development.
-      const isStorefrontRoute = url.startsWith("/s/") || url.split("?")[0] === "/s/designer";
+      const pathOnly = url.split("?")[0] ?? url;
+      const isStorefrontRoute =
+        pathOnly.startsWith("/s/") ||
+        pathOnly.startsWith("/storefront/");
       if (isStorefrontRoute) {
         template = template
           .replace(/<meta name="shopify-api-key"[^>]*>\s*/g, "")

@@ -11,6 +11,7 @@ import DesignPage from "@/pages/design";
 import DesignsPage from "@/pages/designs";
 import OrdersPage from "@/pages/orders";
 import EmbedDesign from "@/pages/embed-design";
+import StorefrontGoogleAuthPage from "@/pages/storefront-google-auth";
 import TestSizeChart from "@/pages/test-size-chart";
 import ZipHoodieAopCalibrationPage from "@/pages/mockup-calibration/zip-hoodie-aop";
 import AopCalibrationMapperPage from "@/pages/aop-calibration-mapper";
@@ -18,6 +19,7 @@ import HoodieTemplateMapperPage from "@/pages/hoodie-template-mapper";
 import FlatCalibrationMapperPage from "@/pages/flat-calibration-mapper";
 import PlatformCatalogPage from "@/pages/platform-catalog";
 import OperatorCatalogPage from "@/pages/operator-catalog";
+import PlatformGenerationHealthPage from "@/pages/platform-generation-health";
 import NotFound from "@/pages/not-found";
 
 import AdminDashboard from "@/pages/admin/dashboard";
@@ -53,10 +55,12 @@ function AppRouter() {
       <Route path="/admin/hoodie-template-mapper" component={HoodieTemplateMapperPage} />
       <Route path="/admin/platform/catalog" component={PlatformCatalogPage} />
       <Route path="/admin/platform/operator-catalog" component={OperatorCatalogPage} />
+      <Route path="/admin/platform/generation-health" component={PlatformGenerationHealthPage} />
       <Route path="/admin/platform/flat-calibrator/:blueprintId" component={FlatCalibrationMapperPage} />
 
       {/* Storefront designer — dedicated path, never initializes App Bridge */}
       <Route path="/s/designer" component={EmbedDesign} />
+      <Route path="/storefront/google-auth" component={StorefrontGoogleAuthPage} />
 
       {/* Admin */}
       <Route path="/admin/settings" component={AdminSettings} />
