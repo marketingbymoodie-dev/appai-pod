@@ -968,6 +968,11 @@ export function isValidAopTemplateSlug(name: string): boolean {
   return AOP_TEMPLATE_SLUG_RE.test(name);
 }
 
+/** Normalize free-text (labels, pasted names) into a mapper slug. */
+export function normalizeAopTemplateSlugInput(raw: string): string {
+  return raw.trim().replace(/[^a-zA-Z0-9_\-]/g, "_").slice(0, 64);
+}
+
 export function defaultHoodieTypeForBlueprint(blueprintId: number): string {
   if (isPillowWrapBlueprint(blueprintId)) return "pillow-wrap-aop";
   if (isPulloverHoodieBlueprint(blueprintId)) return "pullover-hoodie-aop";

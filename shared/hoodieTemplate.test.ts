@@ -12,6 +12,7 @@ import {
   drawMockupImageInCanvas,
   hoodiePanelKeyToPrintifyPosition,
   isValidAopTemplateSlug,
+  normalizeAopTemplateSlugInput,
   MAX_MESH_COLS,
   migrateSweatshirtDesignGroups,
   mockupDrawRect,
@@ -55,6 +56,14 @@ describe("isValidAopTemplateSlug", () => {
   it("accepts admin slugs", () => {
     expect(isValidAopTemplateSlug("pullover-hoodie-aop-L")).toBe(true);
     expect(isValidAopTemplateSlug("bad slug")).toBe(false);
+  });
+});
+
+describe("normalizeAopTemplateSlugInput", () => {
+  it("converts labels with spaces into admin slugs", () => {
+    expect(normalizeAopTemplateSlugInput("Spun Polyester Square Pillow")).toBe(
+      "Spun_Polyester_Square_Pillow",
+    );
   });
 });
 

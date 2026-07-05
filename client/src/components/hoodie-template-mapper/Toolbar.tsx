@@ -35,6 +35,7 @@ import { clearAutosave } from "./lib/autosave";
 
 type Props = {
   onOpenLoadDialog: () => void;
+  onLoadTemplate: (slug: string) => void;
 };
 
 const TOOL_BUTTONS: Array<{
@@ -96,7 +97,7 @@ function publishToastLines(
   };
 }
 
-export default function Toolbar({ onOpenLoadDialog }: Props) {
+export default function Toolbar({ onOpenLoadDialog, onLoadTemplate }: Props) {
   const { toast } = useToast();
   const tool = useHoodieMapperStore((s) => s.tool);
   const view = useHoodieMapperStore((s) => s.view);
@@ -468,6 +469,7 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
       <FreshStartDialog
         open={freshStartOpen}
         onOpenChange={setFreshStartOpen}
+        onLoadExisting={onLoadTemplate}
         onConfirm={(template) => {
           actions.loadTemplate(template);
           clearAutosave();

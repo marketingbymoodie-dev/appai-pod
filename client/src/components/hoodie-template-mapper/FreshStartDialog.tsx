@@ -13,6 +13,7 @@ import {
 import {
   createFreshAopTemplate,
   isValidAopTemplateSlug,
+  normalizeAopTemplateSlugInput,
   PULOVER_HOODIE_BLUEPRINT_ID,
   PILLOW_WRAP_BLUEPRINT_ID,
   ZIP_HOODIE_BLUEPRINT_ID,
@@ -24,13 +25,10 @@ type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onConfirm: (template: ReturnType<typeof createFreshAopTemplate>) => void;
+  onLoadExisting?: (slug: string) => void;
 };
 
-function slugifyInput(raw: string): string {
-  return raw.replace(/[^a-zA-Z0-9_\-]/g, "_").slice(0, 64);
-}
-
-export default function FreshStartDialog({ open, onOpenChange, onConfirm }: Props) {
+export default function FreshStartDialog({ open, onOpenChange, onConfirm, onLoadExisting }: Props) {
   const [slug, setSlug] = useState("");
   const [label, setLabel] = useState("");
   const [blueprintId, setBlueprintId] = useState(String(PULOVER_HOODIE_BLUEPRINT_ID));
@@ -94,13 +92,31 @@ export default function FreshStartDialog({ open, onOpenChange, onConfirm }: Prop
               id="fresh-slug"
               value={slug}
               placeholder="e.g. sweatshirt-aop-L"
-              onChange={(e) => setSlug(slugifyInput(e.target.value))}
+              onChange={(e) => setSlug(normalizeAopTemplateSlugInput(e.target.value))}
               data-testid="fresh-start-slug"
             />
             {slugTaken && (
-              <p className="text-xs text-destructive">
-                Slug already saved — use Load to edit it, or pick a different name.
-              </p>
+              <div className="space-y-2">
+                <p className="text-xs text-destructive">
+                  Slug <span className="font-mono">{normalizedSlug}</span> is already saved — load it to edit, or
+                  pick a different name.
+                </p>
+                {onLoadExisting && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    className="h-7 text-xs"
+                    onClick={() => {
+                      onLoadExisting(normalizedSlug);
+                      onOpenChange(false);
+                    }}
+                    data-testid="fresh-start-load-existing"
+                  >
+                    Load {normalizedSlug}
+                  </Button>
+                )}
+              </div>
             )}
             {slugInvalid && !slugTaken && (
               <p className="text-xs text-destructive">Use letters, numbers, dashes, underscores (max 64 chars).</p>
