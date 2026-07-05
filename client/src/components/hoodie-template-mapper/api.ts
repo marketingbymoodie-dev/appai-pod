@@ -200,7 +200,8 @@ export async function uploadSourcePanel(
     const err = await r.text().catch(() => "");
     throw new Error(`Failed to upload source panel: ${err.slice(0, 200) || r.status}`);
   }
-  return (await r.json()) as { filename: string; url: string };
+  const data = (await r.json()) as { filename: string; url: string; updatedAt?: string };
+  return { filename: data.filename, url: appendCacheBust(data.url, data.updatedAt ?? Date.now()) };
 }
 
 export async function uploadReferenceOverlay(
@@ -221,7 +222,8 @@ export async function uploadReferenceOverlay(
     const err = await r.text().catch(() => "");
     throw new Error(`Failed to upload reference overlay: ${err.slice(0, 200) || r.status}`);
   }
-  return (await r.json()) as { filename: string; url: string };
+  const data = (await r.json()) as { filename: string; url: string; updatedAt?: string };
+  return { filename: data.filename, url: appendCacheBust(data.url, data.updatedAt ?? Date.now()) };
 }
 
 export type FetchPrintifyBlanksResult = {

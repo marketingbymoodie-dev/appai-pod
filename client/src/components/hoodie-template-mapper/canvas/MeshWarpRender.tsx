@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Shape } from "react-konva";
-import Konva from "konva";
 import type { MaskLayer } from "@shared/hoodieTemplate";
 import { svgPathToAnchors } from "../lib/svgPath";
 import { drawMeshWarp } from "../lib/meshWarp";
+import { useMapperAssetImage } from "../lib/useMapperAssetImage";
+import Konva from "konva";
 
 /**
  * Read-only mesh warp renderer for a single layer. Used by
@@ -24,38 +25,8 @@ type Props = {
   layer: MaskLayer;
 };
 
-function isCrossOrigin(src: string): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    const url = new URL(src, window.location.href);
-    return url.origin !== window.location.origin;
-  } catch {
-    return false;
-  }
-}
-
 function useSourceImage(src: string | null | undefined): HTMLImageElement | null {
-  const [img, setImg] = useState<HTMLImageElement | null>(null);
-  useEffect(() => {
-    if (!src) {
-      setImg(null);
-      return;
-    }
-    let cancelled = false;
-    const next = new Image();
-    if (isCrossOrigin(src)) next.crossOrigin = "anonymous";
-    next.onload = () => {
-      if (!cancelled) setImg(next);
-    };
-    next.onerror = () => {
-      if (!cancelled) setImg(null);
-    };
-    next.src = src;
-    return () => {
-      cancelled = true;
-    };
-  }, [src]);
-  return img;
+  return useMapperAssetImage(src).img;
 }
 
 export default function MeshWarpRender({ layer }: Props) {

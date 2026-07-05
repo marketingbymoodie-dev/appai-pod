@@ -4,6 +4,7 @@ import Konva from "konva";
 import type { MaskLayer, Pt } from "@shared/hoodieTemplate";
 import { svgPathToAnchors } from "../lib/svgPath";
 import { drawMeshWarp } from "../lib/meshWarp";
+import { useMapperAssetImage } from "../lib/useMapperAssetImage";
 
 /**
  * Mesh-warp editor overlay.
@@ -54,49 +55,6 @@ type Props = {
   onScaleMesh: (factor: number, anchor: Pt) => void;
 };
 
-function isCrossOrigin(src: string): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    const url = new URL(src, window.location.href);
-    return url.origin !== window.location.origin;
-  } catch {
-    return false;
-  }
-}
-
-function useSourceImage(src: string | null | undefined): {
-  img: HTMLImageElement | null;
-  loading: boolean;
-  error: string | null;
-} {
-  const [state, setState] = useState<{
-    img: HTMLImageElement | null;
-    loading: boolean;
-    error: string | null;
-  }>({ img: null, loading: false, error: null });
-  useEffect(() => {
-    if (!src) {
-      setState({ img: null, loading: false, error: null });
-      return;
-    }
-    let cancelled = false;
-    setState({ img: null, loading: true, error: null });
-    const img = new Image();
-    if (isCrossOrigin(src)) img.crossOrigin = "anonymous";
-    img.onload = () => {
-      if (!cancelled) setState({ img, loading: false, error: null });
-    };
-    img.onerror = () => {
-      if (!cancelled) setState({ img: null, loading: false, error: `Failed to load ${src}` });
-    };
-    img.src = src;
-    return () => {
-      cancelled = true;
-    };
-  }, [src]);
-  return state;
-}
-
 const HANDLE_RADIUS_PX = 5;
 const HANDLE_HIT_RADIUS_PX = 11;
 const GRID_LINE_COLOR = "rgba(192, 132, 252, 0.55)";
@@ -135,7 +93,7 @@ export default function MeshWarpOverlay({
   onTranslateMesh,
   onScaleMesh,
 }: Props) {
-  const { img, loading, error } = useSourceImage(layer.productionPanelSrc);
+  const { img, loading, error } = useMapperAssetImage(layer.productionPanelSrc);
   const mesh = layer.mesh;
   const polygon = useMemo(() => svgPathToAnchors(layer.maskPath), [layer.maskPath]);
   const [rotateHover, setRotateHover] = useState(false);

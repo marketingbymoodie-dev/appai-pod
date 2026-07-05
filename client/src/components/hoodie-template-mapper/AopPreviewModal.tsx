@@ -28,6 +28,8 @@ import {
   DEFAULT_ARTWORK_PLACEMENT,
 } from "./lib/aopPreview";
 import DesignRectHandlesOverlay from "./DesignRectHandlesOverlay";
+import { loadMapperAssetImage } from "./lib/mapperAssetImage";
+import { loadMapperAssetImageMap } from "./lib/useMapperAssetImage";
 
 /**
  * Live AOP preview modal — drops the customer's artwork onto the hoodie
@@ -343,22 +345,20 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
       return;
     }
     let cancelled = false;
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => {
-      if (!cancelled) setMockupImg(img);
-    };
-    img.onerror = () => {
-      if (!cancelled) {
-        setMockupImg(null);
-        toast({
-          title: "Couldn't load mockup",
-          description: `Failed to load ${mockupSrc}`,
-          variant: "destructive",
-        });
-      }
-    };
-    img.src = mockupSrc;
+    loadMapperAssetImage(mockupSrc)
+      .then((img) => {
+        if (!cancelled) setMockupImg(img);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setMockupImg(null);
+          toast({
+            title: "Couldn't load mockup",
+            description: `Failed to load ${mockupSrc}`,
+            variant: "destructive",
+          });
+        }
+      });
     return () => {
       cancelled = true;
     };
@@ -418,21 +418,8 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
       return;
     }
     let cancelled = false;
-    const next = new Map<string, HTMLImageElement>();
-    let remaining = layerSrcUrls.length;
-    layerSrcUrls.forEach((url) => {
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-      img.onload = () => {
-        next.set(url, img);
-        remaining -= 1;
-        if (remaining === 0 && !cancelled) setLayerSources(new Map(next));
-      };
-      img.onerror = () => {
-        remaining -= 1;
-        if (remaining === 0 && !cancelled) setLayerSources(new Map(next));
-      };
-      img.src = url;
+    loadMapperAssetImageMap(layerSrcUrls).then((next) => {
+      if (!cancelled) setLayerSources(next);
     });
     return () => {
       cancelled = true;

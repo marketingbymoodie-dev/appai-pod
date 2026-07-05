@@ -40,6 +40,7 @@ import { useHoodieMapperStore } from "./store";
 import { svgPathToAnchors } from "./lib/svgPath";
 import { readImageDimensions, uploadReferenceOverlay, uploadSourcePanel } from "./api";
 import { loadMapperAssetImage } from "./lib/mapperAssetImage";
+import { MapperAssetThumbnail } from "./lib/useMapperAssetImage";
 import { detectMockupContentBounds } from "./lib/mockupCrop";
 import { applyMockupCropUpload } from "./lib/mockupCropApply";
 import MockupCropControls from "./MockupCropControls";
@@ -882,7 +883,7 @@ function SourceArtworkSection({ layer }: { layer: MaskLayer }) {
       {layer.productionPanelSrc ? (
         <div className="mt-2 space-y-2">
           <div className="overflow-hidden rounded border border-slate-800 bg-slate-950">
-            <img
+            <MapperAssetThumbnail
               src={layer.productionPanelSrc}
               alt={`Source for ${layer.name}`}
               className="block max-h-32 w-full object-contain bg-slate-900"
