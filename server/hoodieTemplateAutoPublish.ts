@@ -22,6 +22,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { readAssetBuffer, readTemplateText, TEMPLATES_DIR, MOCKUPS_DIR } from "./aopMapperStorage";
 import {
   ensureHoodieTemplatesBucket,
   uploadToHoodieTemplatesBucket,
@@ -36,15 +37,17 @@ import { invalidateHoodieTemplateCache } from "./hoodieTemplateStore";
  * (e.g. `unisex-zip-hoodie-aop-L`). Templates not listed here are not
  * auto-published.
  */
-const ADMIN_TO_PUBLIC_NAME: Record<string, string> = {
+export const ADMIN_TO_PUBLIC_NAME: Record<string, string> = {
   "zip-hoodie-aop-L": "unisex-zip-hoodie-aop-L",
   "pullover-hoodie-aop-L": "unisex-pullover-hoodie-aop-L",
   "sweatshirt-aop-L": "unisex-sweatshirt-aop-L",
+  Spun_Polyester: "spun-polyester-pillow-wrap-L",
 };
 
 const ROOT = process.cwd();
-const TEMPLATES_DIR = path.resolve(ROOT, "tmp", "hoodie-templates", "templates");
-const MOCKUPS_DIR = path.resolve(ROOT, "tmp", "hoodie-templates", "mockups");
+// Re-export paths from storage module (local tmp/ dirs).
+const MOCKUPS_DIR_LOCAL = MOCKUPS_DIR;
+const TEMPLATES_DIR_LOCAL = TEMPLATES_DIR;
 /**
  * Tracks when each mockup PNG was last uploaded. Compared against on-disk
  * mtime to skip redundant re-uploads. Lives next to the templates directory.
@@ -98,8 +101,8 @@ export function resolveLocalMockupPathForPublish(
   template: { views?: Record<string, { mockup?: { src?: string | null } | null }> },
 ): string | null {
   const candidates = [
-    path.join(MOCKUPS_DIR, `${adminName}-${view}.png`),
-    path.join(MOCKUPS_DIR, `${publicName}-${view}.png`),
+    path.join(MOCKUPS_DIR_LOCAL, `${adminName}-${view}.png`),
+    path.join(MOCKUPS_DIR_LOCAL, `${publicName}-${view}.png`),
   ];
   const named = candidates.find((p) => fs.existsSync(p));
   if (named) return named;
@@ -110,7 +113,7 @@ export function resolveLocalMockupPathForPublish(
   // Dev mapper URL: /api/dev/hoodie-mapper/mockups/zip-hoodie-aop-L-back.png
   const devMatch = src.match(/\/mockups\/([^?#]+)/);
   if (devMatch?.[1]) {
-    const fromDev = path.join(MOCKUPS_DIR, decodeURIComponent(devMatch[1]));
+    const fromDev = path.join(MOCKUPS_DIR_LOCAL, decodeURIComponent(devMatch[1]));
     if (fs.existsSync(fromDev)) return fromDev;
   }
 
@@ -189,19 +192,24 @@ export async function autoPublishHoodieTemplate(
     };
   }
 
-  const templatePath = path.join(TEMPLATES_DIR, `${adminName}.json`);
-  if (!fs.existsSync(templatePath)) {
-    return {
-      ok: false,
-      skipped: true,
-      reason: `Local template not found: ${templatePath}`,
-    };
+  const templatePath = path.join(TEMPLATES_DIR_LOCAL, `${adminName}.json`);
+  let tpl: any;
+  if (fs.existsSync(templatePath)) {
+    tpl = JSON.parse(fs.readFileSync(templatePath, "utf-8"));
+  } else {
+    const draftText = await readTemplateText(adminName);
+    if (!draftText) {
+      return {
+        ok: false,
+        skipped: true,
+        reason: `Local template not found: ${templatePath}`,
+      };
+    }
+    tpl = JSON.parse(draftText);
   }
 
   try {
     await ensureHoodieTemplatesBucket();
-
-    const tpl = JSON.parse(fs.readFileSync(templatePath, "utf-8"));
 
     const publishedState = readPublishedState();
     const recorded = publishedState[publicName] ?? {};
@@ -209,21 +217,31 @@ export async function autoPublishHoodieTemplate(
     const newMockupUrls: { front?: string; back?: string } = {};
 
     for (const view of ["front", "back"] as const) {
-      const found = resolveLocalMockupPathForPublish(adminName, publicName, view, tpl);
-      if (!found) continue;
+      let found = resolveLocalMockupPathForPublish(adminName, publicName, view, tpl);
+      let buf: Buffer | null = null;
+      let mtime = Date.now();
 
-      const stat = fs.statSync(found);
-      const mtime = stat.mtimeMs;
+      if (found) {
+        const stat = fs.statSync(found);
+        mtime = stat.mtimeMs;
+        buf = fs.readFileSync(found);
+      } else {
+        const draftName = `${adminName}-${view}.png`;
+        const altName = `${publicName}-${view}.png`;
+        buf =
+          (await readAssetBuffer("mockups", draftName)) ??
+          (await readAssetBuffer("mockups", altName));
+        if (!buf) continue;
+      }
+
       const filename = `mockups/${publicName}-${view}.png`;
 
-      if ((recorded[view] ?? 0) >= mtime) {
-        // Already uploaded a copy at this mtime or newer — re-use the URL.
+      if ((recorded[view] ?? 0) >= mtime && found) {
         const existing = publicHoodieTemplateUrl(filename);
         if (existing) newMockupUrls[view] = existing;
         continue;
       }
 
-      const buf = fs.readFileSync(found);
       const url = await uploadToHoodieTemplatesBucket(filename, buf, "image/png");
       newMockupUrls[view] = url;
       uploadedMockups.push(`${view} (${(buf.length / 1024).toFixed(0)} KB)`);

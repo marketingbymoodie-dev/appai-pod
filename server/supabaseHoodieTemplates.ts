@@ -96,3 +96,39 @@ export function publicHoodieTemplateUrl(filename: string): string | null {
   const { data } = c.storage.from(bucket).getPublicUrl(filename);
   return data.publicUrl;
 }
+
+export type HoodieBucketFileEntry = {
+  name: string;
+  sizeBytes: number | null;
+  updatedAt: string | null;
+};
+
+/** List objects under a prefix (non-recursive). */
+export async function listHoodieTemplatesBucketFiles(prefix: string): Promise<HoodieBucketFileEntry[]> {
+  const c = client();
+  if (!c) return [];
+  const bucket = hoodieTemplatesBucketName();
+  const folder = prefix.replace(/\/$/, "");
+  const { data, error } = await c.storage.from(bucket).list(folder, {
+    limit: 1000,
+    sortBy: { column: "updated_at", order: "desc" },
+  });
+  if (error || !data) return [];
+  return data
+    .filter((row) => row.name && !row.name.endsWith("/"))
+    .map((row) => ({
+      name: row.name,
+      sizeBytes: row.metadata?.size != null ? Number(row.metadata.size) : null,
+      updatedAt: row.updated_at ?? row.created_at ?? null,
+    }));
+}
+
+/** Download a single object; returns null when missing or Supabase unavailable. */
+export async function downloadFromHoodieTemplatesBucket(filename: string): Promise<Buffer | null> {
+  const c = client();
+  if (!c) return null;
+  const bucket = hoodieTemplatesBucketName();
+  const { data, error } = await c.storage.from(bucket).download(filename);
+  if (error || !data) return null;
+  return Buffer.from(await data.arrayBuffer());
+}

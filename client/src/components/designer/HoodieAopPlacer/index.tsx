@@ -22,6 +22,7 @@ import {
 } from "@/components/designer/placerControlStyles";
 import {
   designGroupsForBlueprint,
+  isPillowWrapBlueprint,
   isPulloverHoodieBlueprint,
   isSweatshirtBlueprint,
   isZipHoodieBlueprint,
@@ -31,6 +32,7 @@ import {
   type HoodieTemplate,
   type HoodieView,
   type TileSettings,
+  type WrapBackMode,
 } from "@shared/hoodieTemplate";
 import {
   renderAopPreview,
@@ -139,6 +141,11 @@ export type HoodieAopPlacerState = {
   backgroundColor: string;
   /** Tile settings (pattern mode). Falls back to template defaults. */
   tileSettings: TileSettings;
+  /**
+   * Pillow wrap: duplicate front art on both faces, or solid background colour
+   * on the back face only.
+   */
+  wrapBackMode: WrapBackMode;
 };
 
 /** Panel keys treated as "Trim" by the customer toggle (incl. sweatshirt neck rib). */
@@ -160,8 +167,13 @@ const POCKET_PANEL_KEYS = ["pocket_left", "pocket_right", "front_pocket"] as con
  */
 function buildPanelOverrides(
   state: HoodieAopPlacerState,
+  blueprintId?: number | null,
 ): Partial<Record<string, boolean>> {
   const out: Partial<Record<string, boolean>> = {};
+  if (isPillowWrapBlueprint(blueprintId) && state.wrapBackMode === "solid-color") {
+    out.back = false;
+    return out;
+  }
   // Customer placer never prints trim (cuffs / waistband / collar) — always
   // fill those panels with the garment background colour.
   for (const k of TRIM_PANEL_KEYS) out[k] = false;
@@ -197,6 +209,7 @@ function outputSignature(s: HoodieAopPlacerState): string {
     pocketsEnabled: s.pocketsEnabled,
     backgroundColor: s.backgroundColor,
     tileSettings: s.tileSettings,
+    wrapBackMode: s.wrapBackMode,
   });
 }
 
@@ -263,6 +276,9 @@ function customerGroupEnabledByDefault(
   blueprintId: number,
   group: DesignGroup,
 ): boolean {
+  if (isPillowWrapBlueprint(blueprintId)) {
+    return groupId === "front-face";
+  }
   if (groupId === "left-sleeve" || groupId === "right-sleeve" || groupId === "trim") {
     return false;
   }
@@ -407,21 +423,28 @@ function buildInitialState(
     rightSleeveLinked: true,
     backgroundColor: DEFAULT_BG_COLOR,
     tileSettings: template.tileSettings ?? { pattern: "grid", tileSizeInches: 1.5 },
+    wrapBackMode: saved?.wrapBackMode ?? template.wrapBackMode ?? "duplicate",
   };
-  if (!saved) return base;
-  return {
+  const pillow = isPillowWrapBlueprint(template.blueprintId);
+  const baseWithGroups: HoodieAopPlacerState = {
     ...base,
+    activeGroupId: pillow ? "front-face" : base.activeGroupId,
+  };
+  if (!saved) return baseWithGroups;
+  return {
+    ...baseWithGroups,
     ...saved,
     placements: syncSleevePlacements({
-      ...base.placements,
+      ...baseWithGroups.placements,
       ...(saved.placements ?? {}),
     }),
-    enabled: mergeSavedCustomerEnabled(base.enabled, saved.enabled),
-    tileSettings: { ...base.tileSettings, ...(saved.tileSettings ?? {}) },
+    enabled: mergeSavedCustomerEnabled(baseWithGroups.enabled, saved.enabled),
+    tileSettings: { ...baseWithGroups.tileSettings, ...(saved.tileSettings ?? {}) },
     trimEnabled: false,
     trimLinked: false,
     leftSleeveLinked: saved.leftSleeveLinked ?? base.leftSleeveLinked,
     rightSleeveLinked: saved.rightSleeveLinked ?? base.rightSleeveLinked,
+    wrapBackMode: saved.wrapBackMode ?? base.wrapBackMode,
   };
 }
 
@@ -474,10 +497,25 @@ function buildEffectiveRenderConfig(
   placements: Record<string, Record<HoodieView, ArtworkPlacement>>;
   enabled: Record<string, boolean>;
 } {
-  const placements = state.placements;
+  const placements = { ...state.placements };
   let enabled: Record<string, boolean> = { ...state.enabled, trim: false };
 
   let groups = template.designGroups ?? designGroupsForBlueprint(template.blueprintId);
+
+  if (isPillowWrapBlueprint(template.blueprintId)) {
+    if (state.wrapBackMode === "duplicate") {
+      const frontPl = placements["front-face"];
+      if (frontPl) {
+        placements["back-face"] = {
+          front: { ...frontPl.front },
+          back: { ...frontPl.back },
+        };
+      }
+      enabled = { ...enabled, "back-face": true };
+    } else {
+      enabled = { ...enabled, "back-face": false };
+    }
+  }
 
   if (!state.pocketsEnabled) {
     groups = stripGroupPanelKeys(groups, "front-body", POCKET_PANEL_KEYS);
@@ -789,7 +827,7 @@ export default function HoodieAopPlacer({
       solidColorFallback: false,
       groupPlacementOverrides: effective.placements,
       groupEnabledOverrides: effective.enabled,
-      panelEnabledOverrides: buildPanelOverrides(state),
+      panelEnabledOverrides: buildPanelOverrides(state, data?.template.blueprintId),
       activeGroupId:
         state.mode === "place" && artworkImg
           ? overlayGroupId(state.activeGroupId, data.template, state.hoodLinked)
@@ -1101,7 +1139,7 @@ export default function HoodieAopPlacer({
         solidColorFallback: false,
         groupPlacementOverrides: effective.placements,
         groupEnabledOverrides: effective.enabled,
-        panelEnabledOverrides: buildPanelOverrides(state),
+        panelEnabledOverrides: buildPanelOverrides(state, data?.template.blueprintId),
         backgroundColor: state.backgroundColor,
         tileSettings: state.tileSettings,
         pixelsPerInch: data.template.realWorldCalibration?.pixelsPerInch,
@@ -1215,18 +1253,21 @@ export default function HoodieAopPlacer({
       (state.activeGroupId === "hood" || isSleevesPart(state.activeGroupId))
     );
   const snapMode: "seam" | "x" | "y" | "both" | "none" =
-    state.activeGroupId === "back-body" || state.activeGroupId === "collar"
+    isPillow || state.activeGroupId === "back-body" || state.activeGroupId === "back-face" || state.activeGroupId === "collar"
       ? "both"
       : "seam";
 
   const isSweatshirt = isSweatshirtBlueprint(data.template.blueprintId);
-  const hasHoodGroup = !isSweatshirt && groups.some((g) => g.id === "hood");
-  const hasCollarGroup = !isSweatshirt && groups.some((g) => g.id === "collar");
+  const isPillow = isPillowWrapBlueprint(data.template.blueprintId);
+  const hasHoodGroup = !isSweatshirt && !isPillow && groups.some((g) => g.id === "hood");
+  const hasCollarGroup = !isSweatshirt && !isPillow && groups.some((g) => g.id === "collar");
   const hasSleeves =
+    !isPillow &&
     groups.some((g) => g.id === "left-sleeve") &&
     groups.some((g) => g.id === "right-sleeve");
   const hasPocketPanels =
     !isSweatshirt &&
+    !isPillow &&
     groups.some((g) =>
       g.panelKeys.some((k) => (POCKET_PANEL_KEYS as readonly string[]).includes(k)),
     );
@@ -1251,12 +1292,17 @@ export default function HoodieAopPlacer({
     : "Hood unlinked — click again to relink to front body.";
 
   const placePartGroups: Array<{ id: string; name: string }> = [];
-  for (const id of ["front-body", "back-body"] as const) {
-    const g = groups.find((x) => x.id === id);
-    if (g) placePartGroups.push({ id: g.id, name: g.name });
-  }
-  if (hasSleeves) {
-    placePartGroups.push({ id: SLEEVES_PART_ID, name: "Sleeves" });
+  if (isPillow) {
+    const front = groups.find((g) => g.id === "front-face");
+    if (front) placePartGroups.push({ id: front.id, name: front.name });
+  } else {
+    for (const id of ["front-body", "back-body"] as const) {
+      const g = groups.find((x) => x.id === id);
+      if (g) placePartGroups.push({ id: g.id, name: g.name });
+    }
+    if (hasSleeves) {
+      placePartGroups.push({ id: SLEEVES_PART_ID, name: "Sleeves" });
+    }
   }
 
   // Six swatches: 4 from artwork, plus black + white.
@@ -1409,6 +1455,42 @@ export default function HoodieAopPlacer({
                 </button>
               ))}
             </div>
+          </div>
+        )}
+
+        {/* Pillow wrap: back face print mode */}
+        {isPillow && (
+          <div>
+            <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Back face
+            </div>
+            <div className="grid grid-cols-2 gap-1">
+              {(
+                [
+                  { id: "duplicate" as const, label: "Same print" },
+                  { id: "solid-color" as const, label: "Solid colour" },
+                ] as const
+              ).map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() =>
+                    setState((prev) => (prev ? { ...prev, wrapBackMode: opt.id } : prev))
+                  }
+                  aria-pressed={state.wrapBackMode === opt.id}
+                  className={`rounded px-2 py-1.5 text-xs font-semibold border ${placerSegmentClass(
+                    state.wrapBackMode === opt.id,
+                  )}`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <p className="mt-1 text-[10px] text-muted-foreground">
+              {state.wrapBackMode === "duplicate"
+                ? "Your front design is duplicated onto the back face."
+                : "The back face fills with your background colour only."}
+            </p>
           </div>
         )}
 

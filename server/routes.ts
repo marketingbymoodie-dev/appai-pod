@@ -18279,6 +18279,8 @@ ${textEdgeRestrictions}
   registerPlatformCalibrationRoutes(app, { storage, isAuthenticated });
   const { registerOperatorCatalogRoutes } = await import("./routes/operator-catalog");
   registerOperatorCatalogRoutes(app, { storage, isAuthenticated });
+  const { registerPlatformAopMapperRoutes } = await import("./routes/platform-aop-mapper");
+  registerPlatformAopMapperRoutes(app, { storage, isAuthenticated });
   if (process.env.NODE_ENV !== "production") {
     const { registerAopCalibrationMapperRoutes } = await import("./routes/aop-calibration-mapper");
     registerAopCalibrationMapperRoutes(app);
