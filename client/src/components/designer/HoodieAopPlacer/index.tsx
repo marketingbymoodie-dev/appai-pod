@@ -1279,13 +1279,12 @@ export default function HoodieAopPlacer({
       state.view === "back" &&
       (state.activeGroupId === "hood" || isSleevesPart(state.activeGroupId))
     );
+  const isSweatshirt = isSweatshirtBlueprint(data.template.blueprintId);
+  const isPillow = isPillowWrapBlueprint(data.template.blueprintId);
   const snapMode: "seam" | "x" | "y" | "both" | "none" =
     isPillow || state.activeGroupId === "back-body" || state.activeGroupId === "back-face" || state.activeGroupId === "collar"
       ? "both"
       : "seam";
-
-  const isSweatshirt = isSweatshirtBlueprint(data.template.blueprintId);
-  const isPillow = isPillowWrapBlueprint(data.template.blueprintId);
   const hasHoodGroup = !isSweatshirt && !isPillow && groups.some((g) => g.id === "hood");
   const hasCollarGroup = !isSweatshirt && !isPillow && groups.some((g) => g.id === "collar");
   const hasSleeves =
