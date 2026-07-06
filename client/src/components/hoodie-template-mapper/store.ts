@@ -8,6 +8,10 @@ import {
   resizeMesh,
   mergeDesignGroupsForBlueprintSwitch,
   isPillowWrapBlueprint,
+  defaultPlacerEditorForBlueprint,
+  defaultPrintFileLayoutForBlueprint,
+  defaultHoodieTypeForBlueprint,
+  PILLOW_WRAP_BLUEPRINT_ID,
   PULOVER_HOODIE_BLUEPRINT_ID,
   ZIP_HOODIE_BLUEPRINT_ID,
   type HoodiePanelKey,
@@ -17,6 +21,7 @@ import {
   type MaskLayer,
   type MeshGrid,
   type MockupAsset,
+  type PrintFileLayout,
   type Pt,
   type ReferenceOverlayAsset,
   type SourceRect,
@@ -551,6 +556,8 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
               patch.blueprintId,
               s.template.designGroups,
             ),
+            placerEditor: defaultPlacerEditorForBlueprint(patch.blueprintId),
+            printFileLayout: defaultPrintFileLayoutForBlueprint(patch.blueprintId),
           };
           if (patch.blueprintId === PULOVER_HOODIE_BLUEPRINT_ID && next.hoodieType === "zip-hoodie-aop") {
             next = { ...next, hoodieType: "pullover-hoodie-aop" };
@@ -558,7 +565,33 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
             next = { ...next, hoodieType: "zip-hoodie-aop" };
           } else if (isPillowWrapBlueprint(patch.blueprintId)) {
             next = { ...next, hoodieType: "pillow-wrap-aop" };
+          } else if (next.placerEditor === "hoodie") {
+            next = { ...next, hoodieType: defaultHoodieTypeForBlueprint(patch.blueprintId) };
           }
+        }
+        if (patch.placerEditor != null && patch.placerEditor !== s.template.placerEditor) {
+          const bp = next.blueprintId ?? ZIP_HOODIE_BLUEPRINT_ID;
+          if (patch.placerEditor === "front-back-face") {
+            next = {
+              ...next,
+              placerEditor: "front-back-face",
+              designGroups: mergeDesignGroupsForBlueprintSwitch(
+                isPillowWrapBlueprint(bp) ? bp : PILLOW_WRAP_BLUEPRINT_ID,
+                s.template.designGroups,
+              ),
+              hoodieType: "pillow-wrap-aop",
+            };
+          } else {
+            next = {
+              ...next,
+              placerEditor: "hoodie",
+              designGroups: mergeDesignGroupsForBlueprintSwitch(bp, s.template.designGroups),
+              hoodieType: defaultHoodieTypeForBlueprint(bp),
+            };
+          }
+        }
+        if (patch.printFileLayout != null) {
+          next = { ...next, printFileLayout: patch.printFileLayout as PrintFileLayout };
         }
         return {
           template: bumpUpdatedAt(next),

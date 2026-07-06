@@ -22,7 +22,6 @@ import {
 } from "@/components/designer/placerControlStyles";
 import {
   designGroupsForBlueprint,
-  isPillowWrapBlueprint,
   isPillowWrapTemplate,
   isPulloverHoodieBlueprint,
   isSweatshirtBlueprint,
@@ -168,10 +167,10 @@ const POCKET_PANEL_KEYS = ["pocket_left", "pocket_right", "front_pocket"] as con
  */
 function buildPanelOverrides(
   state: HoodieAopPlacerState,
-  blueprintId?: number | null,
+  template?: HoodieTemplate | null,
 ): Partial<Record<string, boolean>> {
   const out: Partial<Record<string, boolean>> = {};
-  if (isPillowWrapBlueprint(blueprintId) && state.wrapBackMode === "solid-color") {
+  if (template && isPillowWrapTemplate(template) && state.wrapBackMode === "solid-color") {
     out.back = false;
     return out;
   }
@@ -274,12 +273,13 @@ function viewsForPlacementEdit(activeGroupId: string, currentView: HoodieView): 
 /** Per-group enabled defaults for the customer placer (not admin template). */
 function customerGroupEnabledByDefault(
   groupId: string,
-  blueprintId: number,
+  template: HoodieTemplate,
   group: DesignGroup,
 ): boolean {
-  if (isPillowWrapBlueprint(blueprintId)) {
+  if (isPillowWrapTemplate(template)) {
     return groupId === "front-face";
   }
+  const blueprintId = template.blueprintId;
   if (groupId === "left-sleeve" || groupId === "right-sleeve" || groupId === "trim") {
     return false;
   }
@@ -400,9 +400,9 @@ function mirrorPillowDuplicatePlacements(
 
 function pillowDuplicateLinked(
   state: HoodieAopPlacerState,
-  blueprintId?: number,
+  template?: HoodieTemplate | null,
 ): boolean {
-  return isPillowWrapBlueprint(blueprintId) && state.wrapBackMode === "duplicate";
+  return !!template && isPillowWrapTemplate(template) && state.wrapBackMode === "duplicate";
 }
 
 /**
@@ -419,7 +419,7 @@ function buildInitialState(
   const isHoodieBp =
     isZipHoodieBlueprint(template.blueprintId) ||
     isPulloverHoodieBlueprint(template.blueprintId);
-  const pillow = isPillowWrapBlueprint(template.blueprintId);
+  const pillow = isPillowWrapTemplate(template);
   const defaultPlacement: ArtworkPlacement = pillow
     ? { ...DEFAULT_ARTWORK_PLACEMENT, scale: 1.1 }
     : DEFAULT_ARTWORK_PLACEMENT;
@@ -430,11 +430,7 @@ function buildInitialState(
       front: { ...(g.placement?.front ?? defaultPlacement) },
       back: { ...(g.placement?.back ?? defaultPlacement) },
     };
-    enabled[g.id] = customerGroupEnabledByDefault(
-      g.id,
-      template.blueprintId,
-      g,
-    );
+    enabled[g.id] = customerGroupEnabledByDefault(g.id, template, g);
   }
   const base: HoodieAopPlacerState = {
     mode: "place",
@@ -529,7 +525,7 @@ function buildEffectiveRenderConfig(
 
   let groups = template.designGroups ?? designGroupsForBlueprint(template.blueprintId);
 
-  if (isPillowWrapBlueprint(template.blueprintId)) {
+  if (isPillowWrapTemplate(template)) {
     if (state.wrapBackMode === "duplicate") {
       const frontPl = placements["front-face"];
       if (frontPl) {
@@ -886,7 +882,7 @@ export default function HoodieAopPlacer({
       solidColorFallback: false,
       groupPlacementOverrides: effective.placements,
       groupEnabledOverrides: effective.enabled,
-      panelEnabledOverrides: buildPanelOverrides(state, data?.template.blueprintId),
+      panelEnabledOverrides: buildPanelOverrides(state, data?.template),
       activeGroupId:
         state.mode === "place" && artworkImg
           ? overlayGroupId(state.activeGroupId, data.template, state.hoodLinked)
@@ -927,7 +923,7 @@ export default function HoodieAopPlacer({
       if (prev.activeGroupId === SLEEVES_PART_ID) {
         return { ...prev, view };
       }
-      const pillow = data && isPillowWrapBlueprint(data.template.blueprintId);
+      const pillow = data && isPillowWrapTemplate(data.template);
       const activeGroupId = pillow
         ? "front-face"
         : view === "back"
@@ -985,7 +981,7 @@ export default function HoodieAopPlacer({
         enabledOverrides: effective.enabled,
       });
 
-      if (isPillowWrapBlueprint(data.template.blueprintId)) {
+      if (isPillowWrapTemplate(data.template)) {
         const faceRect = rects.get("front-face");
         if (faceRect?.enabled && hitTestEffectiveRect(pt, faceRect.effective)) {
           setOverlayVisible(true);
@@ -1037,7 +1033,7 @@ export default function HoodieAopPlacer({
     (view: HoodieView, next: ArtworkPlacement) => {
       setState((prev) => {
         if (!prev || !data) return prev;
-        const pillowDup = pillowDuplicateLinked(prev, data.template.blueprintId);
+        const pillowDup = pillowDuplicateLinked(prev, data.template);
         const primaryId = pillowDup
           ? "front-face"
           : overlayGroupId(prev.activeGroupId, data.template, prev.hoodLinked);
@@ -1092,7 +1088,7 @@ export default function HoodieAopPlacer({
     setOverlayVisible(true);
     setState((prev) => {
       if (!prev || !data) return prev;
-      const pillowDup = pillowDuplicateLinked(prev, data.template.blueprintId);
+      const pillowDup = pillowDuplicateLinked(prev, data.template);
       const primaryId = pillowDup
         ? "front-face"
         : overlayGroupId(prev.activeGroupId, data.template, prev.hoodLinked);
@@ -1232,7 +1228,7 @@ export default function HoodieAopPlacer({
         solidColorFallback: false,
         groupPlacementOverrides: effective.placements,
         groupEnabledOverrides: effective.enabled,
-        panelEnabledOverrides: buildPanelOverrides(state, data?.template.blueprintId),
+        panelEnabledOverrides: buildPanelOverrides(state, data?.template),
         backgroundColor: state.backgroundColor,
         tileSettings: state.tileSettings,
         pixelsPerInch: data.template.realWorldCalibration?.pixelsPerInch,

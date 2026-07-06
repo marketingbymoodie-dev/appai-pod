@@ -17,6 +17,10 @@ import {
   isValidAopTemplateSlug,
   normalizeAopTemplateSlugInput,
   MAX_MESH_COLS,
+  defaultPlacerEditorForBlueprint,
+  defaultPrintFileLayoutForBlueprint,
+  resolvePlacerEditor,
+  resolvePrintFileLayout,
   isPillowWrapBlueprint,
   isPillowWrapTemplate,
   migrateSweatshirtDesignGroups,
@@ -102,8 +106,33 @@ describe("pillow wrap blueprints", () => {
     raw.designGroups = designGroupsForBlueprint(ZIP_HOODIE_BLUEPRINT_ID);
     const normalized = normalizeHoodieTemplate(raw);
     expect(isPillowWrapTemplate(normalized)).toBe(true);
+    expect(normalized.placerEditor).toBe("front-back-face");
+    expect(normalized.printFileLayout).toBe("wrap-single");
     expect(normalized.designGroups?.find((g) => g.id === "front-face")).toBeDefined();
     expect(normalized.designGroups?.find((g) => g.id === "front-body")).toBeUndefined();
+  });
+
+  it("explicit placerEditor front-back-face works for unlisted blueprint ids", () => {
+    const t = normalizeHoodieTemplate(
+      createFreshAopTemplate({
+        name: "custom-pillow",
+        blueprintId: 996,
+        placerEditor: "front-back-face",
+        printFileLayout: "wrap-single",
+        hoodieType: "pillow-wrap-aop",
+      }),
+    );
+    expect(isPillowWrapTemplate(t)).toBe(true);
+    expect(resolvePlacerEditor(t)).toBe("front-back-face");
+    expect(t.designGroups?.find((g) => g.id === "front-face")).toBeDefined();
+    expect(panelsEligibleForView("front", 996, "front-back-face")).toContain("front");
+    expect(panelsEligibleForView("front", 996, "front-back-face")).not.toContain("front_left");
+  });
+
+  it("defaultPrintFileLayoutForBlueprint maps body pillow to split", () => {
+    expect(defaultPrintFileLayoutForBlueprint(BODY_PILLOW_WRAP_BLUEPRINT_ID)).toBe("split-front-back");
+    expect(defaultPrintFileLayoutForBlueprint(PILLOW_WRAP_BLUEPRINT_ID)).toBe("wrap-single");
+    expect(defaultPrintFileLayoutForBlueprint(450)).toBe("split-front-back");
   });
 });
 

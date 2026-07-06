@@ -12,6 +12,8 @@ import {
 } from "@/components/ui/dialog";
 import {
   createFreshAopTemplate,
+  defaultPlacerEditorForBlueprint,
+  defaultPrintFileLayoutForBlueprint,
   isValidAopTemplateSlug,
   normalizeAopTemplateSlugInput,
   PULOVER_HOODIE_BLUEPRINT_ID,
@@ -19,7 +21,10 @@ import {
   FAUX_SUEDE_PILLOW_WRAP_BLUEPRINT_ID,
   BODY_PILLOW_WRAP_BLUEPRINT_ID,
   ZIP_HOODIE_BLUEPRINT_ID,
+  type PlacerEditor,
+  type PrintFileLayout,
 } from "@shared/hoodieTemplate";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { resolvePublicTemplateName } from "@shared/aopTemplateNaming";
 import { listTemplates } from "./api";
 
@@ -34,6 +39,8 @@ export default function FreshStartDialog({ open, onOpenChange, onConfirm, onLoad
   const [slug, setSlug] = useState("");
   const [label, setLabel] = useState("");
   const [blueprintId, setBlueprintId] = useState(String(PULOVER_HOODIE_BLUEPRINT_ID));
+  const [placerEditor, setPlacerEditor] = useState<PlacerEditor>("hoodie");
+  const [printFileLayout, setPrintFileLayout] = useState<PrintFileLayout>("split-front-back");
   const [productTypeId, setProductTypeId] = useState("");
   const [existingSlugs, setExistingSlugs] = useState<Set<string>>(new Set());
   const [loadingSlugs, setLoadingSlugs] = useState(false);
@@ -53,6 +60,12 @@ export default function FreshStartDialog({ open, onOpenChange, onConfirm, onLoad
   const slugInvalid = normalizedSlug.length > 0 && !isValidAopTemplateSlug(normalizedSlug);
   const bpInvalid = !Number.isFinite(bpNum) || bpNum <= 0;
 
+  useEffect(() => {
+    if (bpInvalid) return;
+    setPlacerEditor(defaultPlacerEditorForBlueprint(bpNum));
+    setPrintFileLayout(defaultPrintFileLayoutForBlueprint(bpNum));
+  }, [bpNum, bpInvalid]);
+
   const canConfirm = useMemo(() => {
     if (!normalizedSlug || slugTaken || slugInvalid || bpInvalid || loadingSlugs) return false;
     return true;
@@ -67,12 +80,16 @@ export default function FreshStartDialog({ open, onOpenChange, onConfirm, onLoad
         label: label.trim() || normalizedSlug,
         blueprintId: bpNum,
         productTypeId: ptIdRaw === "" ? null : Number(ptIdRaw) || null,
+        placerEditor,
+        printFileLayout,
       }),
     );
     onOpenChange(false);
     setSlug("");
     setLabel("");
     setBlueprintId(String(PULOVER_HOODIE_BLUEPRINT_ID));
+    setPlacerEditor("hoodie");
+    setPrintFileLayout("split-front-back");
     setProductTypeId("");
   }
 
@@ -215,6 +232,48 @@ export default function FreshStartDialog({ open, onOpenChange, onConfirm, onLoad
                 onChange={(e) => setProductTypeId(e.target.value)}
               />
             </div>
+          </div>
+
+          <div className="space-y-3">
+            <div className="space-y-2">
+              <Label>Storefront editor</Label>
+              <ToggleGroup
+                type="single"
+                value={placerEditor}
+                onValueChange={(v) => {
+                  if (v === "hoodie" || v === "front-back-face") setPlacerEditor(v);
+                }}
+                className="grid w-full grid-cols-2 gap-1"
+              >
+                <ToggleGroupItem value="hoodie" className="h-8 text-xs">
+                  Hoodie
+                </ToggleGroupItem>
+                <ToggleGroupItem value="front-back-face" className="h-8 text-xs">
+                  Front / Back
+                </ToggleGroupItem>
+              </ToggleGroup>
+            </div>
+            <div className="space-y-2">
+              <Label>Print file layout</Label>
+              <ToggleGroup
+                type="single"
+                value={printFileLayout}
+                onValueChange={(v) => {
+                  if (v === "wrap-single" || v === "split-front-back") setPrintFileLayout(v);
+                }}
+                className="grid w-full grid-cols-2 gap-1"
+              >
+                <ToggleGroupItem value="wrap-single" className="h-8 text-xs">
+                  Wrap
+                </ToggleGroupItem>
+                <ToggleGroupItem value="split-front-back" className="h-8 text-xs">
+                  Split
+                </ToggleGroupItem>
+              </ToggleGroup>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Auto-suggested from blueprint id — adjust before mapping if Printify uses a different layout.
+            </p>
           </div>
         </div>
 

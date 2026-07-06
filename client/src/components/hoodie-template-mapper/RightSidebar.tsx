@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useToast } from "@/hooks/use-toast";
 import {
   ChevronUp,
@@ -28,7 +29,11 @@ import {
   PANEL_DISPLAY_LABEL,
   panelsEligibleForView,
   PULOVER_HOODIE_BLUEPRINT_ID,
+  BODY_PILLOW_WRAP_BLUEPRINT_ID,
   isPillowWrapBlueprint,
+  isPillowWrapTemplate,
+  resolvePlacerEditor,
+  resolvePrintFileLayout,
   mockupDrawRect,
   type HoodiePanelKey,
   type MaskLayer,
@@ -224,6 +229,7 @@ export default function RightSidebar() {
             <span className="font-mono text-emerald-300">{resolvePublicTemplateName(template.name)}</span> name
             there after Save — no code change needed for new products.
           </p>
+          <PlacerSettingsSection template={template} />
         </Section>
 
         <MockupTransformSection view={view} />
@@ -366,10 +372,11 @@ export default function RightSidebar() {
 function SelectedLayerSection({ layer }: { layer: MaskLayer }) {
   const view = useHoodieMapperStore((s) => s.view);
   const blueprintId = useHoodieMapperStore((s) => s.template.blueprintId);
+  const placerEditor = useHoodieMapperStore((s) => resolvePlacerEditor(s.template));
   const layers = useHoodieMapperStore((s) => s.template.views[s.view].layers);
   const actions = useHoodieMapperStore((s) => s.actions);
 
-  const eligible = panelsEligibleForView(view, blueprintId);
+  const eligible = panelsEligibleForView(view, blueprintId, placerEditor);
   const anchors = useMemo(() => svgPathToAnchors(layer.maskPath), [layer.maskPath]);
   const sortedZ = useMemo(() => [...layers].sort((a, b) => a.zIndex - b.zIndex), [layers]);
   const indexInZ = sortedZ.findIndex((l) => l.id === layer.id);
@@ -511,6 +518,87 @@ function SelectedLayerSection({ layer }: { layer: MaskLayer }) {
   );
 }
 
+function PlacerSettingsSection({ template }: { template: ReturnType<typeof useHoodieMapperStore.getState>["template"] }) {
+  const actions = useHoodieMapperStore((s) => s.actions);
+  const placerEditor = resolvePlacerEditor(template);
+  const printFileLayout = resolvePrintFileLayout(template);
+  const editorMismatch =
+    placerEditor === "hoodie" && printFileLayout === "wrap-single";
+  const printMismatch =
+    placerEditor === "front-back-face" &&
+    printFileLayout === "split-front-back" &&
+    isPillowWrapBlueprint(template.blueprintId) &&
+    template.blueprintId !== BODY_PILLOW_WRAP_BLUEPRINT_ID;
+
+  return (
+    <div className="mt-3 space-y-3 border-t border-slate-800 pt-3">
+      <Field label="Storefront editor">
+        <ToggleGroup
+          type="single"
+          value={placerEditor}
+          onValueChange={(v) => {
+            if (v === "hoodie" || v === "front-back-face") {
+              actions.setTemplateMeta({ placerEditor: v });
+            }
+          }}
+          className="grid w-full grid-cols-2 gap-1"
+        >
+          <ToggleGroupItem value="hoodie" className="h-7 px-1 text-[10px]" aria-label="Hoodie editor">
+            Hoodie
+          </ToggleGroupItem>
+          <ToggleGroupItem
+            value="front-back-face"
+            className="h-7 px-1 text-[10px]"
+            aria-label="Front back face editor"
+          >
+            Front / Back
+          </ToggleGroupItem>
+        </ToggleGroup>
+      </Field>
+      <Field label="Print file layout">
+        <ToggleGroup
+          type="single"
+          value={printFileLayout}
+          onValueChange={(v) => {
+            if (v === "wrap-single" || v === "split-front-back") {
+              actions.setTemplateMeta({ printFileLayout: v });
+            }
+          }}
+          className="grid w-full grid-cols-2 gap-1"
+        >
+          <ToggleGroupItem value="wrap-single" className="h-7 px-1 text-[10px]" aria-label="Wrap single canvas">
+            Wrap
+          </ToggleGroupItem>
+          <ToggleGroupItem
+            value="split-front-back"
+            className="h-7 px-1 text-[10px]"
+            aria-label="Split front and back files"
+          >
+            Split
+          </ToggleGroupItem>
+        </ToggleGroup>
+      </Field>
+      <p className="text-[10px] leading-snug text-slate-500">
+        Saved into the published template JSON.{" "}
+        <span className="text-slate-400">Front / Back</span> shows pillow-style Part/View controls on
+        the storefront (any blueprint id).{" "}
+        <span className="text-slate-400">Wrap</span> = one side-by-side Printify canvas;{" "}
+        <span className="text-slate-400">Split</span> = separate front + back print files (body pillow).
+      </p>
+      {editorMismatch && (
+        <p className="text-[10px] leading-snug text-amber-400/90">
+          Hoodie editor + wrap print file is unusual — wrap is normally for front/back face products.
+        </p>
+      )}
+      {printMismatch && (
+        <p className="text-[10px] leading-snug text-amber-400/90">
+          Square/lumbar pillows usually use wrap print files; body pillow (2758) uses split.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function MockupTransformSection({ view }: { view: HoodieView }) {
   const template = useHoodieMapperStore((s) => s.template);
   const mockupCrop = useHoodieMapperStore((s) => s.mockupCrop);
@@ -524,7 +612,7 @@ function MockupTransformSection({ view }: { view: HoodieView }) {
   const backMockup = template.views.back.mockup;
   const [applyCropToBoth, setApplyCropToBoth] = useState(true);
   const [cropBusy, setCropBusy] = useState(false);
-  const isPillow = isPillowWrapBlueprint(template.blueprintId);
+  const isPillow = isPillowWrapTemplate(template);
   const sameSizeMockups =
     frontMockup &&
     backMockup &&
