@@ -919,29 +919,55 @@ export default function AdminProducts() {
                       </div>
                     )}
                     {pt.isAllOverPrint && (
-                      <div className="mt-3 space-y-1">
-                        <Label className="text-xs text-muted-foreground">AOP layout template</Label>
-                        <Select
-                          value={pt.aopTemplateId || AOP_TEMPLATE_SELECT_AUTO}
-                          onValueChange={(v) =>
-                            updateAopTemplateMutation.mutate({
-                              id: pt.id,
-                              aopTemplateId: v === AOP_TEMPLATE_SELECT_AUTO ? null : v,
-                            })
-                          }
-                          disabled={aopTemplateMutatingId === pt.id}
-                        >
-                          <SelectTrigger className="h-8 text-xs" data-testid={`select-aop-template-${pt.id}`}>
-                            <SelectValue placeholder="Template" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {AOP_TEMPLATE_ADMIN_OPTIONS.map((opt) => (
-                              <SelectItem key={opt.value} value={opt.value}>
-                                {opt.label}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                      <div className="mt-3 space-y-3 rounded-md border p-3">
+                        <div className="space-y-1">
+                          <Label className="text-xs text-muted-foreground">
+                            Mesh panel map (storefront customizer)
+                          </Label>
+                          {(pt as { panelMappingTemplate?: string | null }).panelMappingTemplate ? (
+                            <p
+                              className="font-mono text-xs text-foreground"
+                              data-testid={`panel-mapping-template-${pt.id}`}
+                            >
+                              {(pt as { panelMappingTemplate?: string | null }).panelMappingTemplate}
+                            </p>
+                          ) : (
+                            <p className="text-xs text-amber-700 dark:text-amber-400">
+                              Not linked — publish the template in Platform Catalog, then reload this
+                              product or re-import from catalog.
+                            </p>
+                          )}
+                          <p className="text-[10px] text-muted-foreground">
+                            Set on the Platform Catalog row (AOP mapper template name). Powers the
+                            mesh-warp placer — not the legacy dropdown below.
+                          </p>
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs text-muted-foreground">
+                            Legacy pattern layout (PatternCustomizer only)
+                          </Label>
+                          <Select
+                            value={pt.aopTemplateId || AOP_TEMPLATE_SELECT_AUTO}
+                            onValueChange={(v) =>
+                              updateAopTemplateMutation.mutate({
+                                id: pt.id,
+                                aopTemplateId: v === AOP_TEMPLATE_SELECT_AUTO ? null : v,
+                              })
+                            }
+                            disabled={aopTemplateMutatingId === pt.id}
+                          >
+                            <SelectTrigger className="h-8 text-xs" data-testid={`select-aop-template-${pt.id}`}>
+                              <SelectValue placeholder="Template" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {AOP_TEMPLATE_ADMIN_OPTIONS.map((opt) => (
+                                <SelectItem key={opt.value} value={opt.value}>
+                                  {opt.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
                       </div>
                     )}
                     <div className="flex gap-2 mt-4 flex-wrap">
