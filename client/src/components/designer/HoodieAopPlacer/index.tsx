@@ -772,10 +772,10 @@ export default function HoodieAopPlacer({
       return;
     }
     let cancelled = false;
+    let blobUrl: string | null = null;
     setArtworkLoading(true);
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => {
+
+    const finishLoad = (img: HTMLImageElement) => {
       if (cancelled) return;
       setArtworkImg(img);
       setArtworkLoading(false);
@@ -788,16 +788,43 @@ export default function HoodieAopPlacer({
         }
       });
     };
-    img.onerror = () => {
+
+    const failLoad = () => {
       if (!cancelled) {
         setArtworkImg(null);
         setArtworkLoading(false);
         setPalette([]);
       }
     };
-    img.src = url;
+
+    const loadViaFetch = async () => {
+      try {
+        const r = await safeFetch(url, { cache: "no-store" });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const blob = await r.blob();
+        if (cancelled) return;
+        blobUrl = URL.createObjectURL(blob);
+        const img = new Image();
+        img.onload = () => finishLoad(img);
+        img.onerror = failLoad;
+        img.src = blobUrl;
+      } catch (fetchErr) {
+        if (cancelled) return;
+        // eslint-disable-next-line no-console
+        console.warn("[HoodieAopPlacer] artwork fetch failed, falling back to direct load:", fetchErr);
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.onload = () => finishLoad(img);
+        img.onerror = failLoad;
+        img.src = url;
+      }
+    };
+
+    void loadViaFetch();
+
     return () => {
       cancelled = true;
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
     };
   }, [state?.artworkUrl]);
 
@@ -1342,6 +1369,11 @@ export default function HoodieAopPlacer({
                 snapMode={snapMode}
                 onChange={(next) => updateActiveGroupPlacement(state.view, next)}
               />
+            )}
+            {!mockup && data && (
+              <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-center text-xs text-muted-foreground">
+                <Loader2 className="mr-1 h-3 w-3 animate-spin" /> Loading mockup…
+              </div>
             )}
             {!artworkImg && !artworkLoading && (
               <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-center text-xs text-muted-foreground">

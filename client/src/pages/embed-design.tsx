@@ -5948,7 +5948,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           const safePrimaryFg = ensureContrastingForeground(btnBgHSL, btnFgHSL);
           if (safePrimaryFg) root.setProperty('--primary-foreground', safePrimaryFg);
         } else if (btnFgHSL) {
-          root.setProperty('--primary-foreground', btnFgHSL);
+          // btn bg missing but fg extracted — still guard against default dark primary.
+          const safePrimaryFg = ensureContrastingForeground('0 0% 9%', btnFgHSL);
+          if (safePrimaryFg) root.setProperty('--primary-foreground', safePrimaryFg);
         }
         if (t.buttonRadius) {
           // Shopify buttons may have e.g. "4px" or "24px"; map to --radius
@@ -6009,6 +6011,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         const accentHSL = cssColorToHSL(t.accentColor);
         if (accentHSL) {
           root.setProperty('--accent', accentHSL);
+          const safeAccentFg = ensureContrastingForeground(accentHSL, fgHSL);
+          if (safeAccentFg) root.setProperty('--accent-foreground', safeAccentFg);
         }
 
         // -- Derived secondary/muted colors from background --
@@ -6018,8 +6022,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           root.setProperty('--secondary-border', adjustHSLLightness(bgHSL, -14));
           // Muted is a subtle mid-tone
           root.setProperty('--muted', adjustHSLLightness(bgHSL, -8));
-          // Card backgrounds
-          root.setProperty('--popover', adjustHSLLightness(bgHSL, -3));
+          // Dropdown surfaces — must set foreground too or Radix Select items
+          // inherit default dark text on a dark extracted popover (black-on-black).
+          const popoverHSL = adjustHSLLightness(bgHSL, -3);
+          root.setProperty('--popover', popoverHSL);
+          const safePopoverFg = ensureContrastingForeground(popoverHSL, fgHSL);
+          if (safePopoverFg) root.setProperty('--popover-foreground', safePopoverFg);
         }
         if (fgHSL) {
           // Muted foreground is a lighter version of the text color, but still
