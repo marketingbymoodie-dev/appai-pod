@@ -283,13 +283,12 @@
       '}',
       '@media(min-width:400px){#appai-drawer-grid{grid-template-columns:repeat(3,1fr);}}',
       '.appai-design-card{',
-        'border-radius:10px;overflow:hidden;border:1.5px solid #e5e7eb;',
+        'position:relative;border-radius:10px;overflow:hidden;border:1.5px solid #e5e7eb;',
         'cursor:pointer;transition:border-color 150ms,box-shadow 150ms,transform 150ms;',
         'background:#f9fafb;',
       '}',
       '.appai-design-card:hover{border-color:#6366f1;box-shadow:0 4px 16px rgba(99,102,241,0.18);transform:translateY(-1px);}',
       '.appai-design-card:active{transform:translateY(0);}',
-      '.appai-design-card-wrap{position:relative;}',
       '.appai-design-card-delete{',
         'position:absolute;top:6px;right:6px;z-index:3;',
         'width:22px;height:22px;border-radius:999px;border:none;',
@@ -298,7 +297,7 @@
         'opacity:0;transition:opacity 150ms ease,background 150ms ease;',
         'padding:0;line-height:1;',
       '}',
-      '.appai-design-card-wrap:hover .appai-design-card-delete,',
+      '.appai-design-card:hover .appai-design-card-delete,',
       '.appai-design-card-delete:focus{opacity:1;}',
       '.appai-design-card-delete:hover{background:#dc2626;}',
       '@media(max-width:640px){.appai-design-card-delete{opacity:1;}}',
@@ -455,9 +454,6 @@
       grid.appendChild(empty);
     } else {
       designs.forEach(function (design) {
-        var wrap = document.createElement('div');
-        wrap.className = 'appai-design-card-wrap';
-
         var card = document.createElement('div');
         card.className = 'appai-design-card';
         card.setAttribute('role', 'button');
@@ -508,9 +504,8 @@
           void deleteDesign(design.id);
         });
 
-        wrap.appendChild(card);
-        wrap.appendChild(deleteBtn);
-        grid.appendChild(wrap);
+        card.appendChild(deleteBtn);
+        grid.appendChild(card);
       });
     }
   }

@@ -418,12 +418,16 @@ function buildInitialState(
   const isHoodieBp =
     isZipHoodieBlueprint(template.blueprintId) ||
     isPulloverHoodieBlueprint(template.blueprintId);
+  const pillow = isPillowWrapBlueprint(template.blueprintId);
+  const defaultPlacement: ArtworkPlacement = pillow
+    ? { ...DEFAULT_ARTWORK_PLACEMENT, scale: 1.1 }
+    : DEFAULT_ARTWORK_PLACEMENT;
   const placements: Record<string, Record<HoodieView, ArtworkPlacement>> = {};
   const enabled: Record<string, boolean> = {};
   for (const g of groups) {
     placements[g.id] = {
-      front: { ...(g.placement?.front ?? DEFAULT_ARTWORK_PLACEMENT) },
-      back: { ...(g.placement?.back ?? DEFAULT_ARTWORK_PLACEMENT) },
+      front: { ...(g.placement?.front ?? defaultPlacement) },
+      back: { ...(g.placement?.back ?? defaultPlacement) },
     };
     enabled[g.id] = customerGroupEnabledByDefault(
       g.id,
@@ -448,7 +452,6 @@ function buildInitialState(
     tileSettings: template.tileSettings ?? { pattern: "grid", tileSizeInches: 1.5 },
     wrapBackMode: saved?.wrapBackMode ?? template.wrapBackMode ?? "duplicate",
   };
-  const pillow = isPillowWrapBlueprint(template.blueprintId);
   const baseWithGroups: HoodieAopPlacerState = {
     ...base,
     activeGroupId: pillow ? "front-face" : base.activeGroupId,
