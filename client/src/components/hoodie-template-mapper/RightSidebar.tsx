@@ -214,7 +214,10 @@ export default function RightSidebar() {
             </p>
           )}
           <p className="mt-2 text-[10px] leading-snug text-slate-500">
-            <span className="text-slate-400">blueprintId</span> = Printify catalog number (450 pullover, 451 zip).{" "}
+            <span className="text-slate-400">blueprintId</span> = Printify catalog number from the product URL
+            (e.g. <span className="font-mono text-slate-400">…/products/2758/…</span> → 2758). Pillows: 220 square,
+            223 faux suede, 2758 body. Hoodies: 450 pullover, 451 zip. Wrong id → wrong Part/View controls on the
+            storefront.{" "}
             <span className="text-slate-400">productTypeId</span> = optional note only — merchants are routed by{" "}
             <span className="text-slate-300">panelMappingTemplate</span> on the platform catalog row (set in{" "}
             <span className="text-slate-300">Platform Catalog → Publish for merchants</span>). Use the{" "}

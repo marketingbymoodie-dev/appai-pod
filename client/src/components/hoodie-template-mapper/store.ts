@@ -7,6 +7,7 @@ import {
   createDefaultMesh,
   resizeMesh,
   mergeDesignGroupsForBlueprintSwitch,
+  isPillowWrapBlueprint,
   PULOVER_HOODIE_BLUEPRINT_ID,
   ZIP_HOODIE_BLUEPRINT_ID,
   type HoodiePanelKey,
@@ -555,6 +556,8 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
             next = { ...next, hoodieType: "pullover-hoodie-aop" };
           } else if (patch.blueprintId === ZIP_HOODIE_BLUEPRINT_ID && next.hoodieType === "pullover-hoodie-aop") {
             next = { ...next, hoodieType: "zip-hoodie-aop" };
+          } else if (isPillowWrapBlueprint(patch.blueprintId)) {
+            next = { ...next, hoodieType: "pillow-wrap-aop" };
           }
         }
         return {

@@ -5,6 +5,7 @@ import {
   ZIP_HOODIE_BLUEPRINT_ID,
   PILLOW_WRAP_BLUEPRINT_ID,
   FAUX_SUEDE_PILLOW_WRAP_BLUEPRINT_ID,
+  BODY_PILLOW_WRAP_BLUEPRINT_ID,
   createFreshAopTemplate,
   createDefaultMesh,
   defaultHoodieTypeForBlueprint,
@@ -75,11 +76,12 @@ describe("pillow wrap blueprints", () => {
   it("recognises spun polyester (220) and faux suede (223)", () => {
     expect(isPillowWrapBlueprint(PILLOW_WRAP_BLUEPRINT_ID)).toBe(true);
     expect(isPillowWrapBlueprint(FAUX_SUEDE_PILLOW_WRAP_BLUEPRINT_ID)).toBe(true);
+    expect(isPillowWrapBlueprint(BODY_PILLOW_WRAP_BLUEPRINT_ID)).toBe(true);
     expect(isPillowWrapBlueprint(451)).toBe(false);
   });
 
-  it("uses pillow design groups for bp 223", () => {
-    const groups = designGroupsForBlueprint(FAUX_SUEDE_PILLOW_WRAP_BLUEPRINT_ID);
+  it("uses pillow design groups for bp 2758 body pillow", () => {
+    const groups = designGroupsForBlueprint(BODY_PILLOW_WRAP_BLUEPRINT_ID);
     expect(groups.find((g) => g.id === "front-face")?.panelKeys).toEqual(["front"]);
     expect(groups.find((g) => g.id === "back-face")?.panelKeys).toEqual(["back"]);
     expect(groups.find((g) => g.id === "front-body")).toBeUndefined();

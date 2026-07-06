@@ -16,6 +16,8 @@ import {
   normalizeAopTemplateSlugInput,
   PULOVER_HOODIE_BLUEPRINT_ID,
   PILLOW_WRAP_BLUEPRINT_ID,
+  FAUX_SUEDE_PILLOW_WRAP_BLUEPRINT_ID,
+  BODY_PILLOW_WRAP_BLUEPRINT_ID,
   ZIP_HOODIE_BLUEPRINT_ID,
 } from "@shared/hoodieTemplate";
 import { resolvePublicTemplateName } from "@shared/aopTemplateNaming";
@@ -181,7 +183,25 @@ export default function FreshStartDialog({ open, onOpenChange, onConfirm, onLoad
                   className="h-6 px-2 text-[10px]"
                   onClick={() => setBlueprintId(String(PILLOW_WRAP_BLUEPRINT_ID))}
                 >
-                  Pillow 220
+                  Sq pillow 220
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-6 px-2 text-[10px]"
+                  onClick={() => setBlueprintId(String(FAUX_SUEDE_PILLOW_WRAP_BLUEPRINT_ID))}
+                >
+                  Faux suede 223
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-6 px-2 text-[10px]"
+                  onClick={() => setBlueprintId(String(BODY_PILLOW_WRAP_BLUEPRINT_ID))}
+                >
+                  Body 2758
                 </Button>
               </div>
             </div>

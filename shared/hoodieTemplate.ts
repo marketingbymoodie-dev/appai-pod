@@ -39,11 +39,17 @@ export const SWEATSHIRT_BLUEPRINT_ID = 449;
 export const PILLOW_WRAP_BLUEPRINT_ID = 220;
 /** Printify blueprint 223 (faux suede square pillow AOP) — same two-face wrap layout as bp 220. */
 export const FAUX_SUEDE_PILLOW_WRAP_BLUEPRINT_ID = 223;
+/** Printify blueprint 2758 (body pillow AOP) — long wrap, front + back faces only. */
+export const BODY_PILLOW_WRAP_BLUEPRINT_ID = 2758;
+/** Printify blueprint 538 (lumbar pillow AOP) — same two-face wrap layout. */
+export const LUMBAR_PILLOW_WRAP_BLUEPRINT_ID = 538;
 
 /** All Printify blueprint ids that share the pillow wrap editor (front/back faces, no hood/sleeves). */
 export const PILLOW_WRAP_BLUEPRINT_IDS: readonly number[] = [
   PILLOW_WRAP_BLUEPRINT_ID,
   FAUX_SUEDE_PILLOW_WRAP_BLUEPRINT_ID,
+  LUMBAR_PILLOW_WRAP_BLUEPRINT_ID,
+  BODY_PILLOW_WRAP_BLUEPRINT_ID,
 ];
 
 export type WrapBackMode = "duplicate" | "solid-color";
