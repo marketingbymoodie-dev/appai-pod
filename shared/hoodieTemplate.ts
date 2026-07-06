@@ -37,6 +37,14 @@ export const ZIP_HOODIE_BLUEPRINT_ID = 451;
 export const SWEATSHIRT_BLUEPRINT_ID = 449;
 /** Printify blueprint 220 (spun polyester pillow wrap AOP) — two faces, wide print canvas. */
 export const PILLOW_WRAP_BLUEPRINT_ID = 220;
+/** Printify blueprint 223 (faux suede square pillow AOP) — same two-face wrap layout as bp 220. */
+export const FAUX_SUEDE_PILLOW_WRAP_BLUEPRINT_ID = 223;
+
+/** All Printify blueprint ids that share the pillow wrap editor (front/back faces, no hood/sleeves). */
+export const PILLOW_WRAP_BLUEPRINT_IDS: readonly number[] = [
+  PILLOW_WRAP_BLUEPRINT_ID,
+  FAUX_SUEDE_PILLOW_WRAP_BLUEPRINT_ID,
+];
 
 export type WrapBackMode = "duplicate" | "solid-color";
 
@@ -746,7 +754,32 @@ export function isSweatshirtBlueprint(blueprintId: number | null | undefined): b
 }
 
 export function isPillowWrapBlueprint(blueprintId: number | null | undefined): boolean {
-  return blueprintId === PILLOW_WRAP_BLUEPRINT_ID;
+  if (blueprintId == null) return false;
+  return PILLOW_WRAP_BLUEPRINT_IDS.includes(blueprintId);
+}
+
+type PillowWrapTemplateLike = Pick<HoodieTemplate, "blueprintId" | "hoodieType" | "designGroups">;
+
+/** Storefront/editor pillow detection — blueprint id, hoodieType, or saved front-face groups. */
+export function isPillowWrapTemplate(template: PillowWrapTemplateLike | null | undefined): boolean {
+  if (!template) return false;
+  if (isPillowWrapBlueprint(template.blueprintId)) return true;
+  if (template.hoodieType === "pillow-wrap-aop") return true;
+  const groups = template.designGroups;
+  if (!groups?.length) return false;
+  const ids = new Set(groups.map((g) => g.id));
+  return (
+    ids.has("front-face") &&
+    ids.has("back-face") &&
+    !ids.has("front-body") &&
+    !ids.has("hood")
+  );
+}
+
+function designGroupsLookLikeHoodie(groups: DesignGroup[] | undefined): boolean {
+  if (!groups?.length) return false;
+  const ids = new Set(groups.map((g) => g.id));
+  return ids.has("front-body") || ids.has("hood") || ids.has("left-sleeve");
 }
 
 /** Hoodie-only keys hidden for pillow wrap templates. */
@@ -951,6 +984,12 @@ export function normalizeHoodieTemplate(template: HoodieTemplate): HoodieTemplat
   }
   if (isSweatshirtBlueprint(template.blueprintId)) {
     designGroups = migrateSweatshirtDesignGroups(designGroups);
+  }
+  if (isPillowWrapTemplate(template)) {
+    const bp = template.blueprintId ?? PILLOW_WRAP_BLUEPRINT_ID;
+    if (designGroupsLookLikeHoodie(designGroups) || !designGroups?.some((g) => g.id === "front-face")) {
+      designGroups = mergeDesignGroupsForBlueprintSwitch(bp, designGroups);
+    }
   }
   return {
     ...template,

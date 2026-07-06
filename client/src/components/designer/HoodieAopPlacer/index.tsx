@@ -23,6 +23,7 @@ import {
 import {
   designGroupsForBlueprint,
   isPillowWrapBlueprint,
+  isPillowWrapTemplate,
   isPulloverHoodieBlueprint,
   isSweatshirtBlueprint,
   isZipHoodieBlueprint,
@@ -1345,7 +1346,7 @@ export default function HoodieAopPlacer({
       (state.activeGroupId === "hood" || isSleevesPart(state.activeGroupId))
     );
   const isSweatshirt = isSweatshirtBlueprint(data.template.blueprintId);
-  const isPillow = isPillowWrapBlueprint(data.template.blueprintId);
+  const isPillow = isPillowWrapTemplate(data.template);
   const snapMode: "seam" | "x" | "y" | "both" | "none" =
     isPillow || state.activeGroupId === "back-body" || state.activeGroupId === "back-face" || state.activeGroupId === "collar"
       ? "both"

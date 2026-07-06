@@ -3,6 +3,8 @@ import {
   PULOVER_HOODIE_BLUEPRINT_ID,
   SWEATSHIRT_BLUEPRINT_ID,
   ZIP_HOODIE_BLUEPRINT_ID,
+  PILLOW_WRAP_BLUEPRINT_ID,
+  FAUX_SUEDE_PILLOW_WRAP_BLUEPRINT_ID,
   createFreshAopTemplate,
   createDefaultMesh,
   defaultHoodieTypeForBlueprint,
@@ -14,6 +16,8 @@ import {
   isValidAopTemplateSlug,
   normalizeAopTemplateSlugInput,
   MAX_MESH_COLS,
+  isPillowWrapBlueprint,
+  isPillowWrapTemplate,
   migrateSweatshirtDesignGroups,
   mockupDrawRect,
   normalizeHoodieTemplate,
@@ -64,6 +68,40 @@ describe("normalizeAopTemplateSlugInput", () => {
     expect(normalizeAopTemplateSlugInput("Spun Polyester Square Pillow")).toBe(
       "Spun_Polyester_Square_Pillow",
     );
+  });
+});
+
+describe("pillow wrap blueprints", () => {
+  it("recognises spun polyester (220) and faux suede (223)", () => {
+    expect(isPillowWrapBlueprint(PILLOW_WRAP_BLUEPRINT_ID)).toBe(true);
+    expect(isPillowWrapBlueprint(FAUX_SUEDE_PILLOW_WRAP_BLUEPRINT_ID)).toBe(true);
+    expect(isPillowWrapBlueprint(451)).toBe(false);
+  });
+
+  it("uses pillow design groups for bp 223", () => {
+    const groups = designGroupsForBlueprint(FAUX_SUEDE_PILLOW_WRAP_BLUEPRINT_ID);
+    expect(groups.find((g) => g.id === "front-face")?.panelKeys).toEqual(["front"]);
+    expect(groups.find((g) => g.id === "back-face")?.panelKeys).toEqual(["back"]);
+    expect(groups.find((g) => g.id === "front-body")).toBeUndefined();
+  });
+
+  it("defaultHoodieTypeForBlueprint maps pillow blueprints", () => {
+    expect(defaultHoodieTypeForBlueprint(PILLOW_WRAP_BLUEPRINT_ID)).toBe("pillow-wrap-aop");
+    expect(defaultHoodieTypeForBlueprint(FAUX_SUEDE_PILLOW_WRAP_BLUEPRINT_ID)).toBe(
+      "pillow-wrap-aop",
+    );
+  });
+
+  it("normalizeHoodieTemplate replaces hoodie groups on faux suede templates", () => {
+    const raw = createFreshAopTemplate({
+      name: "faux-suede-square-pillow",
+      blueprintId: FAUX_SUEDE_PILLOW_WRAP_BLUEPRINT_ID,
+    });
+    raw.designGroups = designGroupsForBlueprint(ZIP_HOODIE_BLUEPRINT_ID);
+    const normalized = normalizeHoodieTemplate(raw);
+    expect(isPillowWrapTemplate(normalized)).toBe(true);
+    expect(normalized.designGroups?.find((g) => g.id === "front-face")).toBeDefined();
+    expect(normalized.designGroups?.find((g) => g.id === "front-body")).toBeUndefined();
   });
 });
 
