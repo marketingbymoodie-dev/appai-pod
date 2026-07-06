@@ -115,6 +115,7 @@ import {
   validateCustomizerPageStyleConfig,
   defaultStyleConfigForDesignerType,
   filterStylePresetsForPage,
+  dedupeStylePresets,
   sanitizeStylePrefixForAop,
   type CustomizerPageStyleConfig,
 } from "@shared/customizerPageStyles";
@@ -1992,7 +1993,7 @@ export async function registerRoutes(
 
       console.log(`[CONFIG] DB done ${Date.now() - t0}ms, ${dbStyles.length} styles`);
 
-      const stylePresets =
+      const stylePresets = dedupeStylePresets(
         dbStyles.length > 0
           ? dbStyles.map((s) => {
               // Merge options and baseImageUrl from hardcoded STYLE_PRESETS (DB doesn't store sub-options)
@@ -2012,7 +2013,8 @@ export async function registerRoutes(
                 descriptionOptional: !!(s as any).descriptionOptional,
               };
             })
-          : hardcodedFallback;
+          : hardcodedFallback,
+      );
 
       const payload = {
         sizes: PRINT_SIZES,
@@ -17449,11 +17451,14 @@ ${textEdgeRestrictions}
       }
     }
 
-    // Fetch style presets so the storefront iframe doesn't need a separate
-    // /api/config round-trip (which can fail/timeout in CORS-restricted envs).
+    // Fetch style presets for this shop's merchant only (never all merchants —
+    // getAllActiveStylePresets duplicates names across tenants).
     let stylePresets: Array<{ id: string; name: string; promptSuffix: string; category: string; promptPlaceholder?: string; options?: any; baseImageUrl?: string; descriptionOptional?: boolean }> = [];
     try {
-      const dbStyles = await storage.getAllActiveStylePresets();
+      const merchantId = installation?.merchantId;
+      const dbStyles = merchantId
+        ? await storage.getActiveStylePresetsByMerchant(merchantId)
+        : [];
       stylePresets = dbStyles.map((s: any) => {
         const hardcoded = STYLE_PRESETS.find(h => h.id === s.id.toString() || h.name === s.name);
         return {

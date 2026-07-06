@@ -70,11 +70,14 @@ export function suggestedStyleCategoryForDesignerType(
 export function dedupeStylePresets<T extends { id: string; name?: string }>(
   presets: T[],
 ): T[] {
-  const seen = new Set<string>();
+  const seenIds = new Set<string>();
+  const seenNames = new Set<string>();
   return presets.filter((p) => {
-    const key = String(p.id);
-    if (seen.has(key)) return false;
-    seen.add(key);
+    const idKey = String(p.id);
+    const nameKey = (p.name || idKey).trim().toLowerCase();
+    if (seenIds.has(idKey) || seenNames.has(nameKey)) return false;
+    seenIds.add(idKey);
+    seenNames.add(nameKey);
     return true;
   });
 }
