@@ -114,15 +114,30 @@ const WHITE_BG_PATTERNS: RegExp[] = [
   /\bwhite\s+mat\b/gi,
 ];
 
-/** True when generation should use apparel chroma matting (includes AOP / all-over-print). */
+/**
+ * True when generation/post-processing should use hot-pink chroma-key matting.
+ * Decor styles always use full-bleed generation — even on AOP pillows.
+ * Apparel styles and classic apparel / zip-hoodie products use chroma key.
+ */
 export function resolveIsApparelGeneration(
   productType?: { designerType?: string | null; isAllOverPrint?: boolean | null } | null,
   styleCategory?: string | null,
 ): boolean {
+  const styleCat = (styleCategory || "all").toLowerCase();
   const designerType = (productType?.designerType || "").toLowerCase();
-  if (designerType === "apparel" || designerType === "all-over-print") return true;
-  if (productType?.isAllOverPrint) return true;
-  if ((styleCategory || "").toLowerCase() === "apparel") return true;
+
+  if (styleCat === "apparel") return true;
+  if (designerType === "apparel") return true;
+
+  // Decor presets (Pop Art, Watercolor, etc.) — full bleed, no chroma plate
+  if (styleCat === "decor") return false;
+
+  // Zip hoodies / AOP garments with non-decor styles (incl. "No Style" custom prompt)
+  if (designerType === "all-over-print") return true;
+
+  // Decor AOP products (pillows): chroma only when an apparel-category style is selected
+  if (productType?.isAllOverPrint) return false;
+
   return false;
 }
 

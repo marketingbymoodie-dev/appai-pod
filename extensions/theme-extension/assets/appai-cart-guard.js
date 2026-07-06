@@ -14,7 +14,13 @@
   NS.latest = NS.latest || null;
 
   var LOG_PREFIX = "[AppAI Cart Guard]";
-  var CART_GUARD_VERSION = '1.3';
+  var CART_GUARD_VERSION = '1.4';
+  var HIDDEN_CART_PROP_KEYS = [
+    '_appai_job_id',
+    '_artwork_url',
+    '_mockup_url',
+    '_design_id',
+  ];
   /* DEBUG MARKERS (search these in DevTools console to diagnose issues):
      [AppAI Cart Guard] Loaded                        → script running (set ENABLE_DEBUG=true to see all logs)
      [AppAI Cart Guard] Ignored setLatestDesign       → payload missing _mockup_url; check embed-design.tsx handleAddToCart
@@ -331,6 +337,69 @@
 
   if (NS.latest && NS.latest._mockup_url) {
     syncHiddenInputsIntoAllProductForms(NS.latest);
+  }
+
+  // --------- Hide internal line properties on cart page ----------
+  // Shopify hides underscore props at checkout, but many themes still render them on /cart.
+  function isHiddenCartPropLabel(text) {
+    if (!text) return false;
+    var t = String(text).trim().replace(/:$/, '').toLowerCase();
+    for (var i = 0; i < HIDDEN_CART_PROP_KEYS.length; i++) {
+      if (t === HIDDEN_CART_PROP_KEYS[i]) return true;
+    }
+    return t.charAt(0) === '_';
+  }
+
+  function hideCartPropertyRow(el) {
+    if (!el || el.getAttribute('data-appai-hidden-prop') === '1') return;
+    el.setAttribute('data-appai-hidden-prop', '1');
+    el.style.setProperty('display', 'none', 'important');
+  }
+
+  function hideInternalCartProperties() {
+    if (path !== '/cart' && path.indexOf('/cart/') !== 0) return;
+
+    // Dawn / derivative: .product-option > dt + dd
+    document.querySelectorAll('.product-option, .cart-item__details .product-option').forEach(function(row) {
+      var label = row.querySelector('dt, .product-option__name, .caption-with-letter-spacing');
+      if (label && isHiddenCartPropLabel(label.textContent)) hideCartPropertyRow(row);
+    });
+
+    // Generic dl pairs
+    document.querySelectorAll('dl').forEach(function(dl) {
+      var dts = dl.querySelectorAll('dt');
+      for (var i = 0; i < dts.length; i++) {
+        if (!isHiddenCartPropLabel(dts[i].textContent)) continue;
+        hideCartPropertyRow(dts[i]);
+        var dd = dts[i].nextElementSibling;
+        if (dd && dd.tagName === 'DD') hideCartPropertyRow(dd);
+        var parent = dts[i].closest('.product-option, .cart-item__property, li, p');
+        if (parent) hideCartPropertyRow(parent);
+      }
+    });
+
+    // Fallback: single-line "key: value" blocks
+    document.querySelectorAll('.cart-item__details *, cart-items *, .line-item-property, [class*="cart-item"]').forEach(function(el) {
+      if (el.children && el.children.length > 0) return;
+      var text = (el.textContent || '').trim();
+      if (!text) return;
+      for (var j = 0; j < HIDDEN_CART_PROP_KEYS.length; j++) {
+        var key = HIDDEN_CART_PROP_KEYS[j];
+        if (text.indexOf(key + ':') === 0 || text.indexOf(key + ' :') === 0) {
+          hideCartPropertyRow(el);
+          break;
+        }
+      }
+    });
+  }
+
+  if (path === '/cart' || path.indexOf('/cart/') === 0) {
+    hideInternalCartProperties();
+    window.addEventListener('appai:cart-updated', hideInternalCartProperties);
+    if (typeof MutationObserver !== 'undefined') {
+      var cartObs = new MutationObserver(function() { hideInternalCartProperties(); });
+      cartObs.observe(document.documentElement, { childList: true, subtree: true });
+    }
   }
 
   console.log(LOG_PREFIX, 'Loaded. version=' + CART_GUARD_VERSION + ' isRelevantPage=' + isRelevantPage);
