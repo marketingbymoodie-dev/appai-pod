@@ -111,6 +111,14 @@ import { enqueueMockupJob, getMockupJob } from "./mockup-jobs";
 import { harvestFlatCalibration, type HarvestOptions } from "./flat-calibration";
 import { slimPhoneCaseBlueprintId, type CanonicalPublishedMeta } from "@shared/canonicalProducts";
 import {
+  parseCustomizerPageStyleConfig,
+  validateCustomizerPageStyleConfig,
+  defaultStyleConfigForDesignerType,
+  filterStylePresetsForPage,
+  sanitizeStylePrefixForAop,
+  type CustomizerPageStyleConfig,
+} from "@shared/customizerPageStyles";
+import {
   canMerchantImportEntry,
   canOperatorImportEntry,
   getPlatformCatalogEntry,
@@ -2420,11 +2428,14 @@ export async function registerRoutes(
       // AOP zip hoodies use designerType "all-over-print" — still need chroma matting.
       let isApparel = resolveIsApparelGeneration(productType, styleCategory);
 
-      if (isApparel) {
+      const isAllOverPrint = !!(productType?.isAllOverPrint);
+      if (isApparel && !isAllOverPrint) {
         stylePromptPrefix = resolveApparelStylePrefix(styleName, stylePromptPrefix);
+      } else if (isAllOverPrint && stylePromptPrefix) {
+        stylePromptPrefix = sanitizeStylePrefixForAop(stylePromptPrefix);
       }
 
-      const isAllOverPrint = !!(productType?.isAllOverPrint);      // Determine color tier for apparel products
+      // Determine color tier for apparel products
       let colorTier: ColorTier = "light"; // Default to light (dark designs on white background)
 
       aspectRatioStr = resolveGenerationAspectRatio(aspectRatioStr, { isApparel, isAllOverPrint });
@@ -3214,8 +3225,11 @@ console.log("[shopify/session] installation ok", {
       }
 
       const embedIsApparelEarly = resolveIsApparelGeneration(productType, embedStyleCategory);
-      if (embedIsApparelEarly) {
+      const embedIsAllOverPrintEarly = !!(productType?.isAllOverPrint);
+      if (embedIsApparelEarly && !embedIsAllOverPrintEarly) {
         stylePromptPrefix = resolveApparelStylePrefix(styleName, stylePromptPrefix);
+      } else if (embedIsAllOverPrintEarly && stylePromptPrefix) {
+        stylePromptPrefix = sanitizeStylePrefixForAop(stylePromptPrefix);
       }
 
 
@@ -7315,11 +7329,13 @@ ${textEdgeRestrictions}
       // Determine apparel status early — affects both prompt and dimensions
       let isApparel = resolveIsApparelGeneration(productType, sfStyleCategory);
 
-      if (isApparel) {
+      const isAllOverPrint = !!(productType?.isAllOverPrint);
+      if (isApparel && !isAllOverPrint) {
         stylePromptPrefix = resolveApparelStylePrefix(styleName, stylePromptPrefix);
+      } else if (isAllOverPrint && stylePromptPrefix) {
+        stylePromptPrefix = sanitizeStylePrefixForAop(stylePromptPrefix);
       }
 
-      const isAllOverPrint = !!(productType?.isAllOverPrint);
       console.log(
         P,
         reqId,
@@ -16040,7 +16056,7 @@ ${textEdgeRestrictions}
     }
     const shop: string = installation.shopDomain;
 
-    const { title, handle, baseVariantId, baseProductId, productTypeId: incomingProductTypeId, variantPrices, baseMockupImages: incomingBaseMockupImages } = req.body as {
+    const { title, handle, baseVariantId, baseProductId, productTypeId: incomingProductTypeId, variantPrices, baseMockupImages: incomingBaseMockupImages, styleConfig: incomingStyleConfig } = req.body as {
       title?: string;
       handle?: string;
       baseVariantId?: string;
@@ -16048,6 +16064,7 @@ ${textEdgeRestrictions}
       productTypeId?: number;
       variantPrices?: Record<string, string>;
       baseMockupImages?: { primary?: string; gallery?: string[]; custom?: string[] };
+      styleConfig?: unknown;
     };
 
     if (!title?.trim()) return res.status(400).json({ error: "Title is required" });
@@ -16464,6 +16481,16 @@ ${textEdgeRestrictions}
     }
     const shopifyPage = pageBody.data.page;
 
+    const linkedPtForStyles =
+      matchedType ?? ptForSync ?? (resolvedProductTypeId ? await storage.getProductType(resolvedProductTypeId) : null);
+    const parsedStyleConfig = parseCustomizerPageStyleConfig(incomingStyleConfig);
+    const styleConfig: CustomizerPageStyleConfig =
+      parsedStyleConfig ?? defaultStyleConfigForDesignerType(linkedPtForStyles?.designerType);
+    const styleConfigError = validateCustomizerPageStyleConfig(styleConfig);
+    if (initialStatus === "active" && styleConfigError) {
+      return res.status(400).json({ error: styleConfigError });
+    }
+
     // Save DB record
     const page = await storage.createCustomizerPage({
       shop,
@@ -16477,6 +16504,7 @@ ${textEdgeRestrictions}
       baseVariantTitle: variant.title ?? "",
       baseProductPrice: variant.price ?? "",
       productTypeId: resolvedProductTypeId,
+      styleConfig: styleConfig as any,
       status: initialStatus,
     });
 
@@ -16536,6 +16564,9 @@ ${textEdgeRestrictions}
 
     const updates: Partial<CustomizerPage> = {};
 
+    const productTypeIdEarly = dbPage.productTypeId ? Number(dbPage.productTypeId) : null;
+    const linkedProductTypeEarly = productTypeIdEarly ? await storage.getProductType(productTypeIdEarly) : undefined;
+
     if (req.body.title !== undefined) {
       updates.title = String(req.body.title).trim();
     }
@@ -16562,6 +16593,32 @@ ${textEdgeRestrictions}
       
       updates.status = s;
     }
+
+    if (req.body.styleConfig !== undefined) {
+      const parsed = parseCustomizerPageStyleConfig(req.body.styleConfig);
+      if (!parsed) {
+        return res.status(400).json({ error: "Invalid styleConfig — choose styles or a category bundle." });
+      }
+      const styleErr = validateCustomizerPageStyleConfig(parsed);
+      if (styleErr) return res.status(400).json({ error: styleErr });
+      updates.styleConfig = parsed as any;
+    }
+
+    const nextStatus = updates.status ?? dbPage.status;
+    if (nextStatus === "active") {
+      const effectiveStyleConfig =
+        (updates.styleConfig as CustomizerPageStyleConfig | undefined) ??
+        parseCustomizerPageStyleConfig(dbPage.styleConfig) ??
+        defaultStyleConfigForDesignerType(linkedProductTypeEarly?.designerType);
+      const styleErr = validateCustomizerPageStyleConfig(effectiveStyleConfig);
+      if (styleErr) {
+        return res.status(400).json({ error: styleErr });
+      }
+      if (!updates.styleConfig && !dbPage.styleConfig && effectiveStyleConfig) {
+        updates.styleConfig = effectiveStyleConfig as any;
+      }
+    }
+
     if (req.body.baseVariantId !== undefined) {
       const variantNum = parseInt(String(req.body.baseVariantId).replace(/\D/g, ""), 10);
       if (!variantNum) return res.status(400).json({ error: "Invalid baseVariantId" });
@@ -17026,6 +17083,8 @@ ${textEdgeRestrictions}
           title: pt.name,
           imageUrl,
           needsShopifySync,
+          designerType: pt.designerType ?? null,
+          isAllOverPrint: pt.isAllOverPrint ?? false,
           printifyBlueprintId: pt.printifyBlueprintId ?? null,
           printifyProviderId: pt.printifyProviderId ?? null,
           printifyVariantLabels: pvLabels,
@@ -17412,6 +17471,18 @@ ${textEdgeRestrictions}
       console.warn(`[proxy/customizer-page] Failed to load stylePresets:`, e);
     }
 
+    const pageStyleConfig =
+      parseCustomizerPageStyleConfig(page.styleConfig) ??
+      defaultStyleConfigForDesignerType(designerConfig?.designerType);
+    stylePresets = filterStylePresetsForPage(
+      stylePresets,
+      pageStyleConfig,
+      designerConfig?.designerType,
+    ).map((s) => ({
+      ...s,
+      promptPrefix: (s as any).promptSuffix ?? (s as any).promptPrefix,
+    }));
+
     return res.json({
       id: page.id,
       handle: page.handle,
@@ -17427,6 +17498,7 @@ ${textEdgeRestrictions}
       designerConfig,
       variants,
       stylePresets,
+      styleConfig: pageStyleConfig,
       productPublished,
     });
   }));

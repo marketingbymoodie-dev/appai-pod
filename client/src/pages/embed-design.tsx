@@ -50,6 +50,12 @@ import {
 import { resolveFlatBlankColorId, resolveFlatPlacementGeometryKey } from "@/components/designer/FlatProductPlacer/lib/flatAssets";
 import { STOREFRONT_FREE_GENERATION_LIMIT, storefrontArtworksRemaining } from "@shared/storefront-credits";
 import {
+  filterStylePresetsForPage,
+  dedupeStylePresets,
+  parseCustomizerPageStyleConfig,
+  type CustomizerPageStyleConfig,
+} from "@shared/customizerPageStyles";
+import {
   isAllowedCentralAuthOrigin,
   isStorefrontGoogleAuthMessage,
   STOREFRONT_GOOGLE_AUTH_FAILED_MESSAGE,
@@ -1264,6 +1270,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   }, []);
 
   const [stylePresets, setStylePresets] = useState<StylePreset[]>([]);
+  const [pageStyleConfig, setPageStyleConfig] = useState<CustomizerPageStyleConfig | null>(null);
   const [productTypeConfig, setProductTypeConfig] = useState<ProductTypeConfig | null>(null);
   const [configLoading, setConfigLoading] = useState(true);
   const [isInAppProductSwitching, setIsInAppProductSwitching] = useState(false);
@@ -1885,25 +1892,31 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // - apparel -> "apparel" category (centered graphics)
   // - generic -> show all styles
   const filteredStylePresets = useMemo(() => {
-    if (!productTypeConfig?.designerType) return stylePresets;
-    
+    const deduped = dedupeStylePresets(stylePresets);
+    if (pageStyleConfig) {
+      return filterStylePresetsForPage(
+        deduped,
+        pageStyleConfig,
+        productTypeConfig?.designerType,
+      );
+    }
+    if (!productTypeConfig?.designerType) return deduped;
+
     const designerType = productTypeConfig.designerType;
     let targetCategory: "decor" | "apparel" | null = null;
-    
+
     if (designerType === "framed-print" || designerType === "pillow" || designerType === "mug") {
       targetCategory = "decor";
     } else if (designerType === "apparel") {
       targetCategory = "apparel";
     }
-    // For "generic" or unknown types, show all styles
-    
-    if (!targetCategory) return stylePresets;
-    
-    // Return styles that match the category or are "all" (universal styles)
-    return stylePresets.filter(s => 
+
+    if (!targetCategory) return deduped;
+
+    return deduped.filter(s =>
       s.category === targetCategory || s.category === "all" || !s.category
     );
-  }, [stylePresets, productTypeConfig]);
+  }, [stylePresets, productTypeConfig, pageStyleConfig]);
 
   useEffect(() => {
     const blueprintId = productTypeConfig?.printifyBlueprintId;
@@ -2879,6 +2892,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (Array.isArray(config.stylePresets)) {
       setStylePresets(config.stylePresets);
     }
+    setPageStyleConfig(parseCustomizerPageStyleConfig(config.styleConfig));
     setConfigLoading(false);
 
     try {
@@ -5846,6 +5860,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         applyDesignerConfig(event.data.designerConfig, "POSTMESSAGE CONFIG");
         if (Array.isArray(event.data.stylePresets)) {
           setStylePresets(event.data.stylePresets);
+        }
+        if (event.data.styleConfig !== undefined) {
+          setPageStyleConfig(parseCustomizerPageStyleConfig(event.data.styleConfig));
         }
         setConfigLoading(false);
       }

@@ -72,7 +72,11 @@ function isSvgImageSource(image: CanvasImageSource): boolean {
     return false;
   }
   const src = (image.currentSrc || image.src || "").toLowerCase();
-  return src.includes(".svg") || src.startsWith("data:image/svg");
+  return (
+    src.includes(".svg") ||
+    src.startsWith("data:image/svg") ||
+    image.dataset.appaiVectorArt === "1"
+  );
 }
 
 /** Rasterize SVG once so mesh-warp triangle draws don't resample vector paths per cell. */

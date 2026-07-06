@@ -381,6 +381,29 @@ function hitTestEffectiveRect(
   );
 }
 
+/** Pillow wrap + same print: one placement drives both physical faces. */
+function mirrorPillowDuplicatePlacements(
+  placements: Record<string, Record<HoodieView, ArtworkPlacement>>,
+  pl: ArtworkPlacement,
+): Record<string, Record<HoodieView, ArtworkPlacement>> {
+  const shared: Record<HoodieView, ArtworkPlacement> = {
+    front: { ...pl },
+    back: { ...pl },
+  };
+  return {
+    ...placements,
+    "front-face": shared,
+    "back-face": { front: { ...pl }, back: { ...pl } },
+  };
+}
+
+function pillowDuplicateLinked(
+  state: HoodieAopPlacerState,
+  blueprintId?: number,
+): boolean {
+  return isPillowWrapBlueprint(blueprintId) && state.wrapBackMode === "duplicate";
+}
+
 /**
  * Build the customer state from a fetched template + (optional) saved
  * customer state. Inherits the admin's per-group defaults (placement,
@@ -511,7 +534,7 @@ function buildEffectiveRenderConfig(
           back: { ...frontPl.back },
         };
       }
-      enabled = { ...enabled, "back-face": true };
+      enabled = { ...enabled, "front-face": true, "back-face": true };
     } else {
       enabled = { ...enabled, "back-face": false };
     }
@@ -700,7 +723,7 @@ export default function HoodieAopPlacer({
   // rect) toggles it; clicking the rect itself stops propagation so the
   // box stays visible while dragging/resizing. There's also an Eye/EyeOff
   // toggle next to "Artwork scale" for explicit control.
-  const [overlayVisible, setOverlayVisible] = useState(true);
+  const [overlayVisible, setOverlayVisible] = useState(false);
 
   // ---------- Auto-apply (debounced) ----------
   // We removed the "Apply to product" button — the cart/checkout preview
@@ -805,6 +828,11 @@ export default function HoodieAopPlacer({
         if (cancelled) return;
         blobUrl = URL.createObjectURL(blob);
         const img = new Image();
+        const isSvgArt =
+          blob.type.includes("svg") || /\.svg(?:\?|$)/i.test(url);
+        if (isSvgArt) {
+          img.dataset.appaiVectorArt = "1";
+        }
         img.onload = () => finishLoad(img);
         img.onerror = failLoad;
         img.src = blobUrl;
@@ -895,10 +923,15 @@ export default function HoodieAopPlacer({
       if (prev.activeGroupId === SLEEVES_PART_ID) {
         return { ...prev, view };
       }
-      const activeGroupId = view === "back" ? "back-body" : "front-body";
+      const pillow = data && isPillowWrapBlueprint(data.template.blueprintId);
+      const activeGroupId = pillow
+        ? "front-face"
+        : view === "back"
+          ? "back-body"
+          : "front-body";
       return { ...prev, view, activeGroupId };
     });
-  }, []);
+  }, [data]);
 
   /**
    * Hood button handler. Tap-and-tap-again pattern surfaced through the
@@ -936,20 +969,29 @@ export default function HoodieAopPlacer({
   const handleCanvasBackdropClick = useCallback(
     (e: React.MouseEvent) => {
       if (state.mode !== "place") return;
-      if (
-        isSleevesPart(state.activeGroupId) &&
-        data &&
-        artworkImg &&
-        mockups[state.view] &&
-        canvasRef.current
-      ) {
-        const mockup = mockups[state.view]!;
-        const effective = buildEffectiveRenderConfig(data.template, state);
-        const pt = mockupPointFromClick(e, canvasRef.current, mockup);
-        const rects = computeGroupRects(effective.template, state.view, artworkImg, {
-          placementOverrides: effective.placements,
-          enabledOverrides: effective.enabled,
-        });
+      if (!data || !artworkImg || !mockups[state.view] || !canvasRef.current) {
+        setOverlayVisible((v) => !v);
+        return;
+      }
+      const mockup = mockups[state.view]!;
+      const effective = buildEffectiveRenderConfig(data.template, state);
+      const pt = mockupPointFromClick(e, canvasRef.current, mockup);
+      const rects = computeGroupRects(effective.template, state.view, artworkImg, {
+        placementOverrides: effective.placements,
+        enabledOverrides: effective.enabled,
+      });
+
+      if (isPillowWrapBlueprint(data.template.blueprintId)) {
+        const faceRect = rects.get("front-face");
+        if (faceRect?.enabled && hitTestEffectiveRect(pt, faceRect.effective)) {
+          setOverlayVisible(true);
+          return;
+        }
+        setOverlayVisible(false);
+        return;
+      }
+
+      if (isSleevesPart(state.activeGroupId)) {
         const frontRect = rects.get("front-body");
         if (frontRect?.enabled && hitTestEffectiveRect(pt, frontRect.effective)) {
           onPartButton("front-body");
@@ -957,7 +999,14 @@ export default function HoodieAopPlacer({
           return;
         }
       }
-      setOverlayVisible((v) => !v);
+
+      const editId = overlayGroupId(state.activeGroupId, data.template, state.hoodLinked);
+      const activeRect = rects.get(editId);
+      if (activeRect?.enabled && hitTestEffectiveRect(pt, activeRect.effective)) {
+        setOverlayVisible(true);
+        return;
+      }
+      setOverlayVisible(false);
     },
     [state, data, artworkImg, mockups, onPartButton],
   );
@@ -983,8 +1032,11 @@ export default function HoodieAopPlacer({
   const updateActiveGroupPlacement = useCallback(
     (view: HoodieView, next: ArtworkPlacement) => {
       setState((prev) => {
-        if (!prev) return prev;
-        const primaryId = overlayGroupId(prev.activeGroupId, data?.template, prev.hoodLinked);
+        if (!prev || !data) return prev;
+        const pillowDup = pillowDuplicateLinked(prev, data.template.blueprintId);
+        const primaryId = pillowDup
+          ? "front-face"
+          : overlayGroupId(prev.activeGroupId, data.template, prev.hoodLinked);
         const prevPrimary =
           prev.placements[primaryId]?.[view] ?? DEFAULT_ARTWORK_PLACEMENT;
         let placements = { ...prev.placements };
@@ -996,8 +1048,10 @@ export default function HoodieAopPlacer({
               front: { ...next },
             },
           });
+        } else if (pillowDup) {
+          placements = mirrorPillowDuplicatePlacements(placements, next);
         } else {
-          const ids = resolveEditGroupIds(prev.activeGroupId, data?.template, prev.hoodLinked);
+          const ids = resolveEditGroupIds(prev.activeGroupId, data.template, prev.hoodLinked);
           const views = viewsForPlacementEdit(prev.activeGroupId, view);
           for (const id of ids) {
             const perView: Partial<Record<HoodieView, ArtworkPlacement>> = {
@@ -1014,14 +1068,16 @@ export default function HoodieAopPlacer({
             };
           }
         }
-        placements = applyLinkedPlacements(
-          prev,
-          placements,
-          primaryId,
-          view,
-          prevPrimary,
-          next,
-        );
+        if (!pillowDup) {
+          placements = applyLinkedPlacements(
+            prev,
+            placements,
+            primaryId,
+            view,
+            prevPrimary,
+            next,
+          );
+        }
         return { ...prev, placements };
       });
     },
@@ -1029,11 +1085,13 @@ export default function HoodieAopPlacer({
   );
 
   const setActiveScale = useCallback((view: HoodieView, scale: number) => {
+    setOverlayVisible(true);
     setState((prev) => {
-      if (!prev) return prev;
-      const ids = resolveEditGroupIds(prev.activeGroupId, data?.template, prev.hoodLinked);
-      const primaryId = overlayGroupId(prev.activeGroupId, data?.template, prev.hoodLinked);
-      const views = viewsForPlacementEdit(prev.activeGroupId, view);
+      if (!prev || !data) return prev;
+      const pillowDup = pillowDuplicateLinked(prev, data.template.blueprintId);
+      const primaryId = pillowDup
+        ? "front-face"
+        : overlayGroupId(prev.activeGroupId, data.template, prev.hoodLinked);
       const cur = prev.placements[primaryId]?.[view] ?? DEFAULT_ARTWORK_PLACEMENT;
       const next: ArtworkPlacement = { ...cur, scale };
       let placements = { ...prev.placements };
@@ -1045,7 +1103,11 @@ export default function HoodieAopPlacer({
             front: { ...next },
           },
         });
+      } else if (pillowDup) {
+        placements = mirrorPillowDuplicatePlacements(placements, next);
       } else {
+        const ids = resolveEditGroupIds(prev.activeGroupId, data.template, prev.hoodLinked);
+        const views = viewsForPlacementEdit(prev.activeGroupId, view);
         for (const id of ids) {
           const perView: Partial<Record<HoodieView, ArtworkPlacement>> = {
             ...(placements[id] ?? {}),
@@ -1059,8 +1121,8 @@ export default function HoodieAopPlacer({
             [id]: perView as Record<HoodieView, ArtworkPlacement>,
           };
         }
+        placements = applyLinkedPlacements(prev, placements, primaryId, view, cur, next);
       }
-      placements = applyLinkedPlacements(prev, placements, primaryId, view, cur, next);
       return { ...prev, placements };
     });
   }, [data]);
@@ -1466,7 +1528,7 @@ export default function HoodieAopPlacer({
         </div>
 
         {/* Place mode: pick which part to scale / enable */}
-        {state.mode === "place" && placePartGroups.length > 0 && (
+        {state.mode === "place" && placePartGroups.length > 0 && !isPillow && (
           <div>
             <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
               Part
@@ -1546,8 +1608,8 @@ export default function HoodieAopPlacer({
           </div>
         )}
 
-        {/* Artwork enabled — toggles the active group (place mode only) */}
-        {state.mode === "place" && (
+        {/* Artwork enabled — hidden for pillow same-print (always on) */}
+        {state.mode === "place" && !(isPillow && state.wrapBackMode === "duplicate") && (
           <div className="flex items-center justify-between rounded border border-border bg-muted/40 px-3 py-2">
             <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
               Artwork enabled

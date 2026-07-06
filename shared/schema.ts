@@ -570,6 +570,8 @@ export const customizerPages = pgTable("customizer_pages", {
   baseProductPrice: text("base_product_price"),    // cached price string
   baseProductHandle: text("base_product_handle"),  // Shopify product handle for embed iframe
   productTypeId: integer("product_type_id"),       // links to our product type for generation
+  /** JSON: { mode: "category", category } | { mode: "selected", presetIds[] } */
+  styleConfig: json("style_config"),
   status: text("status").notNull().default("active"),  // active | disabled
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),

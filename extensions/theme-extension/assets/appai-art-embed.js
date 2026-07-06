@@ -1328,7 +1328,8 @@
         iframe.contentWindow.postMessage({
           type: 'AI_ART_STUDIO_DESIGNER_CONFIG',
           designerConfig: config.inlineDesignerConfig,
-          stylePresets: config.stylePresets || []
+          stylePresets: config.stylePresets || [],
+          styleConfig: config.styleConfig || null,
         }, iframeOrigin || '*');
         console.log(B, 'Sent DESIGNER_CONFIG to iframe:', config.inlineDesignerConfig.name || config.inlineDesignerConfig.id);
       } catch(e) {
@@ -2384,6 +2385,7 @@
       // can render them internally (no external dropdown needed).
       shopifyVariants:      config.variants || [],
       stylePresets:         config.stylePresets || [],
+      styleConfig:          config.styleConfig || null,
     });
 
     // null means the iframe was mounted into an existing theme app block.
