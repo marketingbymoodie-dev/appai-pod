@@ -498,6 +498,10 @@ function SelectedLayerSection({ layer }: { layer: MaskLayer }) {
         </div>
       </div>
 
+      {anchors.length >= 3 && (
+        <PanelTransformControls layer={layer} mesh={layer.mesh} showRotate={!!layer.mesh} />
+      )}
+
       <SourceArtworkSection layer={layer} />
       <MeshWarpSection layer={layer} />
     </Section>
@@ -1012,7 +1016,6 @@ function MeshWarpSection({ layer }: { layer: MaskLayer }) {
             sleeve sheet matches the front vs back view. Toggle off and the mask hides everything
             outside the panel.
           </div>
-          <PanelTransformControls layer={layer} mesh={mesh} />
           <SourceTransformControls layer={layer} mesh={mesh} />
           <div className="flex gap-2">
             <Button
@@ -1044,33 +1047,42 @@ function MeshWarpSection({ layer }: { layer: MaskLayer }) {
 }
 
 /**
- * Rigid-body transform controls for the entire mesh (rotation +
- * translation). Bakes the transform into target points so the artwork
- * + mesh rotate/move together as a unit — matches the user's mental
- * model of "rotate the whole panel" / "move the whole panel". Per-
- * vertex deformation work is preserved.
- *
- * Primary UX is the on-canvas yellow centroid puck (drag = move) and
- * purple rotate puck (drag = rotate); this sidebar block adds quick
- * steppers for precise arithmetic adjustments.
+ * Rigid-body transform controls for the whole panel (mask polygon +
+ * mesh + artwork). Move and scale always apply to mask and mesh together.
+ * Rotation (when shown) still affects mesh/artwork only.
  */
-function PanelTransformControls({ layer, mesh }: { layer: MaskLayer; mesh: MeshGrid }) {
+function PanelTransformControls({
+  layer,
+  mesh,
+  showRotate = false,
+}: {
+  layer: MaskLayer;
+  mesh: MeshGrid | null;
+  showRotate?: boolean;
+}) {
   const actions = useHoodieMapperStore((s) => s.actions);
+  const maskAnchors = useMemo(() => svgPathToAnchors(layer.maskPath), [layer.maskPath]);
 
-  // Centroid of the mesh's target points — used as the rotation anchor
-  // for the sidebar steppers, mirroring the on-canvas puck behaviour.
+  // Centroid of mask + mesh — stable pivot when both exist but drifted.
   const anchor = useMemo(() => {
-    if (mesh.targetPoints.length === 0) return { x: 0, y: 0 };
+    const points = [...maskAnchors];
+    if (mesh?.targetPoints.length) {
+      points.push(...mesh.targetPoints);
+    }
+    if (points.length === 0) return { x: 0, y: 0 };
     let sx = 0;
     let sy = 0;
-    for (const p of mesh.targetPoints) {
+    for (const p of points) {
       sx += p.x;
       sy += p.y;
     }
-    return { x: sx / mesh.targetPoints.length, y: sy / mesh.targetPoints.length };
-  }, [mesh.targetPoints]);
+    return { x: sx / points.length, y: sy / points.length };
+  }, [maskAnchors, mesh?.targetPoints]);
 
-  const rotate = (deg: number) => actions.rotateLayerMesh(layer.id, deg, anchor);
+  const rotate = (deg: number) => {
+    if (!mesh) return;
+    actions.rotateLayerMesh(layer.id, deg, anchor);
+  };
   const translate = (dx: number, dy: number) => actions.translateLayerMesh(layer.id, dx, dy);
   const scale = (factor: number) => actions.scaleLayerMesh(layer.id, factor, anchor);
 
@@ -1093,11 +1105,12 @@ function PanelTransformControls({ layer, mesh }: { layer: MaskLayer; mesh: MeshG
   return (
     <div className="space-y-2 rounded border border-yellow-700/30 bg-yellow-950/15 p-2">
       <div className="text-[10px] uppercase tracking-wide text-yellow-300">
-        Panel transform (whole mesh)
+        Panel transform (mask + mesh)
       </div>
 
+      {showRotate && mesh && (
       <div className="space-y-1">
-        <Label className="text-[10px] text-slate-400">Rotate</Label>
+        <Label className="text-[10px] text-slate-400">Rotate (mesh only)</Label>
         <div className="grid grid-cols-4 gap-1">
           <Button
             size="sm"
@@ -1168,10 +1181,11 @@ function PanelTransformControls({ layer, mesh }: { layer: MaskLayer; mesh: MeshG
           </Button>
         </div>
       </div>
+      )}
 
       <div className="space-y-1">
         <div className="flex items-center justify-between">
-          <Label className="text-[10px] text-slate-400">Size (uniform — preserves ratio)</Label>
+          <Label className="text-[10px] text-slate-400">Size (mask + mesh)</Label>
           <span className="text-[10px] text-yellow-300">×{sessionScale.toFixed(2)}</span>
         </div>
         <Slider
@@ -1325,19 +1339,17 @@ function PanelTransformControls({ layer, mesh }: { layer: MaskLayer; mesh: MeshG
       </div>
 
       <div className="space-y-1 text-[10px] text-slate-500">
+        {mesh ? (
+          <div>
+            On canvas (<span className="text-purple-200">Mesh Warp W</span>): drag the{" "}
+            <span className="text-yellow-300">yellow</span> puck to move,{" "}
+            <span className="text-emerald-300">green</span> puck to resize — mask and mesh
+            move/scale together.
+          </div>
+        ) : null}
         <div>
-          On canvas: drag the <span className="text-yellow-300">yellow</span>{" "}
-          puck (centroid) to move,{" "}
-          <span className="text-purple-300">purple</span> puck (above) to
-          rotate, and <span className="text-emerald-300">green</span> puck
-          (bottom-right) to resize uniformly. Hold{" "}
-          <kbd className="rounded bg-slate-800 px-1">Shift</kbd> while
-          rotating to snap to 15°.
-        </div>
-        <div className="text-slate-400">
-          Moves the <span className="text-amber-300">mesh + artwork only</span>.
-          The polygon mask stays where you traced it — to slide the polygon
-          itself, switch to Move and drag the panel body on canvas.
+          With <span className="text-slate-300">Move (V)</span>, drag the panel body to reposition
+          mask and mesh together.
         </div>
       </div>
     </div>

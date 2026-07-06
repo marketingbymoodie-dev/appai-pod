@@ -259,27 +259,16 @@ export type HoodieMapperActions = {
    */
   rotateLayerMesh: (id: string, deltaDeg: number, anchor: Pt) => void;
   /**
-   * Rigid-body translate every mesh target point by `(dx, dy)` mockup
-   * pixels. Powers the centroid drag-to-move handle on canvas; lets the
-   * user re-position a panel on a sleeve etc. without re-tracing.
+   * Rigid-body translate the whole panel — mask polygon, mesh target
+   * points, and corner pins — by `(dx, dy)` mockup pixels.
    */
   translateLayerMesh: (id: string, dx: number, dy: number) => void;
   /**
-   * Uniformly scale every mesh target point by `scale` around `anchor`
-   * (mockup pixel coords; typically the mesh centroid). Single factor
-   * applied to both X and Y so the panel's aspect ratio is preserved.
-   * Rejects non-finite or non-positive values, and `scale === 1` is a
-   * no-op. Powers the size slider / corner puck.
+   * Uniformly scale the whole panel — mask polygon, mesh target points,
+   * and corner pins — by `scale` around `anchor` (mockup pixel coords).
    */
   scaleLayerMesh: (id: string, scale: number, anchor: Pt) => void;
-  /**
-   * Translate the polygon (maskPath) by (dx, dy) — independent of mesh
-   * / artwork. This is the gesture the user invokes when they need to
-   * slide the print BOUNDARY (e.g. after duplicating a panel: drop the
-   * dupe somewhere else on the mockup before reshaping it). Does not
-   * touch mesh.targetPoints; the warped artwork stays put unless the
-   * user also moves it via the on-canvas pucks.
-   */
+  /** Alias of `translateLayerMesh` — mask and mesh always move together. */
   translateLayerPolygon: (id: string, dx: number, dy: number) => void;
   setMeshEdit: (patch: Partial<MeshEditState>) => void;
 };
@@ -379,6 +368,37 @@ function applyAnchorsTo(
   const view = template.views[found.view];
   const layers = view.layers.map((l) =>
     l.id === id ? { ...l, maskPath: anchorsToSvgPath(anchors) } : l,
+  );
+  return patchView(template, found.view, { layers });
+}
+
+/** Apply a point-wise map to mask polygon + mesh geometry on one layer. */
+function mapLayerPanelPoints(layer: MaskLayer, mapPoint: (p: Pt) => Pt): MaskLayer {
+  const anchors = svgPathToAnchors(layer.maskPath);
+  const mappedAnchors = anchors.map(mapPoint);
+  const maskPath =
+    mappedAnchors.length >= 2 ? anchorsToSvgPath(mappedAnchors) : layer.maskPath;
+
+  if (!layer.mesh) {
+    return { ...layer, maskPath };
+  }
+
+  const targetPoints = layer.mesh.targetPoints.map(mapPoint);
+  const cornerPins = layer.cornerPins
+    ? (layer.cornerPins.map(mapPoint) as typeof layer.cornerPins)
+    : layer.cornerPins;
+  return { ...layer, maskPath, mesh: { ...layer.mesh, targetPoints }, cornerPins };
+}
+
+function applyPanelPointMap(
+  template: HoodieTemplate,
+  id: string,
+  mapPoint: (p: Pt) => Pt,
+): HoodieTemplate | null {
+  const found = findLayerById(template, id);
+  if (!found) return null;
+  const layers = template.views[found.view].layers.map((l) =>
+    l.id === id ? mapLayerPanelPoints(l, mapPoint) : l,
   );
   return patchView(template, found.view, { layers });
 }
@@ -884,12 +904,9 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
             y: anchor.y + dx * sin + dy * cos,
           };
         };
-        // Mesh + corner pins move together (they describe the WARPED
-        // ARTWORK as a rigid unit). The polygon (maskPath) intentionally
-        // stays put — it's the print boundary on the mockup, set by
-        // tracing the actual mockup region, and shouldn't drift when
-        // the artwork inside it is repositioned. Use the dedicated
-        // polygon move/rotate actions to move the boundary itself.
+        // Mesh + corner pins rotate together; mask polygon stays put
+        // (rotation is artwork-only — use panel move/scale to reposition
+        // the traced boundary with the mesh).
         const layers = s.template.views[found.view].layers.map((l) => {
           if (l.id !== id || !l.mesh) return l;
           const targetPoints = l.mesh.targetPoints.map(rot);
@@ -905,29 +922,16 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
       }),
     translateLayerMesh: (id, dx, dy) =>
       set((s) => {
-        const found = findLayerById(s.template, id);
-        if (!found || !found.layer.mesh) return {} as Partial<Store>;
         if ((!Number.isFinite(dx) || !Number.isFinite(dy)) || (dx === 0 && dy === 0)) {
           return {} as Partial<Store>;
         }
         const trans = (p: Pt): Pt => ({ x: p.x + dx, y: p.y + dy });
-        const layers = s.template.views[found.view].layers.map((l) => {
-          if (l.id !== id || !l.mesh) return l;
-          const targetPoints = l.mesh.targetPoints.map(trans);
-          const cornerPins = l.cornerPins
-            ? (l.cornerPins.map(trans) as typeof l.cornerPins)
-            : l.cornerPins;
-          return { ...l, mesh: { ...l.mesh, targetPoints }, cornerPins };
-        });
-        return {
-          template: patchView(s.template, found.view, { layers }),
-          dirty: true,
-        };
+        const next = applyPanelPointMap(s.template, id, trans);
+        if (!next) return {} as Partial<Store>;
+        return { template: next, dirty: true };
       }),
     scaleLayerMesh: (id, scale, anchor) =>
       set((s) => {
-        const found = findLayerById(s.template, id);
-        if (!found || !found.layer.mesh) return {} as Partial<Store>;
         if (!Number.isFinite(scale) || scale <= 0 || scale === 1) {
           return {} as Partial<Store>;
         }
@@ -935,40 +939,11 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
           x: anchor.x + (p.x - anchor.x) * scale,
           y: anchor.y + (p.y - anchor.y) * scale,
         });
-        const layers = s.template.views[found.view].layers.map((l) => {
-          if (l.id !== id || !l.mesh) return l;
-          const targetPoints = l.mesh.targetPoints.map(sc);
-          const cornerPins = l.cornerPins
-            ? (l.cornerPins.map(sc) as typeof l.cornerPins)
-            : l.cornerPins;
-          return { ...l, mesh: { ...l.mesh, targetPoints }, cornerPins };
-        });
-        return {
-          template: patchView(s.template, found.view, { layers }),
-          dirty: true,
-        };
+        const next = applyPanelPointMap(s.template, id, sc);
+        if (!next) return {} as Partial<Store>;
+        return { template: next, dirty: true };
       }),
-    translateLayerPolygon: (id, dx, dy) =>
-      set((s) => {
-        const found = findLayerById(s.template, id);
-        if (!found) return {} as Partial<Store>;
-        if ((!Number.isFinite(dx) || !Number.isFinite(dy)) || (dx === 0 && dy === 0)) {
-          return {} as Partial<Store>;
-        }
-        const layers = s.template.views[found.view].layers.map((l) => {
-          if (l.id !== id) return l;
-          const anchors = svgPathToAnchors(l.maskPath).map((p) => ({
-            x: p.x + dx,
-            y: p.y + dy,
-          }));
-          if (anchors.length < 2) return l;
-          return { ...l, maskPath: anchorsToSvgPath(anchors) };
-        });
-        return {
-          template: patchView(s.template, found.view, { layers }),
-          dirty: true,
-        };
-      }),
+    translateLayerPolygon: (id, dx, dy) => get().actions.translateLayerMesh(id, dx, dy),
     setMeshEdit: (patch) =>
       set((s) => ({ meshEdit: { ...s.meshEdit, ...patch } })),
   },

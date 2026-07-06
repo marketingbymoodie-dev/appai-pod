@@ -32,11 +32,7 @@ type Props = {
   /**
    * Fired when the user mousedowns on the body of an already-selected
    * polygon (no modifier keys). HoodieCanvas uses this to start a
-   * "translate the polygon as a whole" drag — the user grabs the
-   * polygon, drags somewhere, releases, and the polygon's anchors are
-   * shifted by the delta. Intentionally separate from `onSelect` so
-   * we don't accidentally move polygons during a routine selection
-   * click on a different layer.
+   * panel drag — mask polygon and mesh move together.
    */
   onPolygonDragStart?: (id: string, mockupX: number, mockupY: number) => void;
 };

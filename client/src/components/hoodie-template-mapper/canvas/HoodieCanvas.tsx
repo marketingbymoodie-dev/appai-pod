@@ -329,12 +329,10 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
   // the in-flight drag and we commit once on drag end.
   const [dragAnchors, setDragAnchors] = useState<Pt[] | null>(null);
 
-  // Polygon-translate drag state — lets the user grab the body of the
-  // already-selected polygon and drag the whole shape to a new location
-  // (the duplicate-and-move workflow). `start` is captured on mousedown
-  // and `last` is updated on every stage mousemove; on mouseup we commit
-  // a single translateLayerPolygon() with the cumulative delta and clear
-  // the override. Mesh + artwork stay put — only the polygon mask moves.
+  // Polygon-translate drag state — grab the panel body in Move tool and
+  // drag mask + mesh together. `start` is captured on mousedown and
+  // `last` is updated on every stage mousemove; on mouseup we commit
+  // a single translateLayerMesh() with the cumulative delta.
   const [polyDrag, setPolyDrag] = useState<
     { id: string; start: Pt; last: Pt; baseAnchors: Pt[] } | null
   >(null);

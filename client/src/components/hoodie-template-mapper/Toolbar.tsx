@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import {
   MousePointer2,
@@ -288,21 +295,27 @@ export default function Toolbar({ onOpenLoadDialog, onLoadTemplate }: Props) {
 
       <div className="mx-2 h-6 w-px bg-slate-700" />
 
-      {/* View switcher */}
-      <div className="flex overflow-hidden rounded-md border border-slate-700">
-        {(["front", "back"] as HoodieView[]).map((v) => (
-          <Button
-            key={v}
-            size="sm"
-            variant={view === v ? "default" : "ghost"}
-            onClick={() => actions.setView(v)}
-            data-testid={`hoodie-view-${v}`}
-            className="h-8 rounded-none border-0 px-3 text-xs uppercase tracking-wide"
-          >
-            {v}
-          </Button>
-        ))}
-      </div>
+      {/* View switcher — compact dropdown so FRONT/BACK stays usable in narrow Shopify admin iframes */}
+      <Select
+        value={view}
+        onValueChange={(v) => actions.setView(v as HoodieView)}
+      >
+        <SelectTrigger
+          className="h-8 w-[5.5rem] shrink-0 border-slate-700 bg-slate-950 px-2 text-xs uppercase tracking-wide"
+          aria-label="Mockup view"
+          data-testid="hoodie-view-select"
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="front" className="text-xs uppercase" data-testid="hoodie-view-front">
+            Front
+          </SelectItem>
+          <SelectItem value="back" className="text-xs uppercase" data-testid="hoodie-view-back">
+            Back
+          </SelectItem>
+        </SelectContent>
+      </Select>
 
       <div className="mx-2 h-6 w-px bg-slate-700" />
 
