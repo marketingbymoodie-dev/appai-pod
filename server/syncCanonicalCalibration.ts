@@ -63,16 +63,57 @@ export async function syncProductTypeFromCanonicalCalibration(
 }
 
 /** Ensure flat catalog products have canonical calibration before building designer config. */
+/** Copy published platform-catalog AOP metadata onto a merchant product type. */
+export async function syncProductTypeFromPlatformCatalogAop(
+  productType: {
+    id: number;
+    printifyBlueprintId: number | null;
+    isAllOverPrint?: boolean | null;
+    panelMappingTemplate?: string | null;
+    flatCalibrationStatus?: string | null;
+  },
+): Promise<{ synced: boolean; productType?: Awaited<ReturnType<typeof storage.getProductType>> }> {
+  if (!productType.printifyBlueprintId) return { synced: false };
+
+  const catalogEntry = await getPlatformCatalogEntry(productType.printifyBlueprintId);
+  if (catalogEntry?.kind !== "aop") return { synced: false };
+  if (catalogEntry.status !== "published" || !catalogEntry.panelMappingTemplate) {
+    return { synced: false };
+  }
+
+  const updates: Record<string, unknown> = {};
+  if (!productType.isAllOverPrint) updates.isAllOverPrint = true;
+  if (productType.panelMappingTemplate !== catalogEntry.panelMappingTemplate) {
+    updates.panelMappingTemplate = catalogEntry.panelMappingTemplate;
+  }
+  if (productType.flatCalibrationStatus !== "unsupported") {
+    updates.flatCalibrationStatus = "unsupported";
+  }
+  if (Object.keys(updates).length === 0) return { synced: false };
+
+  await storage.updateProductType(productType.id, updates);
+  const updated = await storage.getProductType(productType.id);
+  console.log(
+    `[aop-catalog] synced platform AOP metadata onto pt ${productType.id} from bp ${productType.printifyBlueprintId} → ${catalogEntry.panelMappingTemplate}`,
+  );
+  return { synced: true, productType: updated ?? undefined };
+}
+
 export async function prepareProductTypeForDesigner(
   productType: {
     id: number;
     name: string;
     printifyBlueprintId: number | null;
     flatCalibration?: unknown;
+    isAllOverPrint?: boolean | null;
+    panelMappingTemplate?: string | null;
+    flatCalibrationStatus?: string | null;
   } | null | undefined,
   options?: { allowUnpublishedHarvest?: boolean },
 ): Promise<typeof productType> {
   if (!productType) return productType;
-  const syncResult = await syncProductTypeFromCanonicalCalibration(productType, options);
-  return syncResult.productType ?? productType;
+  const flatSync = await syncProductTypeFromCanonicalCalibration(productType, options);
+  let current = flatSync.productType ?? productType;
+  const aopSync = await syncProductTypeFromPlatformCatalogAop(current);
+  return aopSync.productType ?? current;
 }

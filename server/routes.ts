@@ -3621,6 +3621,34 @@ ${textEdgeRestrictions}
    * Called directly (no HTTP) so it works inside other route handlers.
    * Returns { shopifyProductId, shopifyHandle } on success, throws on failure.
    */
+  async function syncCustomizerPagesForShopifyProduct(args: {
+    productTypeId: number;
+    shop: string;
+    shopifyProductId: string;
+    shopifyHandle: string;
+    firstVariantId: string | number;
+  }): Promise<void> {
+    const pages = await storage.listCustomizerPagesByProductTypeId(args.productTypeId);
+    for (const page of pages) {
+      if (page.shop !== args.shop) continue;
+      if (
+        String(page.baseProductId) === String(args.shopifyProductId) &&
+        String(page.baseVariantId) === String(args.firstVariantId) &&
+        (page as any).baseProductHandle === args.shopifyHandle
+      ) {
+        continue;
+      }
+      await storage.updateCustomizerPage(page.id, {
+        baseProductId: String(args.shopifyProductId),
+        baseVariantId: String(args.firstVariantId),
+        baseProductHandle: args.shopifyHandle,
+      });
+      console.log(
+        `[customizer-pages] synced page ${page.handle} → product ${args.shopifyProductId} variant ${args.firstVariantId}`,
+      );
+    }
+  }
+
   async function createShopifyProductForType(
     shop: string,
     accessToken: string,
@@ -3763,6 +3791,17 @@ ${textEdgeRestrictions}
       shopifyVariantIds: shopifyVariantIds,
       lastPushedToShopify: new Date(),
     });
+
+    const firstVariantId = createdVariants[0]?.id;
+    if (firstVariantId) {
+      await syncCustomizerPagesForShopifyProduct({
+        productTypeId: productType.id,
+        shop,
+        shopifyProductId: newShopifyProductId,
+        shopifyHandle,
+        firstVariantId,
+      });
+    }
 
     return { shopifyProductId: newShopifyProductId, shopifyHandle };
   }
@@ -4372,6 +4411,17 @@ ${textEdgeRestrictions}
             lastPushedToShopify: new Date(),
           });
 
+          const firstVariantId = createdVariants[0]?.id;
+          if (firstVariantId) {
+            await syncCustomizerPagesForShopifyProduct({
+              productTypeId,
+              shop: shopDomain,
+              shopifyProductId: String(shopifyProductId),
+              shopifyHandle,
+              firstVariantId,
+            });
+          }
+
           return res.json({
             success: true,
             message: "Product created in Shopify",
@@ -4612,6 +4662,17 @@ ${textEdgeRestrictions}
         shopifyVariantIds: shopifyVariantIds,
         lastPushedToShopify: new Date(),
       });
+
+      const firstVariantId = createdVariants[0]?.id;
+      if (firstVariantId) {
+        await syncCustomizerPagesForShopifyProduct({
+          productTypeId,
+          shop: shopDomain,
+          shopifyProductId: String(shopifyProductId),
+          shopifyHandle,
+          firstVariantId,
+        });
+      }
 
       return res.json({
         success: true,
@@ -5569,6 +5630,7 @@ ${textEdgeRestrictions}
         fulfillmentLayout: (productType as any).fulfillmentLayout || null,
         effectiveStorefrontMockupMode: resolveStorefrontMockupMode({
           isAllOverPrint: productType.isAllOverPrint,
+          panelMappingTemplate: (productType as any).panelMappingTemplate || null,
           storefrontMockupMode: (productType as any).storefrontMockupMode,
           fulfillmentLayout: (productType as any).fulfillmentLayout,
           printifyBlueprintId: productType.printifyBlueprintId,
@@ -5581,6 +5643,7 @@ ${textEdgeRestrictions}
         }),
         useAopCustomizer: usesAopStorefrontCustomizer({
           isAllOverPrint: productType.isAllOverPrint,
+          panelMappingTemplate: (productType as any).panelMappingTemplate || null,
           storefrontMockupMode: (productType as any).storefrontMockupMode,
           fulfillmentLayout: (productType as any).fulfillmentLayout,
           printifyBlueprintId: productType.printifyBlueprintId,
@@ -5876,6 +5939,7 @@ ${textEdgeRestrictions}
       fulfillmentLayout: (productTypeToUse as any).fulfillmentLayout || null,
       effectiveStorefrontMockupMode: resolveStorefrontMockupMode({
         isAllOverPrint: productTypeToUse.isAllOverPrint,
+        panelMappingTemplate: (productTypeToUse as any).panelMappingTemplate || null,
         storefrontMockupMode: (productTypeToUse as any).storefrontMockupMode,
         fulfillmentLayout: (productTypeToUse as any).fulfillmentLayout,
         printifyBlueprintId: productTypeToUse.printifyBlueprintId,
@@ -5888,6 +5952,7 @@ ${textEdgeRestrictions}
       }),
       useAopCustomizer: usesAopStorefrontCustomizer({
         isAllOverPrint: productTypeToUse.isAllOverPrint,
+        panelMappingTemplate: (productTypeToUse as any).panelMappingTemplate || null,
         storefrontMockupMode: (productTypeToUse as any).storefrontMockupMode,
         fulfillmentLayout: (productTypeToUse as any).fulfillmentLayout,
         printifyBlueprintId: productTypeToUse.printifyBlueprintId,
@@ -8213,6 +8278,7 @@ ${textEdgeRestrictions}
       });
       const useAopMockups = usesAopStorefrontCustomizer({
         isAllOverPrint: productType.isAllOverPrint,
+        panelMappingTemplate: (productType as any).panelMappingTemplate || null,
         storefrontMockupMode: (productType as any).storefrontMockupMode,
         fulfillmentLayout: (productType as any).fulfillmentLayout,
         printifyBlueprintId: productType.printifyBlueprintId,
@@ -13430,11 +13496,13 @@ ${textEdgeRestrictions}
       let bleedMarginPercent = 5;
       
       const positionKeys = Object.keys(placeholderDimensions);
-      const isAllOverPrint = detectPrintifyAllOverPrint({
-        name,
-        description,
-        blueprintId: Number.parseInt(String(blueprintId), 10),
-      });
+      const isAllOverPrint =
+        catalogEntry.kind === "aop" ||
+        detectPrintifyAllOverPrint({
+          name,
+          description,
+          blueprintId: Number.parseInt(String(blueprintId), 10),
+        });
 
       // Detect apparel FIRST (before framed-print check)
       if (isApparelProduct) {

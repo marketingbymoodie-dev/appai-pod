@@ -31,6 +31,8 @@ export const ADJUSTABLE_TOTE_BLUEPRINT_ID = 1300;
 
 export type LayoutPolicySource = {
   isAllOverPrint?: boolean | null;
+  /** Mesh-warp AOP panel mapper template — enables HoodieAopPlacer when set. */
+  panelMappingTemplate?: string | null;
   storefrontMockupMode?: string | null;
   fulfillmentLayout?: string | null;
   printifyBlueprintId?: number | null;
@@ -67,7 +69,14 @@ export function resolveStorefrontMockupMode(
     resolveFulfillmentLayout(product, catalog);
   if (fulfillment === TOTE_FOLDED_V1_TEMPLATE) return "flat";
 
-  if (product.isAllOverPrint || catalog?.isAllOverPrint) return "aop";
+  if (
+    product.panelMappingTemplate ||
+    catalog?.panelMappingTemplate ||
+    product.isAllOverPrint ||
+    catalog?.isAllOverPrint
+  ) {
+    return "aop";
+  }
   return "printify";
 }
 
@@ -91,6 +100,7 @@ export function usesAopStorefrontCustomizer(
   product: LayoutPolicySource,
   catalog?: LayoutPolicySource | null,
 ): boolean {
+  if (product.panelMappingTemplate || catalog?.panelMappingTemplate) return true;
   const mode = resolveStorefrontMockupMode(product, catalog);
   if (mode === "aop") return true;
   if (mode === "flat" || mode === "printify") return false;
