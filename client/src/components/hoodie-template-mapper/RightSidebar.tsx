@@ -47,6 +47,7 @@ import { svgPathToAnchors } from "./lib/svgPath";
 import { readImageDimensions, uploadReferenceOverlay, uploadSourcePanel } from "./api";
 import { loadMapperAssetImage } from "./lib/mapperAssetImage";
 import { MapperAssetThumbnail } from "./lib/useMapperAssetImage";
+import SourceArtworkCropPicker from "./SourceArtworkCropPicker";
 import { detectMockupContentBounds } from "./lib/mockupCrop";
 import { applyMockupCropUpload } from "./lib/mockupCropApply";
 import MockupCropControls from "./MockupCropControls";
@@ -972,10 +973,13 @@ function ReferenceOverlayUpload({
  */
 function SourceArtworkSection({ layer }: { layer: MaskLayer }) {
   const templateName = useHoodieMapperStore((s) => s.template.name);
+  const meshEdit = useHoodieMapperStore((s) => s.meshEdit);
   const actions = useHoodieMapperStore((s) => s.actions);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [busy, setBusy] = useState(false);
   const { toast } = useToast();
+  const mesh = layer.mesh;
+  const cropActive = meshEdit.cropEditing;
 
   async function handleUpload(file: File) {
     setBusy(true);
@@ -1006,14 +1010,47 @@ function SourceArtworkSection({ layer }: { layer: MaskLayer }) {
       </div>
       {layer.productionPanelSrc ? (
         <div className="mt-2 space-y-2">
-          <div className="overflow-hidden rounded border border-slate-800 bg-slate-950">
-            <MapperAssetThumbnail
-              src={layer.productionPanelSrc}
-              alt={`Source for ${layer.name}`}
-              className="block max-h-32 w-full object-contain bg-slate-900"
-            />
-          </div>
+          {mesh ? (
+            <>
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[10px] text-slate-500">
+                  Drag the box to pick which part of the sheet the mesh samples.
+                </div>
+                <Button
+                  size="sm"
+                  variant={cropActive ? "default" : "outline"}
+                  className="h-7 shrink-0 px-2 text-[10px]"
+                  onClick={() => actions.setMeshEdit({ cropEditing: !cropActive })}
+                >
+                  <Crop className="mr-1 h-3 w-3" />
+                  {cropActive ? "Editing slice" : "Edit slice"}
+                </Button>
+              </div>
+              <SourceArtworkCropPicker
+                src={layer.productionPanelSrc}
+                alt={`Source for ${layer.name}`}
+                sourceRect={mesh.sourceRect}
+                active={cropActive}
+                onChange={(rect, opts) =>
+                  actions.setLayerMeshSourceRect(layer.id, rect, opts)
+                }
+              />
+            </>
+          ) : (
+            <div className="overflow-hidden rounded border border-slate-800 bg-slate-950">
+              <MapperAssetThumbnail
+                src={layer.productionPanelSrc}
+                alt={`Source for ${layer.name}`}
+                className="block max-h-32 w-full object-contain bg-slate-900"
+              />
+            </div>
+          )}
           <div className="break-all text-[10px] text-slate-500">{layer.productionPanelSrc}</div>
+          {!mesh && (
+            <div className="text-[10px] text-amber-300/90">
+              Initialise a mesh on this layer to enable the sheet slice picker.
+            </div>
+          )}
           <div className="flex gap-2">
             <Button
               size="sm"
@@ -1131,10 +1168,16 @@ function MeshWarpSection({ layer }: { layer: MaskLayer }) {
             checked={meshEdit.showFullArtwork}
             onChange={(c) => actions.setMeshEdit({ showFullArtwork: c })}
           />
+          <ToggleRow
+            label="Edit source sheet slice"
+            checked={meshEdit.cropEditing}
+            onChange={(c) => actions.setMeshEdit({ cropEditing: c })}
+          />
           <div className="text-[10px] text-slate-500">
             Toggle on to see the artwork beyond the polygon — useful for picking which slice of a
-            sleeve sheet matches the front vs back view. Toggle off and the mask hides everything
-            outside the panel.
+            sleeve sheet matches the front vs back view. Use{" "}
+            <span className="text-fuchsia-300">Edit source sheet slice</span> to drag the crop box
+            on the uploaded panel image in the Source artwork section.
           </div>
           <SourceTransformControls layer={layer} mesh={mesh} />
           <div className="flex gap-2">

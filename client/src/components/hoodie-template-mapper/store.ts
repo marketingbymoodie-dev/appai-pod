@@ -287,7 +287,11 @@ export type HoodieMapperActions = {
   resetLayerMesh: (id: string, cols?: number, rows?: number) => void;
   resizeLayerMesh: (id: string, cols: number, rows: number) => void;
   setLayerMeshTargetPoint: (id: string, index: number, point: Pt) => void;
-  setLayerMeshSourceRect: (id: string, rect: SourceRect | null) => void;
+  setLayerMeshSourceRect: (
+    id: string,
+    rect: SourceRect | null,
+    opts?: { recordUndo?: boolean },
+  ) => void;
   /**
    * Patch source-image rotation/flip on a layer's mesh. Affects only the
    * UV sampling of the artwork inside each mesh cell; the mesh shape is
@@ -1229,17 +1233,18 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
           dirty: true,
         };
       }),
-    setLayerMeshSourceRect: (id, rect) =>
+    setLayerMeshSourceRect: (id, rect, opts) =>
       set((s) => {
         const found = findLayerById(s.template, id);
         if (!found || !found.layer.mesh) return {} as Partial<Store>;
         const layers = s.template.views[found.view].layers.map((l) =>
           l.id === id && l.mesh ? { ...l, mesh: { ...l.mesh, sourceRect: rect } } : l,
         );
-        return withUndo(s, {
+        const patch = {
           template: patchView(s.template, found.view, { layers }),
           dirty: true,
-        });
+        };
+        return opts?.recordUndo === false ? patch : withUndo(s, patch);
       }),
     setLayerMeshSourceTransform: (id, patch) =>
       set((s) => {
