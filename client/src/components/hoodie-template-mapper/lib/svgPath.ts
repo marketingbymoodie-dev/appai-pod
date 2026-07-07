@@ -209,6 +209,41 @@ export function boundingBoxOfSubpaths(
   return boundingBox(subpaths.flat());
 }
 
+/** Append closed subpaths to the current canvas path (call inside beginPath). */
+export function appendMaskSubpathsToPath(
+  ctx: CanvasRenderingContext2D,
+  subpaths: readonly (readonly Pt[])[],
+): boolean {
+  const valid = subpaths.filter((ring) => ring.length >= 3);
+  if (valid.length === 0) return false;
+  for (const ring of valid) {
+    ctx.moveTo(ring[0].x, ring[0].y);
+    for (let i = 1; i < ring.length; i += 1) {
+      ctx.lineTo(ring[i].x, ring[i].y);
+    }
+    ctx.closePath();
+  }
+  return true;
+}
+
+/** Clip a 2D canvas to the union of all mask subpaths (merged Front L+R, etc.). */
+export function clipCanvasToMaskSubpaths(
+  ctx: CanvasRenderingContext2D,
+  subpaths: readonly (readonly Pt[])[],
+): boolean {
+  ctx.beginPath();
+  if (!appendMaskSubpathsToPath(ctx, subpaths)) return false;
+  ctx.clip();
+  return true;
+}
+
+/** Flatten one subpath for Konva Line `points`. */
+export function flattenSubpathPoints(anchors: readonly Pt[]): number[] {
+  const out: number[] = [];
+  for (const p of anchors) out.push(p.x, p.y);
+  return out;
+}
+
 /**
  * Standard ray-casting point-in-polygon for a closed list of anchors.
  */

@@ -52,7 +52,7 @@ import {
   mockupDrawRect,
   SEAM_PAIR_PANELS,
 } from "@shared/hoodieTemplate";
-import { svgPathToAnchors } from "./svgPath";
+import { svgPathToAnchors, svgPathToSubpaths, clipCanvasToMaskSubpaths, appendMaskSubpathsToPath, boundingBoxOfSubpaths } from "./svgPath";
 import { drawMeshWarp } from "./meshWarp";
 
 /**
@@ -682,10 +682,15 @@ function totalPrintAabb(layers: MaskLayer[], filter?: (l: MaskLayer) => boolean)
     if (layer.isExclusion) continue;
     if (!layer.visible) continue;
     if (filter && !filter(layer)) continue;
-    const anchors = svgPathToAnchors(layer.maskPath);
-    if (anchors.length < 3) continue;
-    const bb = aabbOf(anchors);
-    if (!bb) continue;
+    const subpaths = svgPathToSubpaths(layer.maskPath);
+    const bbFlat = boundingBoxOfSubpaths(subpaths);
+    if (!bbFlat) continue;
+    const bb = {
+      x: bbFlat.minX,
+      y: bbFlat.minY,
+      width: bbFlat.maxX - bbFlat.minX,
+      height: bbFlat.maxY - bbFlat.minY,
+    };
     total = total ? unionAabb(total, bb) : bb;
   }
   return total;
@@ -1373,12 +1378,13 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     1024 / 24;
 
   for (const layer of printLayers) {
-    const anchors = svgPathToAnchors(layer.maskPath);
-    if (anchors.length < 3) continue;
+    const subpaths = svgPathToSubpaths(layer.maskPath);
 
     pctx.save();
-    pathPolygon(pctx, anchors);
-    pctx.clip();
+    if (!clipCanvasToMaskSubpaths(pctx, subpaths)) {
+      pctx.restore();
+      continue;
+    }
     pctx.globalAlpha = layer.opacity;
 
     // Whether this panel actually receives artwork. When false, the
@@ -1683,9 +1689,9 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     pctx.globalCompositeOperation = "destination-out";
     pctx.fillStyle = "#000"; // colour irrelevant under destination-out, only alpha matters
     for (const layer of exclusionLayers) {
-      const anchors = svgPathToAnchors(layer.maskPath);
-      if (anchors.length < 3) continue;
-      pathPolygon(pctx, anchors);
+      const subpaths = svgPathToSubpaths(layer.maskPath);
+      pctx.beginPath();
+      if (!appendMaskSubpathsToPath(pctx, subpaths)) continue;
       pctx.fill();
     }
     pctx.restore();
@@ -1747,9 +1753,10 @@ function drawOutlines(ctx: CanvasRenderingContext2D, layers: MaskLayer[]): void 
   ctx.save();
   ctx.lineWidth = 2;
   for (const layer of layers) {
-    const anchors = svgPathToAnchors(layer.maskPath);
-    if (anchors.length < 3) continue;
-    pathPolygon(ctx, anchors);
+    const subpaths = svgPathToSubpaths(layer.maskPath).filter((ring) => ring.length >= 3);
+    if (subpaths.length === 0) continue;
+    ctx.beginPath();
+    appendMaskSubpathsToPath(ctx, subpaths);
     ctx.strokeStyle = layer.isExclusion ? EXCLUSION_OUTLINE : PRINT_OUTLINE;
     if (layer.isExclusion) ctx.setLineDash([8, 6]);
     else ctx.setLineDash([]);
@@ -1766,9 +1773,9 @@ function drawLabels(ctx: CanvasRenderingContext2D, layers: MaskLayer[]): void {
   ctx.lineWidth = 3;
   ctx.strokeStyle = "rgba(0,0,0,0.65)";
   for (const layer of layers) {
-    const anchors = svgPathToAnchors(layer.maskPath);
-    if (anchors.length < 3) continue;
-    const c = centroid(anchors);
+    const flat = svgPathToSubpaths(layer.maskPath).flat();
+    if (flat.length < 3) continue;
+    const c = centroid(flat);
     const text = layer.panelKey
       ? layer.panelKey.replace(/_/g, " ")
       : layer.isExclusion
