@@ -180,6 +180,8 @@ export type HoodieMapperActions = {
   setView: (view: HoodieView) => void;
   setTool: (tool: HoodieToolId) => void;
   setSelectedLayer: (id: string | null, opts?: { additive?: boolean }) => void;
+  /** Toggle a layer in/out of the merge multi-select (checkboxes). */
+  toggleMergeSelection: (id: string) => void;
   /**
    * Boolean-union selected panel masks into one new layer. Sources can be
    * removed; mesh is not merged — re-setup mesh on the combined polygon.
@@ -502,6 +504,20 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
           };
         }
         return { selectedLayerId: id, mergeSelectionIds: [id], selectedAnchorIndex: null };
+      }),
+    toggleMergeSelection: (id) =>
+      set((s) => {
+        const base =
+          s.mergeSelectionIds.length > 0
+            ? s.mergeSelectionIds
+            : s.selectedLayerId
+              ? [s.selectedLayerId]
+              : [];
+        const next = base.includes(id) ? base.filter((x) => x !== id) : [...base, id];
+        return {
+          mergeSelectionIds: next,
+          selectedLayerId: s.selectedLayerId ?? id,
+        };
       }),
     setHoverLayer: (id) => set(() => ({ hoverLayerId: id })),
     setDebug: (patch) => set((s) => ({ debug: { ...s.debug, ...patch } })),

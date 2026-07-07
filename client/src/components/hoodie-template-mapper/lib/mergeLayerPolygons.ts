@@ -3,8 +3,10 @@
  * Used when merging e.g. Front Left + Front Right into one Front panel.
  */
 
-import { union } from "polygon-clipping";
+import polygonClipping from "polygon-clipping";
 import type { Pt } from "@shared/hoodieTemplate";
+
+const { union } = polygonClipping;
 
 type Ring = [number, number][];
 

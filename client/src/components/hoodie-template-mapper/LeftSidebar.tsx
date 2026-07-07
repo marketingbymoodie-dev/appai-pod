@@ -291,7 +291,7 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
                 Merge selected ({mergeIdsOnView.length})
               </Button>
               <p className="text-[10px] leading-snug text-slate-500">
-                Ctrl+click layers to multi-select. Merged mesh is cleared — re-mesh if needed.
+                Check layers to merge, or Ctrl+click. Merged mesh is cleared — re-mesh if needed.
               </p>
             </div>
             <ul className="space-y-1">
@@ -326,6 +326,16 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
                             : "hover:bg-slate-800"
                     }`}
                   >
+                    <input
+                      type="checkbox"
+                      checked={inMergeSelection}
+                      title="Include in merge"
+                      aria-label={`Include ${l.name} in merge`}
+                      className="h-3.5 w-3.5 shrink-0 cursor-pointer accent-violet-400"
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={() => actions.toggleMergeSelection(l.id)}
+                      data-testid={`merge-select-${l.id}`}
+                    />
                     <button
                       type="button"
                       onClick={(e) => {
