@@ -11,6 +11,8 @@ import {
   defaultPlacerEditorForBlueprint,
   defaultPrintFileLayoutForBlueprint,
   defaultHoodieTypeForBlueprint,
+  resolveGarmentLayout,
+  migrateSweatshirtDesignGroups,
   PILLOW_WRAP_BLUEPRINT_ID,
   PULOVER_HOODIE_BLUEPRINT_ID,
   ZIP_HOODIE_BLUEPRINT_ID,
@@ -21,6 +23,7 @@ import {
   type MaskLayer,
   type MeshGrid,
   type MockupAsset,
+  type GarmentLayout,
   type PrintFileLayout,
   type Pt,
   type ReferenceOverlayAsset,
@@ -550,15 +553,30 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
       set((s) => {
         let next: HoodieTemplate = { ...s.template, ...patch };
         if (patch.blueprintId != null && patch.blueprintId !== s.template.blueprintId) {
+          const prevGarment = resolveGarmentLayout(s.template);
           next = {
             ...next,
-            designGroups: mergeDesignGroupsForBlueprintSwitch(
-              patch.blueprintId,
-              s.template.designGroups,
-            ),
             placerEditor: defaultPlacerEditorForBlueprint(patch.blueprintId),
             printFileLayout: defaultPrintFileLayoutForBlueprint(patch.blueprintId),
           };
+          const garmentLayout = isPillowWrapBlueprint(patch.blueprintId)
+            ? undefined
+            : prevGarment;
+          next = {
+            ...next,
+            garmentLayout,
+            designGroups: mergeDesignGroupsForBlueprintSwitch(
+              patch.blueprintId,
+              s.template.designGroups,
+              garmentLayout,
+            ),
+          };
+          if (garmentLayout === "jumper-no-hood") {
+            next = {
+              ...next,
+              designGroups: migrateSweatshirtDesignGroups(next.designGroups ?? []),
+            };
+          }
           if (patch.blueprintId === PULOVER_HOODIE_BLUEPRINT_ID && next.hoodieType === "zip-hoodie-aop") {
             next = { ...next, hoodieType: "pullover-hoodie-aop" };
           } else if (patch.blueprintId === ZIP_HOODIE_BLUEPRINT_ID && next.hoodieType === "pullover-hoodie-aop") {
@@ -575,6 +593,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
             next = {
               ...next,
               placerEditor: "front-back-face",
+              garmentLayout: undefined,
               designGroups: mergeDesignGroupsForBlueprintSwitch(
                 isPillowWrapBlueprint(bp) ? bp : PILLOW_WRAP_BLUEPRINT_ID,
                 s.template.designGroups,
@@ -582,11 +601,43 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
               hoodieType: "pillow-wrap-aop",
             };
           } else {
+            const garmentLayout = resolveGarmentLayout(s.template);
             next = {
               ...next,
               placerEditor: "hoodie",
-              designGroups: mergeDesignGroupsForBlueprintSwitch(bp, s.template.designGroups),
+              garmentLayout,
+              designGroups: mergeDesignGroupsForBlueprintSwitch(
+                bp,
+                s.template.designGroups,
+                garmentLayout,
+              ),
               hoodieType: defaultHoodieTypeForBlueprint(bp),
+            };
+            if (garmentLayout === "jumper-no-hood") {
+              next = {
+                ...next,
+                designGroups: migrateSweatshirtDesignGroups(next.designGroups ?? []),
+              };
+            }
+          }
+        }
+        if (patch.garmentLayout != null && patch.garmentLayout !== s.template.garmentLayout) {
+          const bp = next.blueprintId ?? ZIP_HOODIE_BLUEPRINT_ID;
+          next = {
+            ...next,
+            garmentLayout: patch.garmentLayout as GarmentLayout,
+            placerEditor: "hoodie",
+            designGroups: mergeDesignGroupsForBlueprintSwitch(
+              bp,
+              s.template.designGroups,
+              patch.garmentLayout,
+            ),
+            hoodieType: defaultHoodieTypeForBlueprint(bp),
+          };
+          if (patch.garmentLayout === "jumper-no-hood") {
+            next = {
+              ...next,
+              designGroups: migrateSweatshirtDesignGroups(next.designGroups ?? []),
             };
           }
         }

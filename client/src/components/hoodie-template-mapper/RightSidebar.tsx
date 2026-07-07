@@ -34,6 +34,7 @@ import {
   isPillowWrapTemplate,
   resolvePlacerEditor,
   resolvePrintFileLayout,
+  resolveGarmentLayout,
   mockupDrawRect,
   type HoodiePanelKey,
   type MaskLayer,
@@ -373,10 +374,11 @@ function SelectedLayerSection({ layer }: { layer: MaskLayer }) {
   const view = useHoodieMapperStore((s) => s.view);
   const blueprintId = useHoodieMapperStore((s) => s.template.blueprintId);
   const placerEditor = useHoodieMapperStore((s) => resolvePlacerEditor(s.template));
+  const garmentLayout = useHoodieMapperStore((s) => resolveGarmentLayout(s.template));
   const layers = useHoodieMapperStore((s) => s.template.views[s.view].layers);
   const actions = useHoodieMapperStore((s) => s.actions);
 
-  const eligible = panelsEligibleForView(view, blueprintId, placerEditor);
+  const eligible = panelsEligibleForView(view, blueprintId, placerEditor, garmentLayout);
   const anchors = useMemo(() => svgPathToAnchors(layer.maskPath), [layer.maskPath]);
   const sortedZ = useMemo(() => [...layers].sort((a, b) => a.zIndex - b.zIndex), [layers]);
   const indexInZ = sortedZ.findIndex((l) => l.id === layer.id);
@@ -521,6 +523,7 @@ function SelectedLayerSection({ layer }: { layer: MaskLayer }) {
 function PlacerSettingsSection({ template }: { template: ReturnType<typeof useHoodieMapperStore.getState>["template"] }) {
   const actions = useHoodieMapperStore((s) => s.actions);
   const placerEditor = resolvePlacerEditor(template);
+  const garmentLayout = resolveGarmentLayout(template);
   const printFileLayout = resolvePrintFileLayout(template);
   const editorMismatch =
     placerEditor === "hoodie" && printFileLayout === "wrap-single";
@@ -555,6 +558,31 @@ function PlacerSettingsSection({ template }: { template: ReturnType<typeof useHo
           </ToggleGroupItem>
         </ToggleGroup>
       </Field>
+      {placerEditor === "hoodie" && (
+        <Field label="Garment preset">
+          <ToggleGroup
+            type="single"
+            value={garmentLayout}
+            onValueChange={(v) => {
+              if (v === "hoodie" || v === "jumper-no-hood") {
+                actions.setTemplateMeta({ garmentLayout: v });
+              }
+            }}
+            className="grid w-full grid-cols-2 gap-1"
+          >
+            <ToggleGroupItem value="hoodie" className="h-7 px-1 text-[10px]" aria-label="Full hoodie garment">
+              Hoodie
+            </ToggleGroupItem>
+            <ToggleGroupItem
+              value="jumper-no-hood"
+              className="h-7 px-1 text-[10px]"
+              aria-label="Jumper no hood garment"
+            >
+              Jumper (no hood)
+            </ToggleGroupItem>
+          </ToggleGroup>
+        </Field>
+      )}
       <Field label="Print file layout">
         <ToggleGroup
           type="single"
@@ -584,6 +612,7 @@ function PlacerSettingsSection({ template }: { template: ReturnType<typeof useHo
         the storefront (any blueprint id).{" "}
         <span className="text-slate-400">Wrap</span> = one side-by-side Printify canvas;{" "}
         <span className="text-slate-400">Split</span> = separate front + back print files (body pillow).
+        <span className="text-slate-400">Jumper (no hood)</span> = Front/Back/Sleeves on the storefront, no Hood or Pockets.
       </p>
       {editorMismatch && (
         <p className="text-[10px] leading-snug text-amber-400/90">
@@ -592,7 +621,7 @@ function PlacerSettingsSection({ template }: { template: ReturnType<typeof useHo
       )}
       {printMismatch && (
         <p className="text-[10px] leading-snug text-amber-400/90">
-          Square/lumbar pillows usually use wrap print files; body pillow (2758) uses split.
+          Square/lumbar pillows (538) and body pillow (2758) use split print files.
         </p>
       )}
     </div>

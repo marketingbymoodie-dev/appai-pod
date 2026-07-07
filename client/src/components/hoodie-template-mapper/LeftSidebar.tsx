@@ -16,6 +16,7 @@ import {
   PANEL_DISPLAY_LABEL,
   panelsEligibleForView,
   resolvePlacerEditor,
+  resolveGarmentLayout,
   layerRenderPriority,
   type HoodieView,
 } from "@shared/hoodieTemplate";
@@ -147,6 +148,7 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
   const activeTemplateName = useHoodieMapperStore((s) => s.template.name);
   const blueprintId = useHoodieMapperStore((s) => s.template.blueprintId);
   const placerEditor = useHoodieMapperStore((s) => resolvePlacerEditor(s.template));
+  const garmentLayout = useHoodieMapperStore((s) => resolveGarmentLayout(s.template));
   const actions = useHoodieMapperStore((s) => s.actions);
 
   const [templates, setTemplates] = useState<TemplateListEntry[]>([]);
@@ -240,7 +242,7 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [saveSeq]);
 
-  const eligiblePanels = panelsEligibleForView(view, blueprintId, placerEditor);
+  const eligiblePanels = panelsEligibleForView(view, blueprintId, placerEditor, garmentLayout);
 
   return (
     <aside

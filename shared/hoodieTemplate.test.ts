@@ -21,6 +21,8 @@ import {
   defaultPrintFileLayoutForBlueprint,
   resolvePlacerEditor,
   resolvePrintFileLayout,
+  resolveGarmentLayout,
+  usesJumperNoHoodGarmentUi,
   isPillowWrapBlueprint,
   isPillowWrapTemplate,
   migrateSweatshirtDesignGroups,
@@ -133,6 +135,38 @@ describe("pillow wrap blueprints", () => {
     expect(defaultPrintFileLayoutForBlueprint(BODY_PILLOW_WRAP_BLUEPRINT_ID)).toBe("split-front-back");
     expect(defaultPrintFileLayoutForBlueprint(PILLOW_WRAP_BLUEPRINT_ID)).toBe("wrap-single");
     expect(defaultPrintFileLayoutForBlueprint(450)).toBe("split-front-back");
+  });
+
+  it("defaultPrintFileLayoutForBlueprint maps lumbar pillow 538 to split", () => {
+    expect(defaultPrintFileLayoutForBlueprint(538)).toBe("split-front-back");
+  });
+});
+
+describe("jumper no hood garment layout", () => {
+  it("seeds sweatshirt-style groups for any blueprint", () => {
+    const t = createFreshAopTemplate({
+      name: "aop-jacket-L",
+      blueprintId: 1604,
+      garmentLayout: "jumper-no-hood",
+    });
+    expect(t.garmentLayout).toBe("jumper-no-hood");
+    expect(t.placerEditor).toBe("hoodie");
+    expect(t.designGroups?.find((g) => g.id === "hood")).toBeUndefined();
+    expect(t.designGroups?.find((g) => g.id === "front-body")?.panelKeys).toEqual(["front"]);
+    expect(t.designGroups?.find((g) => g.id === "left-sleeve")).toBeDefined();
+    expect(usesJumperNoHoodGarmentUi(t)).toBe(true);
+  });
+
+  it("resolveGarmentLayout infers jumper for bp 449", () => {
+    const t = createFreshAopTemplate({ name: "sweatshirt-aop-L", blueprintId: 449 });
+    expect(resolveGarmentLayout(t)).toBe("jumper-no-hood");
+  });
+
+  it("panelsEligibleForView hides hood panels for jumper layout", () => {
+    const front = panelsEligibleForView("front", 1604, "hoodie", "jumper-no-hood");
+    expect(front).toContain("front");
+    expect(front).not.toContain("left_hood");
+    expect(front).not.toContain("front_left");
   });
 });
 

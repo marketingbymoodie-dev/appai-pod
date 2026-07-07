@@ -23,6 +23,7 @@ import {
   ZIP_HOODIE_BLUEPRINT_ID,
   type PlacerEditor,
   type PrintFileLayout,
+  type GarmentLayout,
 } from "@shared/hoodieTemplate";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { resolvePublicTemplateName } from "@shared/aopTemplateNaming";
@@ -40,6 +41,7 @@ export default function FreshStartDialog({ open, onOpenChange, onConfirm, onLoad
   const [label, setLabel] = useState("");
   const [blueprintId, setBlueprintId] = useState(String(PULOVER_HOODIE_BLUEPRINT_ID));
   const [placerEditor, setPlacerEditor] = useState<PlacerEditor>("hoodie");
+  const [garmentLayout, setGarmentLayout] = useState<GarmentLayout>("hoodie");
   const [printFileLayout, setPrintFileLayout] = useState<PrintFileLayout>("split-front-back");
   const [productTypeId, setProductTypeId] = useState("");
   const [existingSlugs, setExistingSlugs] = useState<Set<string>>(new Set());
@@ -62,8 +64,12 @@ export default function FreshStartDialog({ open, onOpenChange, onConfirm, onLoad
 
   useEffect(() => {
     if (bpInvalid) return;
-    setPlacerEditor(defaultPlacerEditorForBlueprint(bpNum));
+    const nextPlacer = defaultPlacerEditorForBlueprint(bpNum);
+    setPlacerEditor(nextPlacer);
     setPrintFileLayout(defaultPrintFileLayoutForBlueprint(bpNum));
+    if (nextPlacer === "front-back-face") {
+      setGarmentLayout("hoodie");
+    }
   }, [bpNum, bpInvalid]);
 
   const canConfirm = useMemo(() => {
@@ -82,6 +88,7 @@ export default function FreshStartDialog({ open, onOpenChange, onConfirm, onLoad
         productTypeId: ptIdRaw === "" ? null : Number(ptIdRaw) || null,
         placerEditor,
         printFileLayout,
+        garmentLayout: placerEditor === "front-back-face" ? undefined : garmentLayout,
       }),
     );
     onOpenChange(false);
@@ -89,6 +96,7 @@ export default function FreshStartDialog({ open, onOpenChange, onConfirm, onLoad
     setLabel("");
     setBlueprintId(String(PULOVER_HOODIE_BLUEPRINT_ID));
     setPlacerEditor("hoodie");
+    setGarmentLayout("hoodie");
     setPrintFileLayout("split-front-back");
     setProductTypeId("");
   }
@@ -241,7 +249,10 @@ export default function FreshStartDialog({ open, onOpenChange, onConfirm, onLoad
                 type="single"
                 value={placerEditor}
                 onValueChange={(v) => {
-                  if (v === "hoodie" || v === "front-back-face") setPlacerEditor(v);
+                  if (v === "hoodie" || v === "front-back-face") {
+                    setPlacerEditor(v);
+                    if (v === "front-back-face") setGarmentLayout("hoodie");
+                  }
                 }}
                 className="grid w-full grid-cols-2 gap-1"
               >
@@ -253,6 +264,26 @@ export default function FreshStartDialog({ open, onOpenChange, onConfirm, onLoad
                 </ToggleGroupItem>
               </ToggleGroup>
             </div>
+            {placerEditor === "hoodie" && (
+              <div className="space-y-2">
+                <Label>Garment preset</Label>
+                <ToggleGroup
+                  type="single"
+                  value={garmentLayout}
+                  onValueChange={(v) => {
+                    if (v === "hoodie" || v === "jumper-no-hood") setGarmentLayout(v);
+                  }}
+                  className="grid w-full grid-cols-2 gap-1"
+                >
+                  <ToggleGroupItem value="hoodie" className="h-8 text-xs">
+                    Hoodie
+                  </ToggleGroupItem>
+                  <ToggleGroupItem value="jumper-no-hood" className="h-8 text-xs">
+                    Jumper (no hood)
+                  </ToggleGroupItem>
+                </ToggleGroup>
+              </div>
+            )}
             <div className="space-y-2">
               <Label>Print file layout</Label>
               <ToggleGroup

@@ -24,8 +24,8 @@ import {
   designGroupsForBlueprint,
   isPillowWrapTemplate,
   isPulloverHoodieBlueprint,
-  isSweatshirtBlueprint,
   isZipHoodieBlueprint,
+  usesJumperNoHoodGarmentUi,
   normalizeHoodieTemplate,
   type DesignGroup,
   type HoodiePanelKey,
@@ -283,7 +283,7 @@ function customerGroupEnabledByDefault(
   if (groupId === "left-sleeve" || groupId === "right-sleeve" || groupId === "trim") {
     return false;
   }
-  if (isSweatshirtBlueprint(blueprintId)) return false;
+  if (usesJumperNoHoodGarmentUi(template)) return false;
   if (isZipHoodieBlueprint(blueprintId) || isPulloverHoodieBlueprint(blueprintId)) {
     if (groupId === "front-body" || groupId === "hood") {
       return group.enabled !== false;
@@ -440,7 +440,7 @@ function buildInitialState(
     placements: syncSleevePlacements(placements),
     enabled,
     trimEnabled: false,
-    pocketsEnabled: isHoodieBp ? false : !isSweatshirtBlueprint(template.blueprintId),
+    pocketsEnabled: isHoodieBp ? false : !usesJumperNoHoodGarmentUi(template),
     hoodLinked: true,
     trimLinked: false,
     leftSleeveLinked: true,
@@ -1341,26 +1341,26 @@ export default function HoodieAopPlacer({
       state.view === "back" &&
       (state.activeGroupId === "hood" || isSleevesPart(state.activeGroupId))
     );
-  const isSweatshirt = isSweatshirtBlueprint(data.template.blueprintId);
+  const isJumperNoHood = usesJumperNoHoodGarmentUi(data.template);
   const isPillow = isPillowWrapTemplate(data.template);
   const snapMode: "seam" | "x" | "y" | "both" | "none" =
     isPillow || state.activeGroupId === "back-body" || state.activeGroupId === "back-face" || state.activeGroupId === "collar"
       ? "both"
       : "seam";
-  const hasHoodGroup = !isSweatshirt && !isPillow && groups.some((g) => g.id === "hood");
-  const hasCollarGroup = !isSweatshirt && !isPillow && groups.some((g) => g.id === "collar");
+  const hasHoodGroup = !isJumperNoHood && !isPillow && groups.some((g) => g.id === "hood");
+  const hasCollarGroup = !isJumperNoHood && !isPillow && groups.some((g) => g.id === "collar");
   const hasSleeves =
     !isPillow &&
     groups.some((g) => g.id === "left-sleeve") &&
     groups.some((g) => g.id === "right-sleeve");
   const hasPocketPanels =
-    !isSweatshirt &&
+    !isJumperNoHood &&
     !isPillow &&
     groups.some((g) =>
       g.panelKeys.some((k) => (POCKET_PANEL_KEYS as readonly string[]).includes(k)),
     );
   const viewButtonCount = 2 + (hasHoodGroup ? 1 : 0) + (hasCollarGroup ? 1 : 0);
-  const viewGridClass = isSweatshirt
+  const viewGridClass = isJumperNoHood
     ? "grid-cols-2"
     : viewButtonCount >= 4
       ? "grid-cols-4"
