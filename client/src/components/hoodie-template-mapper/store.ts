@@ -32,6 +32,7 @@ import {
 import {
   anchorsToSvgPath,
   boundingBox,
+  boundingBoxOfSubpaths,
   simplifyPath,
   smoothPath,
   subpathsToSvgPath,
@@ -141,6 +142,8 @@ export type HoodieMapperState = {
   magneticTolerance: number;
   /** Selected anchor index within the selected layer (for keyboard nudges). */
   selectedAnchorIndex: number | null;
+  /** Which subpath (0..n) the selected anchor belongs to — merged layers have multiple. */
+  selectedAnchorSubpathIndex: number | null;
   /** Tracks unsaved changes since the last successful save. */
   dirty: boolean;
   /** True while a save/load request is in flight. */
@@ -170,6 +173,7 @@ export type HoodieMapperUndoSnapshot = {
   selectedLayerId: string | null;
   mergeSelectionIds: string[];
   selectedAnchorIndex: number | null;
+  selectedAnchorSubpathIndex: number | null;
 };
 
 /**
@@ -259,9 +263,11 @@ export type HoodieMapperActions = {
    * Simplify/Smooth path-utility buttons.
    */
   setLayerAnchors: (id: string, anchors: Pt[]) => void;
+  /** Replace all subpaths on a layer (merged Front Left + Right, etc.). */
+  setLayerSubpaths: (id: string, subpaths: Pt[][]) => void;
   simplifyLayerPath: (id: string, epsilon: number) => void;
   smoothLayerPath: (id: string, iterations?: number) => void;
-  setSelectedAnchorIndex: (index: number | null) => void;
+  setSelectedAnchorIndex: (index: number | null, subpathIndex?: number | null) => void;
   /** Pen-tool actions. */
   setMagneticRadius: (radius: number) => void;
   setMagneticTolerance: (tolerance: number) => void;
@@ -395,6 +401,22 @@ function defaultMaskLayer(view: HoodieView, anchors: Pt[], template: HoodieTempl
   };
 }
 
+function applySubpathsTo(
+  template: HoodieTemplate,
+  id: string,
+  subpaths: Pt[][],
+): HoodieTemplate {
+  const valid = subpaths.filter((ring) => ring.length >= MIN_MASK_ANCHORS);
+  if (valid.length === 0) return template;
+  const maskPath = subpathsToSvgPath(valid);
+  if (!maskPath) return template;
+  const found = findLayerById(template, id);
+  if (!found) return template;
+  const view = template.views[found.view];
+  const layers = view.layers.map((l) => (l.id === id ? { ...l, maskPath } : l));
+  return patchView(template, found.view, { layers });
+}
+
 /**
  * Helper used by anchor-editing actions: rebuild the SVG path for `id` from
  * a fresh anchor list. The enclosing helper signature mirrors patchLayer so
@@ -452,6 +474,7 @@ function captureUndoSnapshot(s: HoodieMapperState): HoodieMapperUndoSnapshot {
     selectedLayerId: s.selectedLayerId,
     mergeSelectionIds: [...s.mergeSelectionIds],
     selectedAnchorIndex: s.selectedAnchorIndex,
+    selectedAnchorSubpathIndex: s.selectedAnchorSubpathIndex,
   };
 }
 
@@ -484,6 +507,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
   redoStack: [],
   layerDeletePrompt: null,
   selectedAnchorIndex: null,
+  selectedAnchorSubpathIndex: null,
   dirty: false,
   busy: false,
   saveSeq: 0,
@@ -496,6 +520,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
         hoverLayerId: null,
         penDraft: null,
         selectedAnchorIndex: null,
+        selectedAnchorSubpathIndex: null,
         mockupCrop: { active: false, rect: null },
         undoStack: [],
         redoStack: [],
@@ -510,6 +535,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
         hoverLayerId: null,
         penDraft: null,
         selectedAnchorIndex: null,
+        selectedAnchorSubpathIndex: null,
         mockupCrop: { active: false, rect: null },
         undoStack: [],
         redoStack: [],
@@ -524,6 +550,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
         hoverLayerId: null,
         penDraft: null,
         selectedAnchorIndex: null,
+        selectedAnchorSubpathIndex: null,
       })),
     setTool: (tool) =>
       set((s) => ({
@@ -534,7 +561,12 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
     setSelectedLayer: (id, opts) =>
       set((s) => {
         if (!id) {
-          return { selectedLayerId: null, mergeSelectionIds: [], selectedAnchorIndex: null };
+          return {
+            selectedLayerId: null,
+            mergeSelectionIds: [],
+            selectedAnchorIndex: null,
+            selectedAnchorSubpathIndex: null,
+          };
         }
         if (opts?.additive) {
           const base =
@@ -545,15 +577,26 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
                 : [];
           const next = base.includes(id) ? base.filter((x) => x !== id) : [...base, id];
           if (next.length === 0) {
-            return { selectedLayerId: id, mergeSelectionIds: [id], selectedAnchorIndex: null };
+            return {
+              selectedLayerId: id,
+              mergeSelectionIds: [id],
+              selectedAnchorIndex: null,
+              selectedAnchorSubpathIndex: null,
+            };
           }
           return {
             selectedLayerId: id,
             mergeSelectionIds: next,
             selectedAnchorIndex: null,
+            selectedAnchorSubpathIndex: null,
           };
         }
-        return { selectedLayerId: id, mergeSelectionIds: [id], selectedAnchorIndex: null };
+        return {
+          selectedLayerId: id,
+          mergeSelectionIds: [id],
+          selectedAnchorIndex: null,
+          selectedAnchorSubpathIndex: null,
+        };
       }),
     toggleMergeSelection: (id) =>
       set((s) => {
@@ -582,6 +625,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
           selectedLayerId: previous.selectedLayerId,
           mergeSelectionIds: previous.mergeSelectionIds,
           selectedAnchorIndex: previous.selectedAnchorIndex,
+          selectedAnchorSubpathIndex: previous.selectedAnchorSubpathIndex,
           undoStack: s.undoStack.slice(0, -1),
           redoStack: [...s.redoStack, captureUndoSnapshot(s)].slice(-MAX_UNDO_STEPS),
           dirty: true,
@@ -596,6 +640,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
           selectedLayerId: next.selectedLayerId,
           mergeSelectionIds: next.mergeSelectionIds,
           selectedAnchorIndex: next.selectedAnchorIndex,
+          selectedAnchorSubpathIndex: next.selectedAnchorSubpathIndex,
           undoStack: [...s.undoStack, captureUndoSnapshot(s)].slice(-MAX_UNDO_STEPS),
           redoStack: s.redoStack.slice(0, -1),
           dirty: true,
@@ -968,6 +1013,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
           selectedLayerId: newId,
           mergeSelectionIds: [newId],
           selectedAnchorIndex: null,
+          selectedAnchorSubpathIndex: null,
           dirty: true,
         });
       });
@@ -1023,7 +1069,18 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
         if (next.length < MIN_MASK_ANCHORS) return {} as Partial<Store>;
         return withUndo(s, { template: applyAnchorsTo(s.template, id, next), dirty: true });
       }),
-    setSelectedAnchorIndex: (index) => set(() => ({ selectedAnchorIndex: index })),
+    setLayerSubpaths: (id, subpaths) =>
+      set((s) =>
+        withUndo(s, {
+          template: applySubpathsTo(s.template, id, subpaths),
+          dirty: true,
+        }),
+      ),
+    setSelectedAnchorIndex: (index, subpathIndex = null) =>
+      set(() => ({
+        selectedAnchorIndex: index,
+        selectedAnchorSubpathIndex: index == null ? null : (subpathIndex ?? 0),
+      })),
     setMagneticRadius: (radius) =>
       set(() => ({ magneticRadius: Math.max(0, Math.min(200, Math.round(radius))) })),
     setMagneticTolerance: (tolerance) =>
@@ -1035,6 +1092,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
         penDraft: { view: s.view, anchors: anchors ? [...anchors] : [], cursor: null, canClose: false },
         selectedLayerId: null,
         selectedAnchorIndex: null,
+        selectedAnchorSubpathIndex: null,
       })),
     appendPenAnchor: (point) =>
       set((s) => {
@@ -1069,6 +1127,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
           penDraft: null,
           selectedLayerId: layer.id,
           selectedAnchorIndex: null,
+          selectedAnchorSubpathIndex: null,
           dirty: true,
         }),
       );
@@ -1090,8 +1149,8 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
       set((s) => {
         const found = findLayerById(s.template, id);
         if (!found) return {} as Partial<Store>;
-        const anchors = svgPathToAnchors(found.layer.maskPath);
-        const bb = boundingBox(anchors);
+        const anchors = svgPathToSubpaths(found.layer.maskPath);
+        const bb = boundingBoxOfSubpaths(anchors);
         if (!bb) return {} as Partial<Store>;
         const mesh: MeshGrid = createDefaultMesh(
           { x: bb.minX, y: bb.minY, width: bb.maxX - bb.minX, height: bb.maxY - bb.minY },
@@ -1111,8 +1170,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
       set((s) => {
         const found = findLayerById(s.template, id);
         if (!found) return {} as Partial<Store>;
-        const anchors = svgPathToAnchors(found.layer.maskPath);
-        const bb = boundingBox(anchors);
+        const bb = boundingBoxOfSubpaths(svgPathToSubpaths(found.layer.maskPath));
         if (!bb) return {} as Partial<Store>;
         const c = cols ?? found.layer.mesh?.cols ?? 4;
         const r = rows ?? found.layer.mesh?.rows ?? 4;
@@ -1135,8 +1193,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
         const found = findLayerById(s.template, id);
         if (!found) return {} as Partial<Store>;
         const layer = found.layer;
-        const anchors = svgPathToAnchors(layer.maskPath);
-        const bb = boundingBox(anchors);
+        const bb = boundingBoxOfSubpaths(svgPathToSubpaths(layer.maskPath));
         if (!bb) return {} as Partial<Store>;
         const fallback = {
           x: bb.minX,

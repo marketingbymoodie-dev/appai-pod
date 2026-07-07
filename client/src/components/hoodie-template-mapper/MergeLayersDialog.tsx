@@ -81,9 +81,10 @@ export default function MergeLayersDialog({ open, onOpenChange, view, layerIds }
         <DialogHeader>
           <DialogTitle>Merge layers</DialogTitle>
           <DialogDescription>
-            Combines the selected panel outlines into one polygon. Mesh warp is not merged — set up
-            mesh again on the new layer if needed. Add a separate exclusion layer for the zip
-            afterward.
+            Combines the selected panel outlines into one layer (both halves stay editable). Mesh
+            warp is not merged — set up mesh on the new layer. If your traces leave a gap at the
+            center zip, you may not need a zip exclusion; add one only if Preview AOP still shows
+            artwork on the zipper tape.
           </DialogDescription>
         </DialogHeader>
 

@@ -13,8 +13,7 @@ import {
 } from "./edgeDetection";
 import {
   distSq,
-  nearestEdge,
-  svgPathToAnchors,
+  findNearestEdgeOnSubpaths,
   svgPathToSubpaths,
   anchorsToSvgPath,
 } from "../lib/svgPath";
@@ -163,6 +162,7 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
   const magneticRadius = useHoodieMapperStore((s) => s.magneticRadius);
   const magneticTolerance = useHoodieMapperStore((s) => s.magneticTolerance);
   const selectedAnchorIndex = useHoodieMapperStore((s) => s.selectedAnchorIndex);
+  const selectedAnchorSubpathIndex = useHoodieMapperStore((s) => s.selectedAnchorSubpathIndex);
   const mockup = useHoodieMapperStore((s) => s.template.views[s.view].mockup);
   const referenceOverlay = useHoodieMapperStore((s) => s.template.views[s.view].referenceOverlay);
   const meshEdit = useHoodieMapperStore((s) => s.meshEdit);
@@ -321,14 +321,14 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
     () => layers.find((l) => l.id === selectedLayerId) ?? null,
     [layers, selectedLayerId],
   );
-  const selectedAnchors = useMemo(
-    () => (selectedLayer ? svgPathToAnchors(selectedLayer.maskPath) : []),
+  const selectedSubpaths = useMemo(
+    () => (selectedLayer ? svgPathToSubpaths(selectedLayer.maskPath) : []),
     [selectedLayer],
   );
   // While dragging an anchor we don't push every move into the global store
   // (which would re-serialize the path on every frame). Local state buffers
   // the in-flight drag and we commit once on drag end.
-  const [dragAnchors, setDragAnchors] = useState<Pt[] | null>(null);
+  const [dragSubpaths, setDragSubpaths] = useState<Pt[][] | null>(null);
 
   // Polygon-translate drag state — grab the panel body in Move tool and
   // drag mask + mesh together. `start` is captured on mousedown and
@@ -341,17 +341,16 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
     ? { dx: polyDrag.last.x - polyDrag.start.x, dy: polyDrag.last.y - polyDrag.start.y }
     : null;
 
-  // The anchors we display for the selected layer right now. Anchor
-  // drag wins (only one anchor at a time); polygon drag rewrites the
-  // whole set on the fly.
-  const liveAnchors: Pt[] = dragAnchors
-    ? dragAnchors
+  const liveSubpaths: Pt[][] = dragSubpaths
+    ? dragSubpaths
     : polyDrag && polyDragOffset
-      ? polyDrag.baseSubpaths[0]?.map((a) => ({
-          x: a.x + polyDragOffset.dx,
-          y: a.y + polyDragOffset.dy,
-        })) ?? []
-      : selectedAnchors;
+      ? polyDrag.baseSubpaths.map((ring) =>
+          ring.map((a) => ({
+            x: a.x + polyDragOffset.dx,
+            y: a.y + polyDragOffset.dy,
+          })),
+        )
+      : selectedSubpaths;
 
   // Tracks the last anchor we dropped while in magnetic-pen click-and-drag
   // mode, plus whether the LMB is currently held. Lets mousemove drop new
@@ -413,14 +412,16 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
 
       // Move tool: alt-click on a layer's edge to insert an anchor.
       if (tool === "move" && evt.altKey && selectedLayer) {
-        const anchors = svgPathToAnchors(selectedLayer.maskPath);
-        const ne = nearestEdge(mockupPt, anchors);
+        const subpaths = svgPathToSubpaths(selectedLayer.maskPath);
+        const ne = findNearestEdgeOnSubpaths(mockupPt, subpaths);
         if (ne && Math.sqrt(ne.distSq) <= EDGE_INSERT_THRESHOLD / scale) {
-          const insertAt = (ne.segmentIndex + 1) % (anchors.length + 1);
-          const next = [...anchors];
-          next.splice(insertAt, 0, ne.point);
-          actions.setLayerAnchors(selectedLayer.id, next);
-          actions.setSelectedAnchorIndex(insertAt);
+          const ring = subpaths[ne.subpathIndex] ?? [];
+          const insertAt = (ne.segmentIndex + 1) % (ring.length + 1);
+          const nextRing = [...ring];
+          nextRing.splice(insertAt, 0, ne.point);
+          const next = subpaths.map((r, i) => (i === ne.subpathIndex ? nextRing : r));
+          actions.setLayerSubpaths(selectedLayer.id, next);
+          actions.setSelectedAnchorIndex(insertAt, ne.subpathIndex);
           return;
         }
       }
@@ -724,12 +725,12 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
             showHoverHighlight={debug.showHoverHighlight}
             interactive={tool === "move"}
             // While the user is dragging an anchor we keep the live geometry
-            // in `dragAnchors` (avoids per-frame store writes); pass it
+            // in `dragSubpaths` (avoids per-frame store writes); pass it
             // through here so the polygon outline tracks the dot in real
             // time rather than snapping at drop.
             dragOverride={
-              dragAnchors && selectedLayer
-                ? { id: selectedLayer.id, subpaths: [dragAnchors] }
+              dragSubpaths && selectedLayer
+                ? { id: selectedLayer.id, subpaths: dragSubpaths }
                 : polyDrag && selectedLayer && polyDragOffset
                   ? {
                       id: selectedLayer.id,
@@ -757,43 +758,62 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
             onAltClick={(id, mx, my) => {
               const target = layers.find((l) => l.id === id);
               if (!target) return;
-              const anchors = svgPathToAnchors(target.maskPath);
-              const ne = nearestEdge({ x: mx, y: my }, anchors);
+              const subpaths = svgPathToSubpaths(target.maskPath);
+              const ne = findNearestEdgeOnSubpaths({ x: mx, y: my }, subpaths);
               if (!ne) return;
               if (Math.sqrt(ne.distSq) > EDGE_INSERT_THRESHOLD / scale) return;
-              const insertAt = (ne.segmentIndex + 1) % (anchors.length + 1);
-              const next = [...anchors];
-              next.splice(insertAt, 0, ne.point);
+              const ring = subpaths[ne.subpathIndex] ?? [];
+              const insertAt = (ne.segmentIndex + 1) % (ring.length + 1);
+              const nextRing = [...ring];
+              nextRing.splice(insertAt, 0, ne.point);
+              const next = subpaths.map((r, i) => (i === ne.subpathIndex ? nextRing : r));
               actions.setSelectedLayer(id);
-              actions.setLayerAnchors(id, next);
-              actions.setSelectedAnchorIndex(insertAt);
+              actions.setLayerSubpaths(id, next);
+              actions.setSelectedAnchorIndex(insertAt, ne.subpathIndex);
             }}
           />
 
           {/* Draggable anchor handles for the selected layer (move tool only).
               Suppressed when the user has toggled off polygon-anchor display
               (e.g. while focusing on mesh-warp artwork placement). */}
-          {tool === "move" && debug.showAnchors && selectedLayer && liveAnchors.length >= MIN_MASK_ANCHORS && (
+          {tool === "move" &&
+            debug.showAnchors &&
+            selectedLayer &&
+            liveSubpaths.some((ring) => ring.length >= MIN_MASK_ANCHORS) && (
             <AnchorHandlesOverlay
-              anchors={liveAnchors}
+              subpaths={liveSubpaths}
               zoom={scale}
+              selectedSubpath={selectedAnchorSubpathIndex}
               selectedIndex={selectedAnchorIndex}
-              onSelectAnchor={(idx) => actions.setSelectedAnchorIndex(idx)}
-              onDragMove={(idx, p) => {
-                const base = dragAnchors ?? selectedAnchors;
-                const next = base.map((a, i) => (i === idx ? p : a));
-                setDragAnchors(next);
+              onSelectAnchor={(subpathIndex, anchorIndex) =>
+                actions.setSelectedAnchorIndex(anchorIndex, subpathIndex)
+              }
+              onDragMove={(subpathIndex, anchorIndex, p) => {
+                const base = dragSubpaths ?? selectedSubpaths.map((ring) => ring.map((a) => ({ ...a })));
+                const next = base.map((ring, si) =>
+                  si === subpathIndex
+                    ? ring.map((a, i) => (i === anchorIndex ? p : a))
+                    : ring,
+                );
+                setDragSubpaths(next);
               }}
-              onDragEnd={(idx, p) => {
-                const base = dragAnchors ?? selectedAnchors;
-                const next = base.map((a, i) => (i === idx ? p : a));
-                actions.setLayerAnchors(selectedLayer.id, next);
-                setDragAnchors(null);
+              onDragEnd={(subpathIndex, anchorIndex, p) => {
+                const base = dragSubpaths ?? selectedSubpaths.map((ring) => ring.map((a) => ({ ...a })));
+                const next = base.map((ring, si) =>
+                  si === subpathIndex
+                    ? ring.map((a, i) => (i === anchorIndex ? p : a))
+                    : ring,
+                );
+                actions.setLayerSubpaths(selectedLayer.id, next);
+                setDragSubpaths(null);
               }}
-              onDeleteAnchor={(idx) => {
-                if (selectedAnchors.length <= MIN_MASK_ANCHORS) return;
-                const next = selectedAnchors.filter((_, i) => i !== idx);
-                actions.setLayerAnchors(selectedLayer.id, next);
+              onDeleteAnchor={(subpathIndex, anchorIndex) => {
+                const ring = selectedSubpaths[subpathIndex];
+                if (!ring || ring.length <= MIN_MASK_ANCHORS) return;
+                const next = selectedSubpaths.map((r, si) =>
+                  si === subpathIndex ? r.filter((_, i) => i !== anchorIndex) : r,
+                );
+                actions.setLayerSubpaths(selectedLayer.id, next);
               }}
             />
           )}

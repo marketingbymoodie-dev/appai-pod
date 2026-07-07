@@ -174,6 +174,41 @@ export function nearestEdge(p: Pt, anchors: readonly Pt[]): {
   return best;
 }
 
+/** Nearest edge across all subpaths of a compound mask (merged panels). */
+export function findNearestEdgeOnSubpaths(
+  p: Pt,
+  subpaths: readonly (readonly Pt[])[],
+): {
+  subpathIndex: number;
+  segmentIndex: number;
+  point: Pt;
+  t: number;
+  distSq: number;
+} | null {
+  let best: {
+    subpathIndex: number;
+    segmentIndex: number;
+    point: Pt;
+    t: number;
+    distSq: number;
+  } | null = null;
+  for (let si = 0; si < subpaths.length; si++) {
+    const ne = nearestEdge(p, subpaths[si]);
+    if (!ne) continue;
+    if (!best || ne.distSq < best.distSq) {
+      best = { subpathIndex: si, ...ne };
+    }
+  }
+  return best;
+}
+
+/** Bounding box union of all subpaths. */
+export function boundingBoxOfSubpaths(
+  subpaths: readonly (readonly Pt[])[],
+): { minX: number; minY: number; maxX: number; maxY: number } | null {
+  return boundingBox(subpaths.flat());
+}
+
 /**
  * Standard ray-casting point-in-polygon for a closed list of anchors.
  */
