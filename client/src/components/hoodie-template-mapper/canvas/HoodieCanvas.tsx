@@ -15,6 +15,7 @@ import {
   distSq,
   nearestEdge,
   svgPathToAnchors,
+  svgPathToSubpaths,
   anchorsToSvgPath,
 } from "../lib/svgPath";
 import MaskLayersOverlay from "./MaskLayersOverlay";
@@ -334,7 +335,7 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
   // `last` is updated on every stage mousemove; on mouseup we commit
   // a single translateLayerMesh() with the cumulative delta.
   const [polyDrag, setPolyDrag] = useState<
-    { id: string; start: Pt; last: Pt; baseAnchors: Pt[] } | null
+    { id: string; start: Pt; last: Pt; baseSubpaths: Pt[][] } | null
   >(null);
   const polyDragOffset = polyDrag
     ? { dx: polyDrag.last.x - polyDrag.start.x, dy: polyDrag.last.y - polyDrag.start.y }
@@ -346,7 +347,10 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
   const liveAnchors: Pt[] = dragAnchors
     ? dragAnchors
     : polyDrag && polyDragOffset
-      ? polyDrag.baseAnchors.map((a) => ({ x: a.x + polyDragOffset.dx, y: a.y + polyDragOffset.dy }))
+      ? polyDrag.baseSubpaths[0]?.map((a) => ({
+          x: a.x + polyDragOffset.dx,
+          y: a.y + polyDragOffset.dy,
+        })) ?? []
       : selectedAnchors;
 
   // Tracks the last anchor we dropped while in magnetic-pen click-and-drag
@@ -725,14 +729,16 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
             // time rather than snapping at drop.
             dragOverride={
               dragAnchors && selectedLayer
-                ? { id: selectedLayer.id, anchors: dragAnchors }
+                ? { id: selectedLayer.id, subpaths: [dragAnchors] }
                 : polyDrag && selectedLayer && polyDragOffset
                   ? {
                       id: selectedLayer.id,
-                      anchors: polyDrag.baseAnchors.map((a) => ({
-                        x: a.x + polyDragOffset.dx,
-                        y: a.y + polyDragOffset.dy,
-                      })),
+                      subpaths: polyDrag.baseSubpaths.map((ring) =>
+                        ring.map((a) => ({
+                          x: a.x + polyDragOffset.dx,
+                          y: a.y + polyDragOffset.dy,
+                        })),
+                      ),
                     }
                   : null
             }
@@ -745,7 +751,7 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
                 id,
                 start: { x: mx, y: my },
                 last: { x: mx, y: my },
-                baseAnchors: svgPathToAnchors(target.maskPath),
+                baseSubpaths: svgPathToSubpaths(target.maskPath),
               });
             }}
             onAltClick={(id, mx, my) => {

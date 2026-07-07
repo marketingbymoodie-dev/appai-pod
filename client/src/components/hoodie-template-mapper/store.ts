@@ -34,9 +34,11 @@ import {
   boundingBox,
   simplifyPath,
   smoothPath,
+  subpathsToSvgPath,
   svgPathToAnchors,
+  svgPathToSubpaths,
 } from "./lib/svgPath";
-import { unionMaskAnchors } from "./lib/mergeLayerPolygons";
+import { unionMaskSubpaths } from "./lib/mergeLayerPolygons";
 import type { CropRect } from "./lib/mockupCrop";
 
 /**
@@ -397,10 +399,8 @@ function applyAnchorsTo(
 
 /** Apply a point-wise map to mask polygon + mesh geometry on one layer. */
 function mapLayerPanelPoints(layer: MaskLayer, mapPoint: (p: Pt) => Pt): MaskLayer {
-  const anchors = svgPathToAnchors(layer.maskPath);
-  const mappedAnchors = anchors.map(mapPoint);
-  const maskPath =
-    mappedAnchors.length >= 2 ? anchorsToSvgPath(mappedAnchors) : layer.maskPath;
+  const subpaths = svgPathToSubpaths(layer.maskPath).map((ring) => ring.map(mapPoint));
+  const maskPath = subpathsToSvgPath(subpaths) || layer.maskPath;
 
   if (!layer.mesh) {
     return { ...layer, maskPath };
@@ -826,11 +826,13 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
       const layers = resolved.map((r) => r.layer);
       if (layers.some((l) => l.isExclusion || l.kind === "exclusion")) return null;
 
-      const anchorLists = layers.map((l) => svgPathToAnchors(l.maskPath));
-      if (anchorLists.some((a) => a.length < MIN_MASK_ANCHORS)) return null;
+      const anchorLists = layers.flatMap((l) => svgPathToSubpaths(l.maskPath));
+      if (anchorLists.length < 2) return null;
 
-      const mergedAnchors = unionMaskAnchors(anchorLists);
-      if (!mergedAnchors || mergedAnchors.length < MIN_MASK_ANCHORS) return null;
+      const mergedSubpaths = unionMaskSubpaths(anchorLists);
+      if (!mergedSubpaths?.length) return null;
+      const mergedMaskPath = subpathsToSvgPath(mergedSubpaths);
+      if (!mergedMaskPath) return null;
 
       const removeSources = opts?.removeSources !== false;
       const name =
@@ -844,7 +846,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
       );
 
       const merged: MaskLayer = {
-        ...defaultMaskLayer(view, mergedAnchors, state.template),
+        ...defaultMaskLayer(view, mergedSubpaths[0], state.template),
         id: newId,
         name,
         panelKey,
@@ -855,6 +857,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
         mesh: null,
         productionPanelSrc: null,
         cornerPins: null,
+        maskPath: mergedMaskPath,
       };
 
       set((s) => {

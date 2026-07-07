@@ -29,53 +29,17 @@ export function anchorsToSvgPath(anchors: readonly Pt[]): SvgPathD {
   return `${head} ${tail} Z`;
 }
 
+/** Join multiple closed subpaths into one SVG "d=" (e.g. merged Front Left + Front Right). */
+export function subpathsToSvgPath(subpaths: readonly (readonly Pt[])[]): SvgPathD {
+  return subpaths
+    .map((anchors) => anchorsToSvgPath(anchors))
+    .filter(Boolean)
+    .join(" ");
+}
+
 const NUM_RE = /-?\d+(?:\.\d+)?/g;
 
-/**
- * Parse an SVG path "d=" into a flat anchor list. Only handles M/L/Z and
- * the lowercase variants (relative coords). Returns [] if the path can't
- * be parsed cleanly. Phase 2 always produces M/L/Z so this stays simple.
- */
-export function svgPathToAnchors(d: SvgPathD): Pt[] {
-  if (!d) return [];
-  const tokens = d
-    .replace(/,/g, " ")
-    .split(/(?=[A-Za-z])/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const anchors: Pt[] = [];
-  let cx = 0;
-  let cy = 0;
-  for (const tok of tokens) {
-    const cmd = tok[0];
-    const nums = (tok.match(NUM_RE) || []).map(Number);
-    switch (cmd) {
-      case "M":
-      case "L": {
-        for (let i = 0; i + 1 < nums.length; i += 2) {
-          cx = nums[i];
-          cy = nums[i + 1];
-          anchors.push({ x: cx, y: cy });
-        }
-        break;
-      }
-      case "m":
-      case "l": {
-        for (let i = 0; i + 1 < nums.length; i += 2) {
-          cx += nums[i];
-          cy += nums[i + 1];
-          anchors.push({ x: cx, y: cy });
-        }
-        break;
-      }
-      case "Z":
-      case "z":
-        break;
-      default:
-        return [];
-    }
-  }
-  // Some serializers add a duplicate of the first point before "Z" — drop it.
+function dropClosingDuplicate(anchors: Pt[]): Pt[] {
   if (
     anchors.length >= 2 &&
     Math.abs(anchors[0].x - anchors[anchors.length - 1].x) < 0.01 &&
@@ -84,6 +48,87 @@ export function svgPathToAnchors(d: SvgPathD): Pt[] {
     anchors.pop();
   }
   return anchors;
+}
+
+/**
+ * Parse an SVG path into one closed subpath per M…Z segment.
+ * Only handles M/L/Z (and lowercase relative variants).
+ */
+export function svgPathToSubpaths(d: SvgPathD): Pt[][] {
+  if (!d) return [];
+  const tokens = d
+    .replace(/,/g, " ")
+    .split(/(?=[A-Za-z])/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const subpaths: Pt[][] = [];
+  let current: Pt[] = [];
+  let cx = 0;
+  let cy = 0;
+  for (const tok of tokens) {
+    const cmd = tok[0];
+    const nums = (tok.match(NUM_RE) || []).map(Number);
+    switch (cmd) {
+      case "M": {
+        if (current.length >= 3) subpaths.push(dropClosingDuplicate(current));
+        current = [];
+        for (let i = 0; i + 1 < nums.length; i += 2) {
+          cx = nums[i];
+          cy = nums[i + 1];
+          current.push({ x: cx, y: cy });
+        }
+        break;
+      }
+      case "L": {
+        for (let i = 0; i + 1 < nums.length; i += 2) {
+          cx = nums[i];
+          cy = nums[i + 1];
+          current.push({ x: cx, y: cy });
+        }
+        break;
+      }
+      case "m": {
+        if (current.length >= 3) subpaths.push(dropClosingDuplicate(current));
+        current = [];
+        for (let i = 0; i + 1 < nums.length; i += 2) {
+          cx += nums[i];
+          cy += nums[i + 1];
+          current.push({ x: cx, y: cy });
+        }
+        break;
+      }
+      case "l": {
+        for (let i = 0; i + 1 < nums.length; i += 2) {
+          cx += nums[i];
+          cy += nums[i + 1];
+          current.push({ x: cx, y: cy });
+        }
+        break;
+      }
+      case "Z":
+      case "z": {
+        if (current.length >= 3) subpaths.push(dropClosingDuplicate(current));
+        current = [];
+        break;
+      }
+      default:
+        return [];
+    }
+  }
+  if (current.length >= 3) subpaths.push(dropClosingDuplicate(current));
+  return subpaths;
+}
+
+/**
+ * Parse an SVG path "d=" into a flat anchor list. Only handles M/L/Z and
+ * the lowercase variants (relative coords). Returns [] if the path can't
+ * be parsed cleanly. Phase 2 always produces M/L/Z so this stays simple.
+ *
+ * For compound paths (multiple M…Z segments), returns the first subpath only.
+ * Use {@link svgPathToSubpaths} when all regions matter (merged panels, render).
+ */
+export function svgPathToAnchors(d: SvgPathD): Pt[] {
+  return svgPathToSubpaths(d)[0] ?? [];
 }
 
 /** Squared distance between two points. */

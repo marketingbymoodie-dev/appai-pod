@@ -1,6 +1,9 @@
 /**
  * Boolean union of closed mask polygons (mockup pixel space).
  * Used when merging e.g. Front Left + Front Right into one Front panel.
+ *
+ * Disjoint panels (bomber jacket halves) stay as separate subpaths in one layer —
+ * union returns multiple polygons and we keep all outer rings, not just the largest.
  */
 
 import polygonClipping from "polygon-clipping";
@@ -10,26 +13,20 @@ const { union } = polygonClipping;
 
 type Ring = [number, number][];
 
-function ringArea(ring: Ring): number {
-  if (ring.length < 3) return 0;
-  let sum = 0;
-  for (let i = 0; i < ring.length; i++) {
-    const j = (i + 1) % ring.length;
-    sum += ring[i][0] * ring[j][1] - ring[j][0] * ring[i][1];
-  }
-  return Math.abs(sum) / 2;
-}
-
 function anchorsToRing(anchors: readonly Pt[]): Ring | null {
   if (anchors.length < 3) return null;
   return anchors.map((p) => [p.x, p.y]);
 }
 
+function ringToAnchors(ring: Ring): Pt[] {
+  return ring.map(([x, y]) => ({ x, y }));
+}
+
 /**
- * Union two or more closed polygons into one outer boundary.
- * Returns null when inputs are invalid or union produces nothing.
+ * Union two or more closed polygons. Returns one subpath per disjoint region
+ * (e.g. left + right front panels). Overlapping inputs collapse to one ring.
  */
-export function unionMaskAnchors(anchorLists: readonly Pt[][]): Pt[] | null {
+export function unionMaskSubpaths(anchorLists: readonly Pt[][]): Pt[][] | null {
   if (anchorLists.length < 2) return null;
 
   let acc: ReturnType<typeof union> | null = null;
@@ -41,17 +38,18 @@ export function unionMaskAnchors(anchorLists: readonly Pt[][]): Pt[] | null {
   }
   if (!acc?.length) return null;
 
-  let bestRing: Ring | null = null;
-  let bestArea = 0;
+  const subpaths: Pt[][] = [];
   for (const polygon of acc) {
     const outer = polygon[0];
-    if (!outer || outer.length < 3) continue;
-    const area = ringArea(outer);
-    if (area > bestArea) {
-      bestArea = area;
-      bestRing = outer;
-    }
+    if (outer && outer.length >= 3) subpaths.push(ringToAnchors(outer));
   }
-  if (!bestRing) return null;
-  return bestRing.map(([x, y]) => ({ x, y }));
+  return subpaths.length > 0 ? subpaths : null;
+}
+
+/** @deprecated Use unionMaskSubpaths — kept for tests migrating from single-ring API. */
+export function unionMaskAnchors(anchorLists: readonly Pt[][]): Pt[] | null {
+  const subpaths = unionMaskSubpaths(anchorLists);
+  if (!subpaths) return null;
+  if (subpaths.length === 1) return subpaths[0];
+  return null;
 }

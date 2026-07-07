@@ -2,7 +2,7 @@ import { Group, Line, Text } from "react-konva";
 import { type CSSProperties, useMemo } from "react";
 import type { MaskLayer, Pt } from "@shared/hoodieTemplate";
 import { PANEL_DISPLAY_LABEL, layerRenderPriority } from "@shared/hoodieTemplate";
-import { centroid, svgPathToAnchors } from "../lib/svgPath";
+import { centroid, svgPathToSubpaths } from "../lib/svgPath";
 
 /**
  * Renders all saved mask layers for the current view. Hover and selection
@@ -21,10 +21,10 @@ type Props = {
   interactive: boolean;
   /**
    * While an anchor of `dragOverride.id` is being dragged, render the
-   * polygon using `dragOverride.anchors` instead of the saved maskPath so
+   * polygon using `dragOverride.subpaths` instead of the saved maskPath so
    * the outline follows the dragged dot in real time.
    */
-  dragOverride?: { id: string; anchors: Pt[] } | null;
+  dragOverride?: { id: string; subpaths: Pt[][] } | null;
   onHover: (id: string | null) => void;
   onSelect: (id: string) => void;
   /** Alt-click on the layer body — used by HoodieCanvas to insert an anchor at the click. */
@@ -79,11 +79,11 @@ export default function MaskLayersOverlay(props: Props) {
     <Group>
       {sorted.map((layer) => {
         if (!layer.visible) return null;
-        const anchors =
+        const subpaths =
           dragOverride && dragOverride.id === layer.id
-            ? dragOverride.anchors
-            : svgPathToAnchors(layer.maskPath);
-        if (anchors.length < 3) return null;
+            ? dragOverride.subpaths
+            : svgPathToSubpaths(layer.maskPath);
+        if (!subpaths.some((ring) => ring.length >= 3)) return null;
         const isSelected = layer.id === selectedId;
         const isHover = layer.id === hoverId;
         const isExclusion = layer.isExclusion || layer.kind === "exclusion";
@@ -106,67 +106,65 @@ export default function MaskLayersOverlay(props: Props) {
         const strokeWidth = (isSelected ? 2.5 : 1.5) / zoom;
         const opacity = layer.opacity;
         const dash = isExclusion ? [6 / zoom, 4 / zoom] : undefined;
-        const labelPt = centroid(anchors);
+        const labelPt = centroid(subpaths.flat());
         const label = layer.panelKey ? PANEL_DISPLAY_LABEL[layer.panelKey] : layer.name;
         return (
           <Group key={layer.id}>
-            <Line
-              points={flatten(anchors)}
-              closed
-              fill={fill}
-              stroke={stroke}
-              strokeWidth={strokeWidth}
-              dash={dash}
-              opacity={opacity}
-              listening={interactive && !layer.locked}
-              onMouseEnter={(e) => {
-                onHover(layer.id);
-                const stage = e.target.getStage();
-                if (stage?.container()) stage.container().style.cursor = "pointer";
-              }}
-              onMouseLeave={(e) => {
-                onHover(null);
-                const stage = e.target.getStage();
-                if (stage?.container()) stage.container().style.cursor = "default";
-              }}
-              onMouseDown={(e) => {
-                const evt = e.evt as MouseEvent;
-                if (evt.button !== 0) return;
-                e.cancelBubble = true;
-                // Map stage pointer back into mockup coords once — both
-                // alt-insert and polygon-drag need it.
-                const stage = e.target.getStage();
-                let mp: { x: number; y: number } | null = null;
-                if (stage) {
-                  const pt = stage.getPointerPosition();
-                  if (pt) {
-                    const tr = stage.getAbsoluteTransform().copy().invert();
-                    mp = tr.point(pt);
-                  }
-                }
-                if (evt.altKey && onAltClick && mp) {
-                  onAltClick(layer.id, mp.x, mp.y);
-                  return;
-                }
-                // Drag-to-translate: only when the user grabs the layer
-                // they already had selected, with no modifier keys.
-                // Selecting a *different* layer is still a single click
-                // (no drag) — the parent commits the drag on mouseup
-                // only if it sees real movement.
-                if (
-                  isSelected &&
-                  !evt.shiftKey &&
-                  !evt.ctrlKey &&
-                  !evt.metaKey &&
-                  onPolygonDragStart &&
-                  mp
-                ) {
-                  onPolygonDragStart(layer.id, mp.x, mp.y);
-                  return;
-                }
-                onSelect(layer.id);
-              }}
-            />
+            {subpaths.map((anchors, subIdx) =>
+              anchors.length < 3 ? null : (
+                <Line
+                  key={subIdx}
+                  points={flatten(anchors)}
+                  closed
+                  fill={fill}
+                  stroke={stroke}
+                  strokeWidth={strokeWidth}
+                  dash={dash}
+                  opacity={opacity}
+                  listening={interactive && !layer.locked}
+                  onMouseEnter={(e) => {
+                    onHover(layer.id);
+                    const stage = e.target.getStage();
+                    if (stage?.container()) stage.container().style.cursor = "pointer";
+                  }}
+                  onMouseLeave={(e) => {
+                    onHover(null);
+                    const stage = e.target.getStage();
+                    if (stage?.container()) stage.container().style.cursor = "default";
+                  }}
+                  onMouseDown={(e) => {
+                    const evt = e.evt as MouseEvent;
+                    if (evt.button !== 0) return;
+                    e.cancelBubble = true;
+                    const stage = e.target.getStage();
+                    let mp: { x: number; y: number } | null = null;
+                    if (stage) {
+                      const pt = stage.getPointerPosition();
+                      if (pt) {
+                        const tr = stage.getAbsoluteTransform().copy().invert();
+                        mp = tr.point(pt);
+                      }
+                    }
+                    if (evt.altKey && onAltClick && mp) {
+                      onAltClick(layer.id, mp.x, mp.y);
+                      return;
+                    }
+                    if (
+                      isSelected &&
+                      !evt.shiftKey &&
+                      !evt.ctrlKey &&
+                      !evt.metaKey &&
+                      onPolygonDragStart &&
+                      mp
+                    ) {
+                      onPolygonDragStart(layer.id, mp.x, mp.y);
+                      return;
+                    }
+                    onSelect(layer.id);
+                  }}
+                />
+              ),
+            )}
             {showPanelLabels && labelPt && (
               <Text
                 x={labelPt.x}
