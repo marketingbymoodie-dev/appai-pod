@@ -10,8 +10,10 @@ import {
   Image as ImageIcon,
   ChevronDown,
   ChevronRight,
+  Combine,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import MergeLayersDialog from "./MergeLayersDialog";
 import {
   PANEL_DISPLAY_LABEL,
   panelsEligibleForView,
@@ -143,6 +145,7 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
   const frontMockupSrc = useHoodieMapperStore((s) => s.template.views.front?.mockup?.src ?? null);
   const backMockupSrc = useHoodieMapperStore((s) => s.template.views.back?.mockup?.src ?? null);
   const selectedLayerId = useHoodieMapperStore((s) => s.selectedLayerId);
+  const mergeSelectionIds = useHoodieMapperStore((s) => s.mergeSelectionIds);
   const hoverLayerId = useHoodieMapperStore((s) => s.hoverLayerId);
   const saveSeq = useHoodieMapperStore((s) => s.saveSeq);
   const activeTemplateName = useHoodieMapperStore((s) => s.template.name);
@@ -156,6 +159,7 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
   const [loading, setLoading] = useState(false);
   const [mockupLoading, setMockupLoading] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [mergeDialogOpen, setMergeDialogOpen] = useState(false);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const { toast } = useToast();
 
@@ -244,6 +248,9 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
 
   const eligiblePanels = panelsEligibleForView(view, blueprintId, placerEditor, garmentLayout);
 
+  const mergeIdsOnView = mergeSelectionIds.filter((id) => layers.some((l) => l.id === id));
+  const canOpenMerge = mergeIdsOnView.length >= 2;
+
   return (
     <aside
       className="flex h-full w-64 flex-col border-r border-slate-800 bg-slate-900 text-slate-200"
@@ -269,14 +276,33 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
             No mask layers yet. Pick the Polygon (P) or Magnetic (M) pen and click on the mockup to start tracing each panel.
           </div>
         ) : (
-          <ul className="space-y-1">
+          <>
+            <div className="mb-2 space-y-1.5">
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                className="h-7 w-full text-[11px]"
+                disabled={!canOpenMerge}
+                onClick={() => setMergeDialogOpen(true)}
+                data-testid="merge-layers-open"
+              >
+                <Combine className="mr-1 h-3 w-3" />
+                Merge selected ({mergeIdsOnView.length})
+              </Button>
+              <p className="text-[10px] leading-snug text-slate-500">
+                Ctrl+click layers to multi-select. Merged mesh is cleared — re-mesh if needed.
+              </p>
+            </div>
+            <ul className="space-y-1">
             {[...layers]
               // Topmost-rendered at the top of the list (Photoshop convention).
               // Uses anatomical render priority so e.g. Front Pocket sits at
               // the top of the list, matching what shows on the canvas.
               .sort((a, b) => layerRenderPriority(b) - layerRenderPriority(a))
               .map((l) => {
-                const isSelected = selectedLayerId === l.id;
+                const isPrimary = selectedLayerId === l.id;
+                const inMergeSelection = mergeIdsOnView.includes(l.id);
                 const isHover = hoverLayerId === l.id;
                 const isExclusion = l.isExclusion || l.kind === "exclusion";
                 return (
@@ -284,14 +310,20 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
                     key={l.id}
                     onMouseEnter={() => actions.setHoverLayer(l.id)}
                     onMouseLeave={() => actions.setHoverLayer(null)}
-                    onClick={() => actions.setSelectedLayer(l.id)}
+                    onClick={(e) =>
+                      actions.setSelectedLayer(l.id, {
+                        additive: e.ctrlKey || e.metaKey,
+                      })
+                    }
                     onDoubleClick={() => setRenamingId(l.id)}
                     className={`flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-xs transition ${
-                      isSelected
-                        ? "bg-slate-700"
-                        : isHover
-                          ? "bg-slate-800"
-                          : "hover:bg-slate-800"
+                      inMergeSelection
+                        ? "ring-1 ring-violet-400/80 bg-slate-700"
+                        : isPrimary
+                          ? "bg-slate-700"
+                          : isHover
+                            ? "bg-slate-800"
+                            : "hover:bg-slate-800"
                     }`}
                   >
                     <button
@@ -374,8 +406,16 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
                 );
               })}
           </ul>
+          </>
         )}
       </div>
+
+      <MergeLayersDialog
+        open={mergeDialogOpen}
+        onOpenChange={setMergeDialogOpen}
+        view={view}
+        layerIds={mergeIdsOnView}
+      />
 
       <SectionHeader
         title={`Eligible panels · ${view}`}

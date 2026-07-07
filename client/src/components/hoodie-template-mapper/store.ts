@@ -36,6 +36,7 @@ import {
   smoothPath,
   svgPathToAnchors,
 } from "./lib/svgPath";
+import { unionMaskAnchors } from "./lib/mergeLayerPolygons";
 import type { CropRect } from "./lib/mockupCrop";
 
 /**
@@ -122,6 +123,8 @@ export type HoodieMapperState = {
   view: HoodieView;
   tool: HoodieToolId;
   selectedLayerId: string | null;
+  /** Multi-select for merge — Ctrl/Cmd+click in the layer list. */
+  mergeSelectionIds: string[];
   hoverLayerId: string | null;
   debug: HoodieMapperDebugFlags;
   /** In-progress polygon being drawn; null when not actively drawing. */
@@ -176,7 +179,16 @@ export type HoodieMapperActions = {
   resetTemplate: (name?: string) => void;
   setView: (view: HoodieView) => void;
   setTool: (tool: HoodieToolId) => void;
-  setSelectedLayer: (id: string | null) => void;
+  setSelectedLayer: (id: string | null, opts?: { additive?: boolean }) => void;
+  /**
+   * Boolean-union selected panel masks into one new layer. Sources can be
+   * removed; mesh is not merged — re-setup mesh on the combined polygon.
+   */
+  mergeSelectedLayers: (opts?: {
+    name?: string;
+    panelKey?: HoodiePanelKey | null;
+    removeSources?: boolean;
+  }) => string | null;
   setHoverLayer: (id: string | null) => void;
   setDebug: (patch: Partial<HoodieMapperDebugFlags>) => void;
   setBusy: (busy: boolean) => void;
@@ -417,6 +429,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
   view: "front",
   tool: "move",
   selectedLayerId: null,
+  mergeSelectionIds: [],
   hoverLayerId: null,
   debug: { ...DEFAULT_DEBUG_FLAGS },
   penDraft: null,
@@ -433,6 +446,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
       set(() => ({
         template: normalizeHoodieTemplate(template),
         selectedLayerId: null,
+        mergeSelectionIds: [],
         hoverLayerId: null,
         penDraft: null,
         selectedAnchorIndex: null,
@@ -443,6 +457,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
       set(() => ({
         template: emptyHoodieTemplate(name ?? STARTER_TEMPLATE_NAME),
         selectedLayerId: null,
+        mergeSelectionIds: [],
         hoverLayerId: null,
         penDraft: null,
         selectedAnchorIndex: null,
@@ -453,6 +468,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
       set(() => ({
         view,
         selectedLayerId: null,
+        mergeSelectionIds: [],
         hoverLayerId: null,
         penDraft: null,
         selectedAnchorIndex: null,
@@ -463,7 +479,30 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
         // Cancel any in-progress pen draft when switching to a non-pen tool.
         penDraft: tool === "polygon-pen" || tool === "magnetic-pen" ? s.penDraft : null,
       })),
-    setSelectedLayer: (id) => set(() => ({ selectedLayerId: id, selectedAnchorIndex: null })),
+    setSelectedLayer: (id, opts) =>
+      set((s) => {
+        if (!id) {
+          return { selectedLayerId: null, mergeSelectionIds: [], selectedAnchorIndex: null };
+        }
+        if (opts?.additive) {
+          const base =
+            s.mergeSelectionIds.length > 0
+              ? s.mergeSelectionIds
+              : s.selectedLayerId
+                ? [s.selectedLayerId]
+                : [];
+          const next = base.includes(id) ? base.filter((x) => x !== id) : [...base, id];
+          if (next.length === 0) {
+            return { selectedLayerId: id, mergeSelectionIds: [id], selectedAnchorIndex: null };
+          }
+          return {
+            selectedLayerId: id,
+            mergeSelectionIds: next,
+            selectedAnchorIndex: null,
+          };
+        }
+        return { selectedLayerId: id, mergeSelectionIds: [id], selectedAnchorIndex: null };
+      }),
     setHoverLayer: (id) => set(() => ({ hoverLayerId: id })),
     setDebug: (patch) => set((s) => ({ debug: { ...s.debug, ...patch } })),
     setBusy: (busy) => set(() => ({ busy })),
@@ -497,6 +536,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
         mockupCrop: { active: true, rect },
         tool: "move",
         selectedLayerId: null,
+        mergeSelectionIds: [],
       })),
     setMockupCropRect: (rect) =>
       set((s) => ({
@@ -697,7 +737,13 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
           }
         }
         const nextSelected = s.selectedLayerId === id ? null : s.selectedLayerId;
-        return { template: updated, selectedLayerId: nextSelected, dirty: true };
+        const nextMerge = s.mergeSelectionIds.filter((x) => x !== id);
+        return {
+          template: updated,
+          selectedLayerId: nextSelected,
+          mergeSelectionIds: nextMerge.length ? nextMerge : nextSelected ? [nextSelected] : [],
+          dirty: true,
+        };
       }),
     duplicateLayer: (id) => {
       const found = findLayerById(get().template, id);
@@ -742,6 +788,71 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
             layers: [...view.layers, duped],
           }),
           selectedLayerId: newId,
+          dirty: true,
+        };
+      });
+      return newId;
+    },
+    mergeSelectedLayers: (opts) => {
+      const state = get();
+      const view = state.view;
+      const ids = state.mergeSelectionIds.filter((id) => {
+        const found = findLayerById(state.template, id);
+        return found?.view === view;
+      });
+      if (ids.length < 2) return null;
+
+      const resolved = ids
+        .map((id) => findLayerById(state.template, id))
+        .filter((x): x is NonNullable<typeof x> => x != null);
+      if (resolved.length < 2) return null;
+
+      const layers = resolved.map((r) => r.layer);
+      if (layers.some((l) => l.isExclusion || l.kind === "exclusion")) return null;
+
+      const anchorLists = layers.map((l) => svgPathToAnchors(l.maskPath));
+      if (anchorLists.some((a) => a.length < MIN_MASK_ANCHORS)) return null;
+
+      const mergedAnchors = unionMaskAnchors(anchorLists);
+      if (!mergedAnchors || mergedAnchors.length < MIN_MASK_ANCHORS) return null;
+
+      const removeSources = opts?.removeSources !== false;
+      const name =
+        opts?.name?.trim() ||
+        `Merged ${layers.map((l) => l.name.replace(/ Copy(?: \d+)?$/, "")).join(" + ")}`;
+      const panelKey = opts?.panelKey ?? null;
+      const newId = newLayerId();
+      const maxZ = Math.max(
+        highestZIndexFor(state.template, view),
+        ...layers.map((l) => l.zIndex ?? 0),
+      );
+
+      const merged: MaskLayer = {
+        ...defaultMaskLayer(view, mergedAnchors, state.template),
+        id: newId,
+        name,
+        panelKey,
+        kind: "panel",
+        isExclusion: false,
+        zIndex: maxZ + 1,
+        opacity: Math.max(...layers.map((l) => l.opacity)),
+        mesh: null,
+        productionPanelSrc: null,
+        cornerPins: null,
+      };
+
+      set((s) => {
+        const viewState = s.template.views[view] ?? EMPTY_HOODIE_VIEW;
+        let nextLayers = viewState.layers;
+        if (removeSources) {
+          const removeSet = new Set(ids);
+          nextLayers = nextLayers.filter((l) => !removeSet.has(l.id));
+        }
+        return {
+          template: patchView(s.template, view, { layers: [...nextLayers, merged] }),
+          selectedLayerId: newId,
+          mergeSelectionIds: [newId],
+          selectedAnchorIndex: null,
           dirty: true,
         };
       });
