@@ -4,6 +4,7 @@ import HoodieCanvas from "@/components/hoodie-template-mapper/canvas/HoodieCanva
 import LeftSidebar from "@/components/hoodie-template-mapper/LeftSidebar";
 import RightSidebar from "@/components/hoodie-template-mapper/RightSidebar";
 import Toolbar from "@/components/hoodie-template-mapper/Toolbar";
+import DeleteLayerConfirmDialog from "@/components/hoodie-template-mapper/DeleteLayerConfirmDialog";
 import { useHoodieMapperStore } from "@/components/hoodie-template-mapper/store";
 import {
   loadTemplate as apiLoadTemplate,
@@ -297,6 +298,7 @@ export default function HoodieTemplateMapperPage() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+        <DeleteLayerConfirmDialog />
       </div>
     </AdminLayout>
   );

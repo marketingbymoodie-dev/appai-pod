@@ -405,7 +405,7 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        actions.removeLayer(l.id);
+                        actions.requestRemoveLayer(l.id, l.name);
                       }}
                       className="text-slate-500 hover:text-red-400"
                       title="Delete layer"

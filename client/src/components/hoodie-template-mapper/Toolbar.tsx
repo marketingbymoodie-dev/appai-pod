@@ -9,6 +9,8 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import {
+  Undo2,
+  Redo2,
   MousePointer2,
   PenLine,
   Magnet,
@@ -120,6 +122,8 @@ export default function Toolbar({ onOpenLoadDialog, onLoadTemplate }: Props) {
   const template = useHoodieMapperStore((s) => s.template);
   const dirty = useHoodieMapperStore((s) => s.dirty);
   const busy = useHoodieMapperStore((s) => s.busy);
+  const canUndo = useHoodieMapperStore((s) => s.undoStack.length > 0);
+  const canRedo = useHoodieMapperStore((s) => s.redoStack.length > 0);
   const actions = useHoodieMapperStore((s) => s.actions);
 
   const frontInputRef = useRef<HTMLInputElement | null>(null);
@@ -138,13 +142,20 @@ export default function Toolbar({ onOpenLoadDialog, onLoadTemplate }: Props) {
   );
   const previewReady = totalLayers > 0 && hasMockup;
 
-  // Keyboard shortcuts: V (Move), P (Polygon Pen), M (Magnetic Pen).
+  // Keyboard shortcuts: V (Move), P (Polygon Pen), M (Magnetic Pen), Ctrl+Z / Ctrl+Shift+Z.
   // Skipped while typing in form fields so we don't hijack input.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null;
       if (target && /input|textarea|select/i.test(target.tagName)) return;
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (e.shiftKey) actions.redo();
+        else actions.undo();
+        return;
+      }
+      if (mod || e.altKey) return;
       const key = e.key.toLowerCase();
       const match = TOOL_BUTTONS.find((t) => t.shortcut === key);
       if (!match) return;
@@ -292,6 +303,29 @@ export default function Toolbar({ onOpenLoadDialog, onLoadTemplate }: Props) {
           );
         })}
       </div>
+
+      <Button
+        size="sm"
+        variant="ghost"
+        className="h-8 w-8 p-0"
+        onClick={() => actions.undo()}
+        disabled={!canUndo || busy}
+        title="Undo (Ctrl+Z)"
+        data-testid="hoodie-undo"
+      >
+        <Undo2 className="h-4 w-4" />
+      </Button>
+      <Button
+        size="sm"
+        variant="ghost"
+        className="h-8 w-8 p-0"
+        onClick={() => actions.redo()}
+        disabled={!canRedo || busy}
+        title="Redo (Ctrl+Shift+Z)"
+        data-testid="hoodie-redo"
+      >
+        <Redo2 className="h-4 w-4" />
+      </Button>
 
       <div className="mx-2 h-6 w-px bg-slate-700" />
 

@@ -432,7 +432,7 @@ function SelectedLayerSection({ layer }: { layer: MaskLayer }) {
         label="Exclusion mask (zipper / hood interior / etc.)"
         checked={layer.isExclusion}
         onChange={(c) =>
-          actions.patchLayer(layer.id, { isExclusion: c, kind: c ? "exclusion" : "panel" })
+          actions.patchLayer(layer.id, { isExclusion: c, kind: c ? "exclusion" : "panel" }, { recordUndo: true })
         }
       />
       <div className="flex flex-wrap gap-2">
@@ -467,7 +467,7 @@ function SelectedLayerSection({ layer }: { layer: MaskLayer }) {
           size="sm"
           variant="ghost"
           className="h-8 text-[11px] text-red-300 hover:text-red-200"
-          onClick={() => actions.removeLayer(layer.id)}
+          onClick={() => actions.requestRemoveLayer(layer.id, layer.name)}
         >
           <Trash2 className="mr-1 h-3.5 w-3.5" /> Delete
         </Button>
@@ -1150,7 +1150,7 @@ function MeshWarpSection({ layer }: { layer: MaskLayer }) {
               size="sm"
               variant="ghost"
               className="h-8 text-[11px] text-red-300 hover:text-red-200"
-              onClick={() => actions.patchLayer(layer.id, { mesh: null })}
+              onClick={() => actions.patchLayer(layer.id, { mesh: null }, { recordUndo: true })}
             >
               Remove
             </Button>

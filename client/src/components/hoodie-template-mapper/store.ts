@@ -158,6 +158,18 @@ export type HoodieMapperState = {
   meshEdit: MeshEditState;
   /** Interactive mockup crop before masking. */
   mockupCrop: { active: boolean; rect: CropRect | null };
+  /** Undo snapshots (template + selection only — not tool/view/debug). */
+  undoStack: HoodieMapperUndoSnapshot[];
+  redoStack: HoodieMapperUndoSnapshot[];
+  /** When set, DeleteLayerConfirmDialog is open for this layer. */
+  layerDeletePrompt: { id: string; name: string } | null;
+};
+
+export type HoodieMapperUndoSnapshot = {
+  template: HoodieTemplate;
+  selectedLayerId: string | null;
+  mergeSelectionIds: string[];
+  selectedAnchorIndex: number | null;
 };
 
 /**
@@ -224,7 +236,13 @@ export type HoodieMapperActions = {
   /** Mask layer mutations. */
   upsertLayer: (layer: MaskLayer) => void;
   removeLayer: (id: string) => void;
-  patchLayer: (id: string, patch: Partial<MaskLayer>) => void;
+  /** Opens confirm dialog — use instead of removeLayer from UI buttons. */
+  requestRemoveLayer: (id: string, name: string) => void;
+  cancelRemoveLayer: () => void;
+  confirmRemoveLayer: () => void;
+  undo: () => void;
+  redo: () => void;
+  patchLayer: (id: string, patch: Partial<MaskLayer>, opts?: { recordUndo?: boolean }) => void;
   reorderLayer: (id: string, newZIndex: number) => void;
   /**
    * Deep-clone a layer (new id, " Copy" name suffix, slight x/y offset
@@ -426,6 +444,29 @@ function applyPanelPointMap(
   return patchView(template, found.view, { layers });
 }
 
+const MAX_UNDO_STEPS = 50;
+
+function captureUndoSnapshot(s: HoodieMapperState): HoodieMapperUndoSnapshot {
+  return {
+    template: structuredClone(s.template),
+    selectedLayerId: s.selectedLayerId,
+    mergeSelectionIds: [...s.mergeSelectionIds],
+    selectedAnchorIndex: s.selectedAnchorIndex,
+  };
+}
+
+/** Push current state onto undo stack before a mutating action. */
+function withUndo(
+  s: HoodieMapperState,
+  patch: Partial<HoodieMapperState>,
+): Partial<HoodieMapperState> {
+  return {
+    undoStack: [...s.undoStack, captureUndoSnapshot(s)].slice(-MAX_UNDO_STEPS),
+    redoStack: [],
+    ...patch,
+  };
+}
+
 export const useHoodieMapperStore = create<Store>((set, get) => ({
   template: emptyHoodieTemplate(STARTER_TEMPLATE_NAME, "Zip Hoodie AOP — Size L"),
   view: "front",
@@ -439,6 +480,9 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
   magneticTolerance: DEFAULT_MAGNETIC_TOLERANCE,
   meshEdit: { ...DEFAULT_MESH_EDIT_STATE },
   mockupCrop: { active: false, rect: null },
+  undoStack: [],
+  redoStack: [],
+  layerDeletePrompt: null,
   selectedAnchorIndex: null,
   dirty: false,
   busy: false,
@@ -453,6 +497,9 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
         penDraft: null,
         selectedAnchorIndex: null,
         mockupCrop: { active: false, rect: null },
+        undoStack: [],
+        redoStack: [],
+        layerDeletePrompt: null,
         dirty: false,
       })),
     resetTemplate: (name) =>
@@ -464,6 +511,9 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
         penDraft: null,
         selectedAnchorIndex: null,
         mockupCrop: { active: false, rect: null },
+        undoStack: [],
+        redoStack: [],
+        layerDeletePrompt: null,
         dirty: false,
       })),
     setView: (view) =>
@@ -523,29 +573,67 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
     setDebug: (patch) => set((s) => ({ debug: { ...s.debug, ...patch } })),
     setBusy: (busy) => set(() => ({ busy })),
     markSaved: () => set((s) => ({ dirty: false, saveSeq: s.saveSeq + 1 })),
+    undo: () =>
+      set((s) => {
+        if (s.undoStack.length === 0) return {};
+        const previous = s.undoStack[s.undoStack.length - 1];
+        return {
+          template: previous.template,
+          selectedLayerId: previous.selectedLayerId,
+          mergeSelectionIds: previous.mergeSelectionIds,
+          selectedAnchorIndex: previous.selectedAnchorIndex,
+          undoStack: s.undoStack.slice(0, -1),
+          redoStack: [...s.redoStack, captureUndoSnapshot(s)].slice(-MAX_UNDO_STEPS),
+          dirty: true,
+        };
+      }),
+    redo: () =>
+      set((s) => {
+        if (s.redoStack.length === 0) return {};
+        const next = s.redoStack[s.redoStack.length - 1];
+        return {
+          template: next.template,
+          selectedLayerId: next.selectedLayerId,
+          mergeSelectionIds: next.mergeSelectionIds,
+          selectedAnchorIndex: next.selectedAnchorIndex,
+          undoStack: [...s.undoStack, captureUndoSnapshot(s)].slice(-MAX_UNDO_STEPS),
+          redoStack: s.redoStack.slice(0, -1),
+          dirty: true,
+        };
+      }),
+    requestRemoveLayer: (id, name) => set(() => ({ layerDeletePrompt: { id, name } })),
+    cancelRemoveLayer: () => set(() => ({ layerDeletePrompt: null })),
+    confirmRemoveLayer: () => {
+      const prompt = get().layerDeletePrompt;
+      if (!prompt) return;
+      get().actions.removeLayer(prompt.id);
+      set(() => ({ layerDeletePrompt: null }));
+    },
     setMockup: (view, mockup) =>
-      set((s) => ({
-        template: patchView(s.template, view, {
-          mockup: mockup
-            ? {
-                ...mockup,
-                x: mockup.x ?? 0,
-                y: mockup.y ?? 0,
-                scale: mockup.scale ?? 1,
-                transformLocked: mockup.transformLocked ?? false,
-              }
-            : null,
+      set((s) =>
+        withUndo(s, {
+          template: patchView(s.template, view, {
+            mockup: mockup
+              ? {
+                  ...mockup,
+                  x: mockup.x ?? 0,
+                  y: mockup.y ?? 0,
+                  scale: mockup.scale ?? 1,
+                  transformLocked: mockup.transformLocked ?? false,
+                }
+              : null,
+          }),
+          dirty: true,
         }),
-        dirty: true,
-      })),
+      ),
     patchMockup: (view, patch) =>
       set((s) => {
         const current = s.template.views[view]?.mockup;
         if (!current) return s;
-        return {
+        return withUndo(s, {
           template: patchView(s.template, view, { mockup: { ...current, ...patch } }),
           dirty: true,
-        };
+        });
       }),
     startMockupCrop: (rect) =>
       set(() => ({
@@ -591,20 +679,22 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
       set((s) => {
         const dest = s.template.views[to] ?? EMPTY_HOODIE_VIEW;
         const layers = replaceExisting ? cloned : [...dest.layers, ...cloned];
-        return {
+        return withUndo(s, {
           template: patchView(s.template, to, { layers }),
           view: to,
           selectedLayerId: cloned[0]?.id ?? null,
           dirty: true,
-        };
+        });
       });
       return cloned.length;
     },
     setReferenceOverlay: (view, overlay) =>
-      set((s) => ({
-        template: patchView(s.template, view, { referenceOverlay: overlay }),
-        dirty: true,
-      })),
+      set((s) =>
+        withUndo(s, {
+          template: patchView(s.template, view, { referenceOverlay: overlay }),
+          dirty: true,
+        }),
+      ),
     setTemplateMeta: (patch) =>
       set((s) => {
         let next: HoodieTemplate = { ...s.template, ...patch };
@@ -700,35 +790,41 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
         if (patch.printFileLayout != null) {
           next = { ...next, printFileLayout: patch.printFileLayout as PrintFileLayout };
         }
-        return {
+        return withUndo(s, {
           template: bumpUpdatedAt(next),
           dirty: true,
-        };
+        });
       }),
     setDesignGroups: (groups) =>
-      set((s) => ({
-        template: bumpUpdatedAt({ ...s.template, designGroups: groups }),
-        dirty: true,
-      })),
+      set((s) =>
+        withUndo(s, {
+          template: bumpUpdatedAt({ ...s.template, designGroups: groups }),
+          dirty: true,
+        }),
+      ),
     setTileSettings: (patch) =>
-      set((s) => ({
-        template: bumpUpdatedAt({
-          ...s.template,
-          tileSettings: { ...(s.template.tileSettings ?? { pattern: "grid", tileSizeInches: 1.5 }), ...patch },
+      set((s) =>
+        withUndo(s, {
+          template: bumpUpdatedAt({
+            ...s.template,
+            tileSettings: { ...(s.template.tileSettings ?? { pattern: "grid", tileSizeInches: 1.5 }), ...patch },
+          }),
+          dirty: true,
         }),
-        dirty: true,
-      })),
+      ),
     setRealWorldCalibration: (patch) =>
-      set((s) => ({
-        template: bumpUpdatedAt({
-          ...s.template,
-          realWorldCalibration: {
-            ...(s.template.realWorldCalibration ?? { pixelsPerInch: 1024 / 24 }),
-            ...patch,
-          },
+      set((s) =>
+        withUndo(s, {
+          template: bumpUpdatedAt({
+            ...s.template,
+            realWorldCalibration: {
+              ...(s.template.realWorldCalibration ?? { pixelsPerInch: 1024 / 24 }),
+              ...patch,
+            },
+          }),
+          dirty: true,
         }),
-        dirty: true,
-      })),
+      ),
     upsertLayer: (layer) =>
       set((s) => {
         const view = s.template.views[layer.view] ?? EMPTY_HOODIE_VIEW;
@@ -736,11 +832,11 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
         const layers = existsIdx >= 0
           ? view.layers.map((l, i) => (i === existsIdx ? { ...l, ...layer } : l))
           : [...view.layers, layer];
-        return {
+        return withUndo(s, {
           template: patchView(s.template, layer.view, { layers }),
           selectedLayerId: layer.id,
           dirty: true,
-        };
+        });
       }),
     removeLayer: (id) =>
       set((s) => {
@@ -754,12 +850,12 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
         }
         const nextSelected = s.selectedLayerId === id ? null : s.selectedLayerId;
         const nextMerge = s.mergeSelectionIds.filter((x) => x !== id);
-        return {
+        return withUndo(s, {
           template: updated,
           selectedLayerId: nextSelected,
           mergeSelectionIds: nextMerge.length ? nextMerge : nextSelected ? [nextSelected] : [],
           dirty: true,
-        };
+        });
       }),
     duplicateLayer: (id) => {
       const found = findLayerById(get().template, id);
@@ -799,13 +895,13 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
       };
       set((s) => {
         const view = s.template.views[found.view] ?? EMPTY_HOODIE_VIEW;
-        return {
+        return withUndo(s, {
           template: patchView(s.template, found.view, {
             layers: [...view.layers, duped],
           }),
           selectedLayerId: newId,
           dirty: true,
-        };
+        });
       });
       return newId;
     },
@@ -867,17 +963,17 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
           const removeSet = new Set(ids);
           nextLayers = nextLayers.filter((l) => !removeSet.has(l.id));
         }
-        return {
+        return withUndo(s, {
           template: patchView(s.template, view, { layers: [...nextLayers, merged] }),
           selectedLayerId: newId,
           mergeSelectionIds: [newId],
           selectedAnchorIndex: null,
           dirty: true,
-        };
+        });
       });
       return newId;
     },
-    patchLayer: (id, patch) =>
+    patchLayer: (id, patch, opts) =>
       set((s) => {
         let updated = s.template;
         for (const v of ["front", "back"] as HoodieView[]) {
@@ -888,7 +984,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
           const layers = view.layers.map((l, i) => (i === idx ? { ...l, ...patch } : l));
           updated = patchView(updated, v, { layers });
         }
-        return { template: updated, dirty: true };
+        return opts?.recordUndo ? withUndo(s, { template: updated, dirty: true }) : { template: updated, dirty: true };
       }),
     reorderLayer: (id, newZIndex) =>
       set((s) => {
@@ -900,13 +996,15 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
           const layers = view.layers.map((l) => (l.id === id ? { ...l, zIndex: newZIndex } : l));
           updated = patchView(updated, v, { layers });
         }
-        return { template: updated, dirty: true };
+        return withUndo(s, { template: updated, dirty: true });
       }),
     setLayerAnchors: (id, anchors) =>
-      set((s) => ({
-        template: applyAnchorsTo(s.template, id, anchors),
-        dirty: true,
-      })),
+      set((s) =>
+        withUndo(s, {
+          template: applyAnchorsTo(s.template, id, anchors),
+          dirty: true,
+        }),
+      ),
     simplifyLayerPath: (id, epsilon) =>
       set((s) => {
         const found = findLayerById(s.template, id);
@@ -914,7 +1012,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
         const anchors = svgPathToAnchors(found.layer.maskPath);
         const next = simplifyPath(anchors, epsilon);
         if (next.length < MIN_MASK_ANCHORS) return {} as Partial<Store>;
-        return { template: applyAnchorsTo(s.template, id, next), dirty: true };
+        return withUndo(s, { template: applyAnchorsTo(s.template, id, next), dirty: true });
       }),
     smoothLayerPath: (id, iterations = 1) =>
       set((s) => {
@@ -923,7 +1021,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
         const anchors = svgPathToAnchors(found.layer.maskPath);
         const next = smoothPath(anchors, iterations);
         if (next.length < MIN_MASK_ANCHORS) return {} as Partial<Store>;
-        return { template: applyAnchorsTo(s.template, id, next), dirty: true };
+        return withUndo(s, { template: applyAnchorsTo(s.template, id, next), dirty: true });
       }),
     setSelectedAnchorIndex: (index) => set(() => ({ selectedAnchorIndex: index })),
     setMagneticRadius: (radius) =>
@@ -965,13 +1063,15 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
       const layer = defaultMaskLayer(draft.view, draft.anchors, s.template);
       const view = s.template.views[draft.view];
       const layers = [...view.layers, layer];
-      set(() => ({
-        template: patchView(s.template, draft.view, { layers }),
-        penDraft: null,
-        selectedLayerId: layer.id,
-        selectedAnchorIndex: null,
-        dirty: true,
-      }));
+      set((cur) =>
+        withUndo(cur, {
+          template: patchView(cur.template, draft.view, { layers }),
+          penDraft: null,
+          selectedLayerId: layer.id,
+          selectedAnchorIndex: null,
+          dirty: true,
+        }),
+      );
       return layer.id;
     },
     setLayerSourcePanel: (id, src) =>
@@ -981,10 +1081,10 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
         const layers = s.template.views[found.view].layers.map((l) =>
           l.id === id ? { ...l, productionPanelSrc: src } : l,
         );
-        return {
+        return withUndo(s, {
           template: patchView(s.template, found.view, { layers }),
           dirty: true,
-        };
+        });
       }),
     initLayerMesh: (id, cols = 4, rows = 4) =>
       set((s) => {
@@ -1002,10 +1102,10 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
         const layers = s.template.views[found.view].layers.map((l) =>
           l.id === id ? { ...l, mesh } : l,
         );
-        return {
+        return withUndo(s, {
           template: patchView(s.template, found.view, { layers }),
           dirty: true,
-        };
+        });
       }),
     resetLayerMesh: (id, cols, rows) =>
       set((s) => {
@@ -1025,10 +1125,10 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
         const layers = s.template.views[found.view].layers.map((l) =>
           l.id === id ? { ...l, mesh } : l,
         );
-        return {
+        return withUndo(s, {
           template: patchView(s.template, found.view, { layers }),
           dirty: true,
-        };
+        });
       }),
     resizeLayerMesh: (id, cols, rows) =>
       set((s) => {
@@ -1050,10 +1150,10 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
         const layers = s.template.views[found.view].layers.map((l) =>
           l.id === id ? { ...l, mesh: next } : l,
         );
-        return {
+        return withUndo(s, {
           template: patchView(s.template, found.view, { layers }),
           dirty: true,
-        };
+        });
       }),
     setLayerMeshTargetPoint: (id, index, point) =>
       set((s) => {
@@ -1079,10 +1179,10 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
         const layers = s.template.views[found.view].layers.map((l) =>
           l.id === id && l.mesh ? { ...l, mesh: { ...l.mesh, sourceRect: rect } } : l,
         );
-        return {
+        return withUndo(s, {
           template: patchView(s.template, found.view, { layers }),
           dirty: true,
-        };
+        });
       }),
     setLayerMeshSourceTransform: (id, patch) =>
       set((s) => {
@@ -1100,10 +1200,10 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
             },
           };
         });
-        return {
+        return withUndo(s, {
           template: patchView(s.template, found.view, { layers }),
           dirty: true,
-        };
+        });
       }),
     rotateLayerMesh: (id, deltaDeg, anchor) =>
       set((s) => {
@@ -1132,10 +1232,10 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
             : l.cornerPins;
           return { ...l, mesh: { ...l.mesh, targetPoints }, cornerPins };
         });
-        return {
+        return withUndo(s, {
           template: patchView(s.template, found.view, { layers }),
           dirty: true,
-        };
+        });
       }),
     translateLayerMesh: (id, dx, dy) =>
       set((s) => {
@@ -1145,7 +1245,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
         const trans = (p: Pt): Pt => ({ x: p.x + dx, y: p.y + dy });
         const next = applyPanelPointMap(s.template, id, trans);
         if (!next) return {} as Partial<Store>;
-        return { template: next, dirty: true };
+        return withUndo(s, { template: next, dirty: true });
       }),
     scaleLayerMesh: (id, scale, anchor) =>
       set((s) => {
@@ -1158,7 +1258,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
         });
         const next = applyPanelPointMap(s.template, id, sc);
         if (!next) return {} as Partial<Store>;
-        return { template: next, dirty: true };
+        return withUndo(s, { template: next, dirty: true });
       }),
     translateLayerPolygon: (id, dx, dy) => get().actions.translateLayerMesh(id, dx, dy),
     setMeshEdit: (patch) =>
