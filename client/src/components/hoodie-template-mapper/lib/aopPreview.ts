@@ -1379,6 +1379,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
 
   for (const layer of printLayers) {
     const subpaths = svgPathToSubpaths(layer.maskPath);
+    const layerBb = aabbOf(subpaths.flat());
 
     pctx.save();
     if (!clipCanvasToMaskSubpaths(pctx, subpaths)) {
@@ -1554,7 +1555,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
       // Fallback (no mesh): the legacy mockup-coord tile draw —
       // anchored at canvas center to keep the zip / hood-opening
       // symmetric.
-      const bb = aabbOf(anchors);
+      const bb = layerBb;
       let drewTile = false;
       if (layer.mesh) {
         const flatTile = renderTiledFlatPanel(
@@ -1606,7 +1607,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
         layerRect.effective.width > 0 &&
         layerRect.effective.height > 0
       ) {
-        const bb = aabbOf(anchors);
+        const bb = layerBb;
         if (bb) {
           synthSrc = synthesiseSeamAwareSourceRect(
             bb,
@@ -1626,12 +1627,12 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     } else if (artwork) {
       // No mesh on this layer — fall back to a flat stretched draw.
       if (mode === "tile" && tileSettings) {
-        drawTileFlat(pctx, artwork, aabbOf(anchors), tileSettings, ppi);
+        drawTileFlat(pctx, artwork, layerBb, tileSettings, ppi);
       } else if (mode === "single-sheet" && layerRect) {
         // Apply seam allowance via UV inset by computing the slice
         // of the artwork the panel reads, then drawing that slice
         // stretched into the panel's bbox.
-        const bb = aabbOf(anchors);
+        const bb = layerBb;
         if (bb) {
           const aw = artwork.naturalWidth || artwork.width;
           const ah = artwork.naturalHeight || artwork.height;
@@ -1655,7 +1656,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
           );
         }
       } else {
-        const bb = aabbOf(anchors);
+        const bb = layerBb;
         if (bb) pctx.drawImage(artwork, bb.x, bb.y, bb.width, bb.height);
       }
     } else if (layer.mesh && layerSrc) {
