@@ -141,16 +141,21 @@ export default function SourceArtworkCropPicker({
   }, [img]);
 
   useEffect(() => {
-    measure();
-  }, [measure, previewUrl]);
+    if (!img) {
+      setLayout(null);
+      return;
+    }
+    const id = requestAnimationFrame(() => measure());
+    return () => cancelAnimationFrame(id);
+  }, [img, previewUrl, measure]);
 
   useEffect(() => {
     const el = containerRef.current;
-    if (!el) return;
+    if (!el || !img) return;
     const ro = new ResizeObserver(() => measure());
     ro.observe(el);
     return () => ro.disconnect();
-  }, [measure]);
+  }, [img, measure]);
 
   useEffect(() => {
     const onMove = (e: PointerEvent) => {
@@ -210,36 +215,28 @@ export default function SourceArtworkCropPicker({
     };
   };
 
-  if (loading) {
-    return (
-      <div className="flex h-40 items-center justify-center rounded border border-slate-800 bg-slate-950 text-[10px] text-slate-500">
-        Loading artwork…
-      </div>
-    );
-  }
-  if (error || !previewUrl || !img || !layout) {
-    return (
-      <div className="flex h-40 items-center justify-center rounded border border-slate-800 bg-slate-950 px-2 text-center text-[10px] text-red-300">
-        Could not load artwork preview
-      </div>
-    );
-  }
-
-  const rect = resolveSourceRect(sourceRect, layout.naturalW, layout.naturalH);
-  const box = imageRectToDisplay(rect, layout);
+  const rect =
+    layout != null
+      ? resolveSourceRect(sourceRect, layout.naturalW, layout.naturalH)
+      : null;
+  const box = layout && rect ? imageRectToDisplay(rect, layout) : null;
   const handleSize = 10;
-  const handles: Array<{ id: HandleId; left: number; top: number; cursor: string }> = [
-    { id: "nw", left: box.x, top: box.y, cursor: "nwse-resize" },
-    { id: "n", left: box.x + box.width / 2, top: box.y, cursor: "ns-resize" },
-    { id: "ne", left: box.x + box.width, top: box.y, cursor: "nesw-resize" },
-    { id: "e", left: box.x + box.width, top: box.y + box.height / 2, cursor: "ew-resize" },
-    { id: "se", left: box.x + box.width, top: box.y + box.height, cursor: "nwse-resize" },
-    { id: "s", left: box.x + box.width / 2, top: box.y + box.height, cursor: "ns-resize" },
-    { id: "sw", left: box.x, top: box.y + box.height, cursor: "nesw-resize" },
-    { id: "w", left: box.x, top: box.y + box.height / 2, cursor: "ew-resize" },
-  ];
+  const handles: Array<{ id: HandleId; left: number; top: number; cursor: string }> =
+    box != null
+      ? [
+          { id: "nw", left: box.x, top: box.y, cursor: "nwse-resize" },
+          { id: "n", left: box.x + box.width / 2, top: box.y, cursor: "ns-resize" },
+          { id: "ne", left: box.x + box.width, top: box.y, cursor: "nesw-resize" },
+          { id: "e", left: box.x + box.width, top: box.y + box.height / 2, cursor: "ew-resize" },
+          { id: "se", left: box.x + box.width, top: box.y + box.height, cursor: "nwse-resize" },
+          { id: "s", left: box.x + box.width / 2, top: box.y + box.height, cursor: "ns-resize" },
+          { id: "sw", left: box.x, top: box.y + box.height, cursor: "nesw-resize" },
+          { id: "w", left: box.x, top: box.y + box.height / 2, cursor: "ew-resize" },
+        ]
+      : [];
 
   const resetFull = () => {
+    if (!layout) return;
     onChange(
       { x: 0, y: 0, width: layout.naturalW, height: layout.naturalH },
       { recordUndo: true },
@@ -247,6 +244,8 @@ export default function SourceArtworkCropPicker({
   };
 
   const isFullSheet =
+    rect != null &&
+    layout != null &&
     rect.x <= 0.5 &&
     rect.y <= 0.5 &&
     Math.abs(rect.width - layout.naturalW) <= 1 &&
@@ -260,89 +259,108 @@ export default function SourceArtworkCropPicker({
           active ? "border-fuchsia-400 ring-1 ring-fuchsia-500/40" : "border-slate-800"
         } ${disabled ? "opacity-60" : ""}`}
       >
-        <img
-          src={previewUrl}
-          alt={alt}
-          className="pointer-events-none absolute inset-0 h-full w-full object-contain"
-          draggable={false}
-        />
+        {loading && (
+          <div className="absolute inset-0 flex items-center justify-center text-[10px] text-slate-500">
+            Loading artwork…
+          </div>
+        )}
+        {error && (
+          <div className="absolute inset-0 flex items-center justify-center px-2 text-center text-[10px] text-red-300">
+            Could not load artwork preview
+            {error ? <span className="mt-1 block text-slate-500">{error}</span> : null}
+          </div>
+        )}
+        {!loading && !error && previewUrl && (
+          <img
+            src={previewUrl}
+            alt={alt}
+            className="pointer-events-none absolute inset-0 h-full w-full object-contain"
+            draggable={false}
+          />
+        )}
 
-        {/* Dim outside crop */}
-        <div className="pointer-events-none absolute inset-0">
-          <div
-            className="absolute bg-slate-950/70"
-            style={{ left: 0, top: 0, width: "100%", height: Math.max(0, box.y) }}
-          />
-          <div
-            className="absolute bg-slate-950/70"
-            style={{
-              left: 0,
-              top: box.y + box.height,
-              width: "100%",
-              height: `calc(100% - ${box.y + box.height}px)`,
-            }}
-          />
-          <div
-            className="absolute bg-slate-950/70"
-            style={{ left: 0, top: box.y, width: Math.max(0, box.x), height: box.height }}
-          />
-          <div
-            className="absolute bg-slate-950/70"
-            style={{
-              left: box.x + box.width,
-              top: box.y,
-              width: `calc(100% - ${box.x + box.width}px)`,
-              height: box.height,
-            }}
-          />
-        </div>
+        {box && rect && (
+          <>
+            {/* Dim outside crop */}
+            <div className="pointer-events-none absolute inset-0">
+              <div
+                className="absolute bg-slate-950/70"
+                style={{ left: 0, top: 0, width: "100%", height: Math.max(0, box.y) }}
+              />
+              <div
+                className="absolute bg-slate-950/70"
+                style={{
+                  left: 0,
+                  top: box.y + box.height,
+                  width: "100%",
+                  height: `calc(100% - ${box.y + box.height}px)`,
+                }}
+              />
+              <div
+                className="absolute bg-slate-950/70"
+                style={{ left: 0, top: box.y, width: Math.max(0, box.x), height: box.height }}
+              />
+              <div
+                className="absolute bg-slate-950/70"
+                style={{
+                  left: box.x + box.width,
+                  top: box.y,
+                  width: `calc(100% - ${box.x + box.width}px)`,
+                  height: box.height,
+                }}
+              />
+            </div>
 
-        {/* Crop box */}
-        <div
-          className="absolute border-2 border-fuchsia-400 bg-fuchsia-400/10"
-          style={{
-            left: box.x,
-            top: box.y,
-            width: box.width,
-            height: box.height,
-            cursor: disabled ? "default" : "move",
-          }}
-          onPointerDown={(e) => beginDrag("move", e)}
-        />
-
-        {!disabled &&
-          handles.map((h) => (
+            {/* Crop box */}
             <div
-              key={h.id}
-              className="absolute z-10 rounded-sm border border-white bg-fuchsia-400 shadow"
+              className="absolute border-2 border-fuchsia-400 bg-fuchsia-400/10"
               style={{
-                left: h.left - handleSize / 2,
-                top: h.top - handleSize / 2,
-                width: handleSize,
-                height: handleSize,
-                cursor: h.cursor,
+                left: box.x,
+                top: box.y,
+                width: box.width,
+                height: box.height,
+                cursor: disabled ? "default" : "move",
               }}
-              onPointerDown={(e) => beginDrag(h.id, e)}
+              onPointerDown={(e) => beginDrag("move", e)}
             />
-          ))}
+
+            {!disabled &&
+              handles.map((h) => (
+                <div
+                  key={h.id}
+                  className="absolute z-10 rounded-sm border border-white bg-fuchsia-400 shadow"
+                  style={{
+                    left: h.left - handleSize / 2,
+                    top: h.top - handleSize / 2,
+                    width: handleSize,
+                    height: handleSize,
+                    cursor: h.cursor,
+                  }}
+                  onPointerDown={(e) => beginDrag(h.id, e)}
+                />
+              ))}
+          </>
+        )}
       </div>
 
-      <div className="flex items-center justify-between gap-2 text-[10px] text-slate-500">
-        <span>
-          Slice {Math.round(rect.x)}, {Math.round(rect.y)} · {Math.round(rect.width)}×
-          {Math.round(rect.height)} px
-        </span>
-        <Button
-          size="sm"
-          variant="ghost"
-          className="h-6 px-2 text-[10px] text-slate-400 hover:text-slate-200"
-          disabled={disabled || isFullSheet}
-          onClick={resetFull}
-        >
-          <RotateCcw className="mr-1 h-3 w-3" />
-          Full sheet
-        </Button>
-      </div>
+      {rect && layout && (
+        <div className="flex items-center justify-between gap-2 text-[10px] text-slate-500">
+          <span>
+            Slice {Math.round(rect.x)}, {Math.round(rect.y)} · {Math.round(rect.width)}×
+            {Math.round(rect.height)} px
+          </span>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 px-2 text-[10px] text-slate-400 hover:text-slate-200"
+            disabled={disabled || isFullSheet}
+            onClick={resetFull}
+          >
+            <RotateCcw className="mr-1 h-3 w-3" />
+            Full sheet
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
