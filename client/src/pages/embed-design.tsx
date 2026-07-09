@@ -6671,6 +6671,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               flatPlacerState?.enabled?.back ??
               (printPlacement === "back" || printPlacement === "both"),
           },
+          linkSides: flatPlacerState?.linkSides ?? true,
           artworkUrl,
         };
         const views = flatViewsForColor(manifest, flatBlankColorId);
