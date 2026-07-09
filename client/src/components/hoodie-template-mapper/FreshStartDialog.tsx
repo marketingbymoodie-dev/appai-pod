@@ -103,8 +103,8 @@ export default function FreshStartDialog({ open, onOpenChange, onConfirm, onLoad
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[min(90dvh,calc(100vh-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-md">
+        <DialogHeader className="shrink-0 space-y-1.5 px-6 pt-6">
           <DialogTitle>Fresh start — new AOP template</DialogTitle>
           <DialogDescription>
             Creates a blank in-memory template with a <strong>new slug</strong>. Nothing is written to disk until
@@ -112,6 +112,7 @@ export default function FreshStartDialog({ open, onOpenChange, onConfirm, onLoad
           </DialogDescription>
         </DialogHeader>
 
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-2">
         <div className="space-y-4 py-2">
           <div className="space-y-2">
             <Label htmlFor="fresh-slug">Slug (admin file name)</Label>
@@ -307,8 +308,9 @@ export default function FreshStartDialog({ open, onOpenChange, onConfirm, onLoad
             </p>
           </div>
         </div>
+        </div>
 
-        <DialogFooter>
+        <DialogFooter className="shrink-0 border-t border-border px-6 py-4">
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
