@@ -5650,6 +5650,7 @@ ${textEdgeRestrictions}
           storefrontMockupMode: (productType as any).storefrontMockupMode,
           fulfillmentLayout: (productType as any).fulfillmentLayout,
           printifyBlueprintId: productType.printifyBlueprintId,
+          onTheFlyTier: (productType as any).onTheFlyTier || null,
         }),
         effectiveFulfillmentLayout: resolveFulfillmentLayout({
           isAllOverPrint: productType.isAllOverPrint,
@@ -5663,6 +5664,7 @@ ${textEdgeRestrictions}
           storefrontMockupMode: (productType as any).storefrontMockupMode,
           fulfillmentLayout: (productType as any).fulfillmentLayout,
           printifyBlueprintId: productType.printifyBlueprintId,
+          onTheFlyTier: (productType as any).onTheFlyTier || null,
         }),
         onTheFlyTier: (productType as any).onTheFlyTier || null,
         flatCalibration: parseFlatCalibrationManifest((productType as any).flatCalibration),
@@ -5959,6 +5961,7 @@ ${textEdgeRestrictions}
         storefrontMockupMode: (productTypeToUse as any).storefrontMockupMode,
         fulfillmentLayout: (productTypeToUse as any).fulfillmentLayout,
         printifyBlueprintId: productTypeToUse.printifyBlueprintId,
+        onTheFlyTier: (productTypeToUse as any).onTheFlyTier || null,
       }),
       effectiveFulfillmentLayout: resolveFulfillmentLayout({
         isAllOverPrint: productTypeToUse.isAllOverPrint,
@@ -5972,6 +5975,7 @@ ${textEdgeRestrictions}
         storefrontMockupMode: (productTypeToUse as any).storefrontMockupMode,
         fulfillmentLayout: (productTypeToUse as any).fulfillmentLayout,
         printifyBlueprintId: productTypeToUse.printifyBlueprintId,
+        onTheFlyTier: (productTypeToUse as any).onTheFlyTier || null,
       }),
       onTheFlyTier: (productTypeToUse as any).onTheFlyTier || null,
       flatCalibration: parseFlatCalibrationManifest((productTypeToUse as any).flatCalibration),
@@ -8300,6 +8304,7 @@ ${textEdgeRestrictions}
         storefrontMockupMode: (productType as any).storefrontMockupMode,
         fulfillmentLayout: (productType as any).fulfillmentLayout,
         printifyBlueprintId: productType.printifyBlueprintId,
+        onTheFlyTier: (productType as any).onTheFlyTier || null,
       });
       const effectivePrintPlacement = !useAopMockups
         ? (printPlacement === "front" || printPlacement === "back" || printPlacement === "both"

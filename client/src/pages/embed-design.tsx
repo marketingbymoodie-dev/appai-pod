@@ -1779,8 +1779,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     selectedFrameColor,
     isApparel,
   ]);
-  const useAopCustomizer =
-    productTypeConfig?.useAopCustomizer ?? !!productTypeConfig?.isAllOverPrint;
+  const useAopCustomizer = !!(
+    (productTypeConfig?.useAopCustomizer ?? !!productTypeConfig?.isAllOverPrint) &&
+    // Flat/mesh on-the-fly products must never also open PatternCustomizer —
+    // both button bars used to render when isAllOverPrint + flatCalibration coexisted.
+    productTypeConfig?.onTheFlyTier !== "flat" &&
+    productTypeConfig?.onTheFlyTier !== "mesh"
+  );
   /** Drag-to-scale artwork overlay — Printify mockup products only (not AOP/flat/mesh). */
   const printifyTransformEligible = !!(
     productTypeConfig?.hasPrintifyMockups &&
@@ -9085,8 +9090,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               </div>
             )}
 
-            {/* AOP-only bottom bar: Edit Pattern + Share — hidden while pattern overlay is open (same actions live under Apply). */}
-            {generatedDesign?.imageUrl && useAopCustomizer && !showPatternStep && (
+            {/* AOP-only bottom bar: Edit Pattern + Share — hidden while pattern overlay is open (same actions live under Apply).
+                Mutually exclusive with flat placer — never show both editor entry points. */}
+            {generatedDesign?.imageUrl && useAopCustomizer && !flatPlacerEligible && !showPatternStep && (
               <div className="flex items-center justify-between pt-2 border-t gap-2">
                 <Button
                   variant="outline"
