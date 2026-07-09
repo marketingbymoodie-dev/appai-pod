@@ -283,7 +283,9 @@ function customerGroupEnabledByDefault(
   if (groupId === "left-sleeve" || groupId === "right-sleeve" || groupId === "trim") {
     return false;
   }
-  if (usesJumperNoHoodGarmentUi(template)) return false;
+  if (usesJumperNoHoodGarmentUi(template)) {
+    return groupId === "front-body";
+  }
   if (isZipHoodieBlueprint(blueprintId) || isPulloverHoodieBlueprint(blueprintId)) {
     if (groupId === "front-body" || groupId === "hood") {
       return group.enabled !== false;
