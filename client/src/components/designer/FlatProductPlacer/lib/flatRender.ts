@@ -990,9 +990,9 @@ function applyPhoneCaseMapShading(
  * Multiply a normalized shading layer over the artwork layer, restricted to
  * the artwork's own alpha so transparent (garment) pixels stay untouched.
  *
- * When `fabricWeave` is set (tapestry / woven decor), also multiplies a
- * procedural warp/weft pattern — blank luminance alone only yields digital
- * "speckle" after normalize, not Printify-like woven threads.
+ * When `fabricWeave` is set (tapestry / woven decor), skip blank luminance
+ * multiply (photo noise → sand-grain "speckle") and apply a procedural
+ * warp/weft pattern instead.
  */
 function applyShading(
   artCanvas: HTMLCanvasElement,
@@ -1005,11 +1005,14 @@ function applyShading(
   artworkCorsClean: boolean,
   opts?: { phoneCaseMap?: boolean; fabricWeave?: boolean },
 ): void {
+  if (opts?.fabricWeave) {
+    // Blank AO is the speckly grain on tapestry photos — do not multiply it.
+    applyProceduralFabricWeave(artCanvas, artCtx, w, h);
+    return;
+  }
+
   if (mode === "map" && shading && opts?.phoneCaseMap) {
     applyPhoneCaseMapShading(artCanvas, artCtx, shading, w, h);
-    if (opts.fabricWeave) {
-      applyProceduralFabricWeave(artCanvas, artCtx, w, h);
-    }
     return;
   }
 
@@ -1047,53 +1050,61 @@ function applyShading(
   artCtx.save();
   if (normalized) {
     artCtx.globalCompositeOperation = "multiply";
-    // Keep blank AO for folds/edges; weave pattern carries the textile look.
-    artCtx.globalAlpha = opts?.fabricWeave ? 0.55 : 1;
     artCtx.drawImage(shade, 0, 0);
   } else {
     // Fallback: soft-light treats mid-gray as neutral without needing pixel
     // reads, at reduced strength so we never crush the artwork.
     artCtx.globalCompositeOperation = "soft-light";
-    artCtx.globalAlpha = opts?.fabricWeave ? 0.35 : 0.6;
+    artCtx.globalAlpha = 0.6;
     artCtx.drawImage(shade, 0, 0);
   }
   artCtx.restore();
-
-  if (opts?.fabricWeave) {
-    applyProceduralFabricWeave(artCanvas, artCtx, w, h);
-  }
 }
 
 /** Cached weave tile — regenerated only if missing (no per-frame cost). */
 let fabricWeaveTile: HTMLCanvasElement | null = null;
 
+/**
+ * Soft plain-weave tile: continuous warp/weft bands (not 1px noise dots).
+ * Mid-gray base stays neutral under multiply; only thread grooves darken.
+ */
 function getFabricWeaveTile(): HTMLCanvasElement {
   if (fabricWeaveTile) return fabricWeaveTile;
-  // ~4–5 threads across a small tile; scaled up when stamped onto the mockup.
-  const size = 16;
+  const size = 32;
+  const thread = 4; // px per yarn in the tile
   const tile = document.createElement("canvas");
   tile.width = size;
   tile.height = size;
   const ctx = tile.getContext("2d");
   if (!ctx) return tile;
 
-  // Mid-gray base = neutral under multiply.
+  // Neutral multiply base (~200) — overall darkening comes from alpha, not base.
   ctx.fillStyle = "#c8c8c8";
   ctx.fillRect(0, 0, size, size);
 
-  // Warp (vertical) + weft (horizontal) — alternating dark/light threads.
-  for (let i = 0; i < size; i += 2) {
-    ctx.fillStyle = i % 4 === 0 ? "#9a9a9a" : "#b0b0b0";
-    ctx.fillRect(i, 0, 1, size);
-    ctx.fillStyle = i % 4 === 0 ? "#8e8e8e" : "#a8a8a8";
-    ctx.fillRect(0, i, size, 1);
-  }
-  // Crossing dots slightly darker — reads as interlaced weave, not noise.
-  ctx.fillStyle = "#7a7a7a";
-  for (let y = 0; y < size; y += 4) {
-    for (let x = 0; x < size; x += 4) {
-      ctx.fillRect(x, y, 1, 1);
-      ctx.fillRect(x + 2, y + 2, 1, 1);
+  // Draw interlaced plain weave: over/under checker of horizontal & vertical yarns.
+  for (let row = 0; row < size / thread; row++) {
+    for (let col = 0; col < size / thread; col++) {
+      const x = col * thread;
+      const y = row * thread;
+      const warpOnTop = (row + col) % 2 === 0;
+      // Yarn body
+      const body = warpOnTop ? "#a3a3a3" : "#b0b0b0";
+      // Groove between yarns (darker line) — reads as woven structure
+      const groove = "#8a8a8a";
+      ctx.fillStyle = body;
+      ctx.fillRect(x, y, thread, thread);
+      if (warpOnTop) {
+        // Vertical yarn: dark edges left/right
+        ctx.fillStyle = groove;
+        ctx.fillRect(x, y, 1, thread);
+        ctx.fillRect(x + thread - 1, y, 1, thread);
+      } else {
+        // Horizontal yarn: dark edges top/bottom
+        ctx.fillStyle = groove;
+        ctx.fillRect(x, y, thread, 1);
+        ctx.fillRect(x, y + thread - 1, thread, 1);
+      }
     }
   }
 
@@ -1103,7 +1114,7 @@ function getFabricWeaveTile(): HTMLCanvasElement {
 
 /**
  * Darken art with a tiled warp/weft pattern (multiply only — never brightens).
- * Instant: one cached 16×16 tile, no network, no getImageData.
+ * Instant: one cached tile, no network, no getImageData.
  */
 function applyProceduralFabricWeave(
   artCanvas: HTMLCanvasElement,
@@ -1118,10 +1129,11 @@ function applyProceduralFabricWeave(
   const wctx = weave.getContext("2d");
   if (!wctx) return;
 
-  // ~2.5px per thread at typical preview width — visible weave, not sand grain.
+  // Target ~3–4px visible thread width on a ~900px preview (clear weave, not grain).
+  const threadPx = 3.5;
+  const scale = threadPx / 4; // tile thread is 4px
   const pattern = wctx.createPattern(tile, "repeat");
   if (!pattern) return;
-  const scale = Math.max(1.6, Math.min(2.8, w / 420));
   wctx.save();
   wctx.scale(scale, scale);
   wctx.fillStyle = pattern;
@@ -1134,7 +1146,8 @@ function applyProceduralFabricWeave(
 
   artCtx.save();
   artCtx.globalCompositeOperation = "multiply";
-  artCtx.globalAlpha = 0.42;
+  // Strong enough to read as fabric; no blank noise underneath.
+  artCtx.globalAlpha = 0.38;
   artCtx.drawImage(weave, 0, 0);
   artCtx.restore();
 }
