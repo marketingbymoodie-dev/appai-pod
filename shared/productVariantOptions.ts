@@ -112,3 +112,24 @@ export function resolveFrameColorForSize(
   }
   return null;
 }
+
+/** Tapestry-style products: size dropdown is orientation (26×36 vs 36×26). */
+export function isOrientationSizeProduct(
+  sizes: SizeLike[],
+  frameColors: ColorLike[],
+  colorLabel?: string | null,
+): boolean {
+  if (sizes.length < 2) return false;
+  return frameColorsRedundantWithSizes(sizes, frameColors, colorLabel);
+}
+
+/** Aspect ratio string (w:h) from a size row, including Shopify inch ids. */
+export function sizeAspectRatioString(size: SizeLike, fallback?: string | null): string {
+  return resolveSizeAspectRatio(size, fallback);
+}
+
+/** True when size aspect is landscape (w > h). */
+export function isLandscapeSizeAspect(aspect: string): boolean {
+  const [w, h] = aspect.split(":").map(Number);
+  return w > 0 && h > 0 && w > h;
+}

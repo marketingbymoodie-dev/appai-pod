@@ -116,6 +116,10 @@ export type FlatProductPlacerProps = {
   edgeWrapMode?: boolean;
   /** Framed posters / decor — mat-based placement, zoom past 100%. */
   decorMode?: boolean;
+  /** When size orientation is landscape but manifest was harvested portrait-only. */
+  landscapeOrientation?: boolean;
+  /** Fallback blank photo when manifest lacks per-orientation blanks (tapestry). */
+  blankUrlOverride?: string | null;
 };
 
 type LoadedAssets = {
@@ -218,10 +222,16 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       skipInitialAutoApply = false,
       edgeWrapMode = false,
       decorMode = false,
+      landscapeOrientation = false,
+      blankUrlOverride = null,
     },
     ref,
   ) {
   const geometryKey = placementGeometryKey ?? colorId;
+  const calibOpts = useMemo(
+    () => ({ landscapeOrientation }),
+    [landscapeOrientation],
+  );
   const blank = useMemo(() => resolveFlatBlank(manifest, colorId), [manifest, colorId]);
 
   const availableViews = useMemo<ViewName[]>(() => {
@@ -251,8 +261,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         back: EMPTY_ASSETS,
       };
       for (const v of availableViews) {
-        const calib = resolveFlatViewCalibration(manifest, geometryKey, v);
-        const blankUrl = blank[v];
+        const calib = resolveFlatViewCalibration(manifest, geometryKey, v, calibOpts);
+        const blankUrl =
+          v === "front" && blankUrlOverride ? blankUrlOverride : blank[v];
         if (!calib || !blankUrl) continue;
         const [b, m, s] = await Promise.all([
           loadFlatImage(blankUrl),
@@ -278,7 +289,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       cancelled = true;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- keep prior assets visible during colour swap
-  }, [availableViews, manifest, blank, colorId, edgeWrapMode, onAssetsFailed]);
+  }, [availableViews, manifest, blank, colorId, edgeWrapMode, onAssetsFailed, geometryKey, calibOpts, blankUrlOverride]);
 
   useEffect(() => {
     if (!assetsLoading && availableViews.length === 0) {
@@ -396,7 +407,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     (canvas: HTMLCanvasElement, v: ViewName, forApply: boolean): boolean => {
       if (!state) return false;
       const a = assets[v];
-      const calib = resolveFlatViewCalibration(manifest, geometryKey, v);
+      const calib = resolveFlatViewCalibration(manifest, geometryKey, v, calibOpts);
       if (!a?.blank || !calib) return false;
       const enabled = !!state.enabled[v];
       try {
@@ -569,7 +580,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     (view: ViewName, axis: "x" | "y", direction: 1 | -1) => {
       setState((prev) => {
         if (!prev) return prev;
-        const cal = resolveFlatViewCalibration(manifest, geometryKey, view);
+        const cal = resolveFlatViewCalibration(manifest, geometryKey, view, calibOpts);
         const va = assets[view];
         const canvas = canvasRef.current;
         if (!cal || !va.blank || !canvas) return prev;
@@ -631,7 +642,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     );
   }
 
-  const calib = resolveFlatViewCalibration(manifest, geometryKey, state.view);
+  const calib = resolveFlatViewCalibration(manifest, geometryKey, state.view, calibOpts);
   const viewAssets = assets[state.view];
   const placement = state.placements[state.view] ?? DEFAULT_ARTWORK_PLACEMENT;
   const viewEnabled = !!state.enabled[state.view];

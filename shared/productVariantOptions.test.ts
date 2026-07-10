@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   extractDimensionalKey,
   frameColorsRedundantWithSizes,
+  isLandscapeSizeAspect,
+  isOrientationSizeProduct,
   resolveFrameColorForSize,
   resolveSizeAspectRatio,
 } from "./productVariantOptions";
@@ -73,5 +75,18 @@ describe("productVariantOptions", () => {
       { id: "36x26", name: '36" x 26"' },
     ];
     expect(resolveFrameColorForSize(sizes[0], frameColors)).toBe("26x36");
+  });
+
+  it("isOrientationSizeProduct detects tapestry-style sizes", () => {
+    const sizes = [
+      { id: "26''_×_36''", name: "26'' × 36''", width: 0, height: 0 },
+      { id: "36''_×_26''", name: "36'' × 26''", width: 0, height: 0 },
+    ];
+    const frameColors = [
+      { id: "26''_×_36''", name: "26'' × 36''" },
+      { id: "36''_×_26''", name: "36'' × 26''" },
+    ];
+    expect(isOrientationSizeProduct(sizes, frameColors, "Option")).toBe(true);
+    expect(isLandscapeSizeAspect("18:13")).toBe(true);
   });
 });

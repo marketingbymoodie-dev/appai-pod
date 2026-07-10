@@ -47,10 +47,11 @@ import {
   flatViewsForColor,
   renderFlatMockupDataUrl,
 } from "@/components/designer/FlatProductPlacer/lib/flatMockupPreview";
-import { resolveFlatBlankColorId, resolveFlatPlacementGeometryKey, resolveFlatBlank } from "@/components/designer/FlatProductPlacer/lib/flatAssets";
+import { resolveFlatBlankColorId, resolveFlatPlacementGeometryKey, resolveFlatBlank, normalizeFlatColorKey } from "@/components/designer/FlatProductPlacer/lib/flatAssets";
 import { STOREFRONT_FREE_GENERATION_LIMIT, storefrontArtworksRemaining } from "@shared/storefront-credits";
 import {
   frameColorsRedundantWithSizes,
+  isLandscapeSizeAspect,
   resolveFrameColorForSize,
   resolveSizeAspectRatio,
 } from "@shared/productVariantOptions";
@@ -1809,6 +1810,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   );
   const flatBlankColorId = useMemo(() => {
     if (!productTypeConfig?.flatCalibration) return selectedFrameColor || selectedSize || "";
+    if (frameOptionsRedundantWithSizes && selectedSize) return selectedSize;
     return resolveFlatBlankColorId(productTypeConfig.flatCalibration, {
       sizeId: selectedSize || undefined,
       frameColorId: selectedFrameColor || undefined,
@@ -1819,6 +1821,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     selectedSize,
     selectedFrameColor,
     isApparel,
+    frameOptionsRedundantWithSizes,
   ]);
 
   const flatCalibrationBlankUrl = useMemo(() => {
@@ -1900,6 +1903,34 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
     return out.slice(0, 5);
   }, [productTypeConfig?.baseMockupImages]);
+
+  const flatLandscapeOrientation = useMemo(() => {
+    const sizeConfig = printSizes.find((s) => s.id === selectedSize);
+    if (!sizeConfig) return false;
+    const ar =
+      sizeConfig.aspectRatio ||
+      resolveSizeAspectRatio(sizeConfig, productTypeConfig?.aspectRatio);
+    return isLandscapeSizeAspect(ar);
+  }, [printSizes, selectedSize, productTypeConfig?.aspectRatio]);
+
+  const orientationBlankOverride = useMemo(() => {
+    if (!frameOptionsRedundantWithSizes || !flatLandscapeOrientation || !selectedSize) return null;
+    const manifest = productTypeConfig?.flatCalibration;
+    if (!manifest?.blanks) return null;
+    const sizeNorm = normalizeFlatColorKey(selectedSize);
+    const hasOrientationBlank = Object.keys(manifest.blanks).some((k) => {
+      if (k === "default") return false;
+      return k === selectedSize || normalizeFlatColorKey(k) === sizeNorm;
+    });
+    if (hasOrientationBlank) return null;
+    return catalogPreviewImages.length > 1 ? catalogPreviewImages[1] : null;
+  }, [
+    frameOptionsRedundantWithSizes,
+    flatLandscapeOrientation,
+    selectedSize,
+    productTypeConfig?.flatCalibration,
+    catalogPreviewImages,
+  ]);
 
   useEffect(() => {
     setCatalogPreviewIndex(0);
@@ -8735,6 +8766,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   onAssetsFailed={handleFlatAssetsFailed}
                   edgeWrapMode={flatEdgeWrapMode}
                   decorMode={flatDecorMode}
+                  landscapeOrientation={flatLandscapeOrientation}
+                  blankUrlOverride={orientationBlankOverride}
                   skipInitialAutoApply={!!flatPlacerState}
                 />
               </div>
@@ -8752,6 +8785,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   // For product types with dimensional sizes (width/height > 0), use those
                   if (selectedSizeConfig && selectedSizeConfig.width > 0 && selectedSizeConfig.height > 0) {
                     return `${selectedSizeConfig.width}/${selectedSizeConfig.height}`;
+                  }
+                  if (selectedSizeConfig?.aspectRatio) {
+                    return selectedSizeConfig.aspectRatio.replace(":", "/");
                   }
                   // Square / double-sided pillows: DB aspectRatio is often 2:1 (both faces)
                   // but each printable face is 1:1 — keep the placeholder square before size pick.
@@ -8840,6 +8876,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       printShape={productTypeConfig?.printShape || "rectangle"}
                       canvasConfig={productTypeConfig?.canvasConfig}
                       blankImageUrl={
+                        orientationBlankOverride ||
                         flatCalibrationBlankUrl ||
                         colorAwareBlankUrl ||
                         catalogPreviewImages[catalogPreviewIndex] ||

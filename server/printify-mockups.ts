@@ -14,6 +14,12 @@ const MAX_MOCKUP_VIEWS = 12;
 const LEGGINGS_STYLE_PRIORITY = [
   "front",
   "lifestyle",
+  "context",
+  "bedroom",
+  "bed",
+  "room",
+  "duvet",
+  "home",
   "back",
   "front side",
   "front-side",
@@ -632,6 +638,9 @@ export function shouldSupplementInlineMockups(images: MockupImage[], isAop: bool
         n.includes("context") ||
         n.includes("room") ||
         n.includes("bed") ||
+        n.includes("bedroom") ||
+        n.includes("duvet") ||
+        n.includes("home") ||
         n.includes("side person"),
     );
   }
@@ -1239,7 +1248,7 @@ export async function generatePrintifyMockup(
 
     if (!mockupData || supplementInline) {
       const pollStarted = Date.now();
-      const pollRetries = supplementInline && mockupData ? 20 : 60;
+      const pollRetries = supplementInline && mockupData ? 50 : 60;
       try {
         const polled = await pRetry(
           async (attemptNumber) => {
@@ -1247,6 +1256,13 @@ export async function generatePrintifyMockup(
             if (!data || data.urls.length === 0) {
               console.log(`[Printify Mockup] Poll attempt ${attemptNumber}: images not ready yet`);
               throw new Error("Mockups not ready yet");
+            }
+            const merged = mergeMockupImages(mockupData, data);
+            if (supplementInline && shouldSupplementInlineMockups(merged.images, isAop)) {
+              console.log(
+                `[Printify Mockup] Poll attempt ${attemptNumber}: ${merged.images.length} image(s), still waiting for lifestyle/context`,
+              );
+              throw new Error("Lifestyle mockups not ready yet");
             }
             return data;
           },

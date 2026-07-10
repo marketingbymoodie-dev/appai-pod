@@ -128,35 +128,42 @@ export function resolveFlatViewCalibration(
   manifest: FlatCalibrationManifest,
   colorId: string,
   view: FlatViewName,
+  opts?: { landscapeOrientation?: boolean },
 ): FlatViewCalibration | undefined {
   const base = manifest.views[view];
   if (!base) return undefined;
   const blankKey = findBlankKey(manifest, colorId);
   const override = blankKey ? manifest.geometryByBlank?.[blankKey]?.[view] : undefined;
-  if (!override) return base;
-  return {
-    ...base,
-    ...override,
-    // Null-coalesce geometry fields — partial per-model harvest must not
-    // clobber shared base values with null (breaks layout, shading, mask clip).
-    visibleRectNormalized: override.visibleRectNormalized ?? base.visibleRectNormalized,
-    printBoundsNormalized: override.printBoundsNormalized ?? base.printBoundsNormalized,
-    backFaceCropNormalized: override.backFaceCropNormalized ?? base.backFaceCropNormalized,
-    phoneBackNormalized: override.phoneBackNormalized ?? base.phoneBackNormalized,
-    safeZoneNormalized: override.safeZoneNormalized ?? base.safeZoneNormalized,
-    sideProfileCropped: override.sideProfileCropped ?? base.sideProfileCropped,
-    sideProfileSourceCropNormalized:
-      override.sideProfileSourceCropNormalized ?? base.sideProfileSourceCropNormalized,
-    mockupDims: override.mockupDims ?? base.mockupDims,
-    printFileDims: override.printFileDims ?? base.printFileDims,
-    maskUrl: override.maskUrl ?? base.maskUrl,
-    shadingUrl: override.shadingUrl ?? base.shadingUrl,
-    shadingMode: override.shadingMode ?? base.shadingMode,
-    meshNodes: base.meshNodes,
-    meshGrid: base.meshGrid,
-    planarityScore: base.planarityScore,
-    coverage: base.coverage,
-  };
+  let merged: FlatViewCalibration;
+  if (!override) {
+    merged = base;
+  } else {
+    merged = {
+      ...base,
+      ...override,
+      visibleRectNormalized: override.visibleRectNormalized ?? base.visibleRectNormalized,
+      printBoundsNormalized: override.printBoundsNormalized ?? base.printBoundsNormalized,
+      backFaceCropNormalized: override.backFaceCropNormalized ?? base.backFaceCropNormalized,
+      phoneBackNormalized: override.phoneBackNormalized ?? base.phoneBackNormalized,
+      safeZoneNormalized: override.safeZoneNormalized ?? base.safeZoneNormalized,
+      sideProfileCropped: override.sideProfileCropped ?? base.sideProfileCropped,
+      sideProfileSourceCropNormalized:
+        override.sideProfileSourceCropNormalized ?? base.sideProfileSourceCropNormalized,
+      mockupDims: override.mockupDims ?? base.mockupDims,
+      printFileDims: override.printFileDims ?? base.printFileDims,
+      maskUrl: override.maskUrl ?? base.maskUrl,
+      shadingUrl: override.shadingUrl ?? base.shadingUrl,
+      shadingMode: override.shadingMode ?? base.shadingMode,
+      meshNodes: base.meshNodes,
+      meshGrid: base.meshGrid,
+      planarityScore: base.planarityScore,
+      coverage: base.coverage,
+    };
+  }
+  if (!opts?.landscapeOrientation) return merged;
+  const pf = merged.printFileDims;
+  if (!pf?.width || !pf?.height || pf.width >= pf.height) return merged;
+  return orientFlatViewCalibrationLandscape(merged);
 }
 
 export function resolveFlatBlank(
@@ -177,6 +184,34 @@ export function resolveFlatBlank(
     if (flatBlankHasViews(blanks[k])) return blanks[k];
   }
   return {};
+}
+
+function swapNormRect(
+  r: { x: number; y: number; width: number; height: number } | null | undefined,
+): { x: number; y: number; width: number; height: number } | null | undefined {
+  if (!r) return r;
+  return { x: r.y, y: r.x, width: r.height, height: r.width };
+}
+
+/** Rotate harvested portrait geometry to landscape when size orientation differs. */
+export function orientFlatViewCalibrationLandscape(
+  calib: FlatViewCalibration,
+): FlatViewCalibration {
+  const pf = calib.printFileDims;
+  return {
+    ...calib,
+    printFileDims: { width: pf.height, height: pf.width },
+    visibleRectNormalized: swapNormRect(calib.visibleRectNormalized) ?? calib.visibleRectNormalized,
+    printBoundsNormalized: swapNormRect(calib.printBoundsNormalized) ?? calib.printBoundsNormalized,
+    backFaceCropNormalized: swapNormRect(calib.backFaceCropNormalized) ?? calib.backFaceCropNormalized,
+    phoneBackNormalized: swapNormRect(calib.phoneBackNormalized) ?? calib.phoneBackNormalized,
+    safeZoneNormalized: swapNormRect(calib.safeZoneNormalized) ?? calib.safeZoneNormalized,
+    sideProfileSourceCropNormalized:
+      swapNormRect(calib.sideProfileSourceCropNormalized) ?? calib.sideProfileSourceCropNormalized,
+    mockupDims: calib.mockupDims
+      ? { width: calib.mockupDims.height, height: calib.mockupDims.width }
+      : calib.mockupDims,
+  };
 }
 
 export function loadFlatImage(
