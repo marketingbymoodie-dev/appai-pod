@@ -1061,6 +1061,48 @@ function applyShading(
   artCtx.restore();
 }
 
+/** Solidified clip masks, cached per mask image + output size (render-time cost ~0). */
+const solidMaskCache = new WeakMap<HTMLImageElement, { key: string; canvas: HTMLCanvasElement }>();
+
+/**
+ * Close pinhole noise in a harvested print mask before destination-in clipping.
+ * Dilates by unioning offset draws (fills holes ≤ ~4px), then re-stamps the
+ * result to saturate semi-transparent alpha. Pure draw calls — no getImageData.
+ */
+function solidifyMaskForClip(
+  mask: HTMLImageElement,
+  w: number,
+  h: number,
+): HTMLCanvasElement {
+  const key = `${w}x${h}`;
+  const cached = solidMaskCache.get(mask);
+  if (cached && cached.key === key) return cached.canvas;
+
+  const union = document.createElement("canvas");
+  union.width = w;
+  union.height = h;
+  const uctx = union.getContext("2d");
+  if (!uctx) return union;
+  // Union of offset stamps — closes gaps smaller than the offset radius.
+  const r = 2;
+  for (let dy = -r; dy <= r; dy += r) {
+    for (let dx = -r; dx <= r; dx += r) {
+      uctx.drawImage(mask, dx, dy, w, h);
+    }
+  }
+
+  const solid = document.createElement("canvas");
+  solid.width = w;
+  solid.height = h;
+  const sctx = solid.getContext("2d");
+  if (!sctx) return union;
+  // Re-stamping saturates alpha: a' = 1-(1-a)^4 → speckly 0.5 alpha becomes ~0.94.
+  for (let i = 0; i < 4; i++) sctx.drawImage(union, 0, 0);
+
+  solidMaskCache.set(mask, { key, canvas: solid });
+  return solid;
+}
+
 /** Cached weave tile — regenerated only if missing (no per-frame cost). */
 let fabricWeaveTile: HTMLCanvasElement | null = null;
 
@@ -1624,7 +1666,14 @@ export function renderFlatView(input: FlatRenderInput): void {
 
   if (mask) {
     actx.globalCompositeOperation = "destination-in";
-    actx.drawImage(mask, 0, 0, W, H);
+    if (decorMode && !edgeWrapMode) {
+      // Woven-fabric harvests produce masks with pinhole noise (magenta
+      // detection stumbles on thread grooves). Clipping with the raw mask
+      // lets the light blank show through as white speckle — solidify first.
+      actx.drawImage(solidifyMaskForClip(mask, W, H), 0, 0);
+    } else {
+      actx.drawImage(mask, 0, 0, W, H);
+    }
     actx.globalCompositeOperation = "source-over";
   }
 

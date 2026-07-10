@@ -6684,7 +6684,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flatPlacerActive && flatApplyStatus === "saving"
   );
 
-  const flatMockupBlankKey = `${flatBlankColorId}::${selectedSize ?? ""}::pc13weave`;
+  const flatMockupBlankKey = `${flatBlankColorId}::${selectedSize ?? ""}::pc14mask`;
 
   // Force mockup re-raster when the harvested blank key changes (shirt colour swap).
   useEffect(() => {
