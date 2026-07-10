@@ -990,10 +990,9 @@ function applyPhoneCaseMapShading(
  * Multiply a normalized shading layer over the artwork layer, restricted to
  * the artwork's own alpha so transparent (garment) pixels stay untouched.
  *
- * When `fabricWeave` is set (tapestry / woven decor), also overlays a
- * contrast-boosted grayscale of the blank so weave threads read through the
- * art — closer to Printify's fabric mockups. Uses only the already-loaded
- * blank (no extra network / decode).
+ * When `fabricWeave` is set (tapestry / woven decor), also multiplies a
+ * procedural warp/weft pattern — blank luminance alone only yields digital
+ * "speckle" after normalize, not Printify-like woven threads.
  */
 function applyShading(
   artCanvas: HTMLCanvasElement,
@@ -1009,7 +1008,7 @@ function applyShading(
   if (mode === "map" && shading && opts?.phoneCaseMap) {
     applyPhoneCaseMapShading(artCanvas, artCtx, shading, w, h);
     if (opts.fabricWeave) {
-      applyFabricWeaveFromBlank(artCanvas, artCtx, blank, w, h);
+      applyProceduralFabricWeave(artCanvas, artCtx, w, h);
     }
     return;
   }
@@ -1048,58 +1047,94 @@ function applyShading(
   artCtx.save();
   if (normalized) {
     artCtx.globalCompositeOperation = "multiply";
-    // Decor weave: slightly softer AO multiply so the weave overlay can dominate.
-    artCtx.globalAlpha = opts?.fabricWeave ? 0.72 : 1;
+    // Keep blank AO for folds/edges; weave pattern carries the textile look.
+    artCtx.globalAlpha = opts?.fabricWeave ? 0.55 : 1;
     artCtx.drawImage(shade, 0, 0);
   } else {
     // Fallback: soft-light treats mid-gray as neutral without needing pixel
     // reads, at reduced strength so we never crush the artwork.
     artCtx.globalCompositeOperation = "soft-light";
-    artCtx.globalAlpha = opts?.fabricWeave ? 0.45 : 0.6;
+    artCtx.globalAlpha = opts?.fabricWeave ? 0.35 : 0.6;
     artCtx.drawImage(shade, 0, 0);
   }
   artCtx.restore();
 
   if (opts?.fabricWeave) {
-    applyFabricWeaveFromBlank(artCanvas, artCtx, blank, w, h);
+    applyProceduralFabricWeave(artCanvas, artCtx, w, h);
   }
 }
 
+/** Cached weave tile — regenerated only if missing (no per-frame cost). */
+let fabricWeaveTile: HTMLCanvasElement | null = null;
+
+function getFabricWeaveTile(): HTMLCanvasElement {
+  if (fabricWeaveTile) return fabricWeaveTile;
+  // ~4–5 threads across a small tile; scaled up when stamped onto the mockup.
+  const size = 16;
+  const tile = document.createElement("canvas");
+  tile.width = size;
+  tile.height = size;
+  const ctx = tile.getContext("2d");
+  if (!ctx) return tile;
+
+  // Mid-gray base = neutral under multiply.
+  ctx.fillStyle = "#c8c8c8";
+  ctx.fillRect(0, 0, size, size);
+
+  // Warp (vertical) + weft (horizontal) — alternating dark/light threads.
+  for (let i = 0; i < size; i += 2) {
+    ctx.fillStyle = i % 4 === 0 ? "#9a9a9a" : "#b0b0b0";
+    ctx.fillRect(i, 0, 1, size);
+    ctx.fillStyle = i % 4 === 0 ? "#8e8e8e" : "#a8a8a8";
+    ctx.fillRect(0, i, size, 1);
+  }
+  // Crossing dots slightly darker — reads as interlaced weave, not noise.
+  ctx.fillStyle = "#7a7a7a";
+  for (let y = 0; y < size; y += 4) {
+    for (let x = 0; x < size; x += 4) {
+      ctx.fillRect(x, y, 1, 1);
+      ctx.fillRect(x + 2, y + 2, 1, 1);
+    }
+  }
+
+  fabricWeaveTile = tile;
+  return tile;
+}
+
 /**
- * Printify-like woven texture: contrast-boosted blank fabric overlaid on art.
- * Filter-based (no getImageData) so it stays fast and CORS-safe.
+ * Darken art with a tiled warp/weft pattern (multiply only — never brightens).
+ * Instant: one cached 16×16 tile, no network, no getImageData.
  */
-function applyFabricWeaveFromBlank(
+function applyProceduralFabricWeave(
   artCanvas: HTMLCanvasElement,
   artCtx: CanvasRenderingContext2D,
-  blank: HTMLImageElement,
   w: number,
   h: number,
 ): void {
+  const tile = getFabricWeaveTile();
   const weave = document.createElement("canvas");
   weave.width = w;
   weave.height = h;
   const wctx = weave.getContext("2d");
   if (!wctx) return;
 
-  // Boost local contrast so warp/weft threads survive compositing.
-  wctx.filter = "grayscale(1) contrast(1.55) brightness(1.02)";
-  wctx.drawImage(blank, 0, 0, w, h);
-  wctx.filter = "none";
+  // ~2.5px per thread at typical preview width — visible weave, not sand grain.
+  const pattern = wctx.createPattern(tile, "repeat");
+  if (!pattern) return;
+  const scale = Math.max(1.6, Math.min(2.8, w / 420));
+  wctx.save();
+  wctx.scale(scale, scale);
+  wctx.fillStyle = pattern;
+  wctx.fillRect(0, 0, w / scale + 1, h / scale + 1);
+  wctx.restore();
 
   wctx.globalCompositeOperation = "destination-in";
   wctx.drawImage(artCanvas, 0, 0);
   wctx.globalCompositeOperation = "source-over";
 
   artCtx.save();
-  // Overlay keeps both dark and light thread detail (multiply alone clamps
-  // highlights away and reads as flat "speckle").
-  artCtx.globalCompositeOperation = "overlay";
-  artCtx.globalAlpha = 0.58;
-  artCtx.drawImage(weave, 0, 0);
-  // Soft multiply for a touch more fabric depth without crushing color.
   artCtx.globalCompositeOperation = "multiply";
-  artCtx.globalAlpha = 0.22;
+  artCtx.globalAlpha = 0.42;
   artCtx.drawImage(weave, 0, 0);
   artCtx.restore();
 }
