@@ -1106,46 +1106,85 @@ function solidifyMaskForClip(
 /** Cached weave tile — regenerated only if missing (no per-frame cost). */
 let fabricWeaveTile: HTMLCanvasElement | null = null;
 
+/** Deterministic PRNG so the weave looks identical on every render/session. */
+function makeLcg(seed: number): () => number {
+  let s = seed >>> 0;
+  return () => {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
+
 /**
- * Plain-weave tile centred on neutral gray (#808080) for overlay blending:
+ * Irregular plain-weave tile centred on neutral gray for overlay blending:
  * values above 128 lift thread tops (visible in dark art), values below 128
- * cut grooves (visible in light art). Interlaced warp/weft checker.
+ * cut grooves (visible in light art). Yarn widths and brightness vary per
+ * thread (linen-style slubs) so it reads as woven fabric, not a printed grid.
  */
 function getFabricWeaveTile(): HTMLCanvasElement {
   if (fabricWeaveTile) return fabricWeaveTile;
-  const size = 32;
-  const thread = 4; // px per yarn in the tile
+  const size = 160;
   const tile = document.createElement("canvas");
   tile.width = size;
   tile.height = size;
   const ctx = tile.getContext("2d");
   if (!ctx) return tile;
 
-  for (let row = 0; row < size / thread; row++) {
-    for (let col = 0; col < size / thread; col++) {
-      const x = col * thread;
-      const y = row * thread;
-      const warpOnTop = (row + col) % 2 === 0;
-      // Yarn body: raised yarn catches light, recessed yarn sits near neutral.
-      ctx.fillStyle = warpOnTop ? "#8e8e8e" : "#7a7a7a";
-      ctx.fillRect(x, y, thread, thread);
-      // Bright ridge along the raised yarn centre — reads as thread highlight.
-      ctx.fillStyle = "#a6a6a6";
+  const rand = makeLcg(0x5eed);
+
+  // Irregular yarn bands: widths 4–8px, last band absorbs the remainder so
+  // the tile still wraps seamlessly.
+  const makeBands = () => {
+    const bands: { start: number; width: number; tone: number }[] = [];
+    let pos = 0;
+    while (pos < size) {
+      let w = 4 + Math.floor(rand() * 5);
+      if (size - pos < 4 || pos + w > size) w = size - pos;
+      // Per-yarn brightness wobble — slub/thickness variation along the cloth.
+      bands.push({ start: pos, width: w, tone: (rand() - 0.5) * 26 });
+      pos += w;
+    }
+    return bands;
+  };
+  const rows = makeBands();
+  const cols = makeBands();
+
+  const gray = (v: number) => {
+    const c = Math.max(0, Math.min(255, Math.round(v)));
+    return `rgb(${c},${c},${c})`;
+  };
+
+  for (let ri = 0; ri < rows.length; ri++) {
+    for (let ci = 0; ci < cols.length; ci++) {
+      const row = rows[ri];
+      const col = cols[ci];
+      const x = col.start;
+      const y = row.start;
+      const warpOnTop = (ri + ci) % 2 === 0;
+      const slub = (row.tone + col.tone) / 2 + (rand() - 0.5) * 14;
+
+      // Yarn body: raised yarn catches light, recessed yarn sits lower.
+      ctx.fillStyle = gray((warpOnTop ? 146 : 118) + slub);
+      ctx.fillRect(x, y, col.width, row.width);
+
+      // Bright ridge along the raised yarn — jittered so ridges don't align.
+      ctx.fillStyle = gray(172 + slub);
       if (warpOnTop) {
-        ctx.fillRect(x + 1, y, thread - 2, 1);
-        ctx.fillRect(x + 1, y + 2, thread - 2, 1);
+        const ry = y + 1 + Math.floor(rand() * Math.max(1, row.width - 2));
+        ctx.fillRect(x + 1, ry, Math.max(1, col.width - 2), 1);
       } else {
-        ctx.fillRect(x, y + 1, 1, thread - 2);
-        ctx.fillRect(x + 2, y + 1, 1, thread - 2);
+        const rx = x + 1 + Math.floor(rand() * Math.max(1, col.width - 2));
+        ctx.fillRect(rx, y + 1, 1, Math.max(1, row.width - 2));
       }
-      // Deep grooves between yarns — the dark crosshatch lines.
-      ctx.fillStyle = "#4a4a4a";
+
+      // Deep grooves between yarns — darkness varies per cell.
+      ctx.fillStyle = gray(62 + (rand() - 0.5) * 24);
       if (warpOnTop) {
-        ctx.fillRect(x, y, 1, thread);
-        ctx.fillRect(x + thread - 1, y, 1, thread);
+        ctx.fillRect(x, y, 1, row.width);
+        ctx.fillRect(x + col.width - 1, y, 1, row.width);
       } else {
-        ctx.fillRect(x, y, thread, 1);
-        ctx.fillRect(x, y + thread - 1, thread, 1);
+        ctx.fillRect(x, y, col.width, 1);
+        ctx.fillRect(x, y + row.width - 1, col.width, 1);
       }
     }
   }
@@ -1173,9 +1212,8 @@ function applyProceduralFabricWeave(
   const wctx = weave.getContext("2d");
   if (!wctx) return;
 
-  // Target ~3–4px visible thread width on a ~900px preview (clear weave, not grain).
-  const threadPx = 3.5;
-  const scale = threadPx / 4; // tile thread is 4px
+  // Coarse threads: ~6–7px visible yarns on a ~900px preview (tile yarns are 4–8px).
+  const scale = 1.15;
   const pattern = wctx.createPattern(tile, "repeat");
   if (!pattern) return;
   wctx.save();
