@@ -1107,8 +1107,9 @@ function solidifyMaskForClip(
 let fabricWeaveTile: HTMLCanvasElement | null = null;
 
 /**
- * Soft plain-weave tile: continuous warp/weft bands (not 1px noise dots).
- * Mid-gray base stays neutral under multiply; only thread grooves darken.
+ * Plain-weave tile centred on neutral gray (#808080) for overlay blending:
+ * values above 128 lift thread tops (visible in dark art), values below 128
+ * cut grooves (visible in light art). Interlaced warp/weft checker.
  */
 function getFabricWeaveTile(): HTMLCanvasElement {
   if (fabricWeaveTile) return fabricWeaveTile;
@@ -1120,30 +1121,29 @@ function getFabricWeaveTile(): HTMLCanvasElement {
   const ctx = tile.getContext("2d");
   if (!ctx) return tile;
 
-  // Neutral multiply base (~200) — overall darkening comes from alpha, not base.
-  ctx.fillStyle = "#c8c8c8";
-  ctx.fillRect(0, 0, size, size);
-
-  // Draw interlaced plain weave: over/under checker of horizontal & vertical yarns.
   for (let row = 0; row < size / thread; row++) {
     for (let col = 0; col < size / thread; col++) {
       const x = col * thread;
       const y = row * thread;
       const warpOnTop = (row + col) % 2 === 0;
-      // Yarn body
-      const body = warpOnTop ? "#a3a3a3" : "#b0b0b0";
-      // Groove between yarns (darker line) — reads as woven structure
-      const groove = "#8a8a8a";
-      ctx.fillStyle = body;
+      // Yarn body: raised yarn catches light, recessed yarn sits near neutral.
+      ctx.fillStyle = warpOnTop ? "#8e8e8e" : "#7a7a7a";
       ctx.fillRect(x, y, thread, thread);
+      // Bright ridge along the raised yarn centre — reads as thread highlight.
+      ctx.fillStyle = "#a6a6a6";
       if (warpOnTop) {
-        // Vertical yarn: dark edges left/right
-        ctx.fillStyle = groove;
+        ctx.fillRect(x + 1, y, thread - 2, 1);
+        ctx.fillRect(x + 1, y + 2, thread - 2, 1);
+      } else {
+        ctx.fillRect(x, y + 1, 1, thread - 2);
+        ctx.fillRect(x + 2, y + 1, 1, thread - 2);
+      }
+      // Deep grooves between yarns — the dark crosshatch lines.
+      ctx.fillStyle = "#4a4a4a";
+      if (warpOnTop) {
         ctx.fillRect(x, y, 1, thread);
         ctx.fillRect(x + thread - 1, y, 1, thread);
       } else {
-        // Horizontal yarn: dark edges top/bottom
-        ctx.fillStyle = groove;
         ctx.fillRect(x, y, thread, 1);
         ctx.fillRect(x, y + thread - 1, thread, 1);
       }
@@ -1155,7 +1155,9 @@ function getFabricWeaveTile(): HTMLCanvasElement {
 }
 
 /**
- * Darken art with a tiled warp/weft pattern (multiply only — never brightens).
+ * Emboss art with a tiled warp/weft pattern. Two passes:
+ * overlay (texture contrast — highlights in shadow, grooves in light) then
+ * multiply (overall fabric darkening to match Printify renders).
  * Instant: one cached tile, no network, no getImageData.
  */
 function applyProceduralFabricWeave(
@@ -1187,9 +1189,13 @@ function applyProceduralFabricWeave(
   wctx.globalCompositeOperation = "source-over";
 
   artCtx.save();
+  // Pass 1: overlay — strong weave contrast without flattening the art.
+  artCtx.globalCompositeOperation = "overlay";
+  artCtx.globalAlpha = 0.85;
+  artCtx.drawImage(weave, 0, 0);
+  // Pass 2: multiply — fabric absorbs light, matching Printify's darker render.
   artCtx.globalCompositeOperation = "multiply";
-  // Strong enough to read as fabric; no blank noise underneath.
-  artCtx.globalAlpha = 0.38;
+  artCtx.globalAlpha = 0.3;
   artCtx.drawImage(weave, 0, 0);
   artCtx.restore();
 }
