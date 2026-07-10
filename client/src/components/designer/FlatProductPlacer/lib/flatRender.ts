@@ -989,6 +989,11 @@ function applyPhoneCaseMapShading(
 /**
  * Multiply a normalized shading layer over the artwork layer, restricted to
  * the artwork's own alpha so transparent (garment) pixels stay untouched.
+ *
+ * When `fabricWeave` is set (tapestry / woven decor), also overlays a
+ * contrast-boosted grayscale of the blank so weave threads read through the
+ * art — closer to Printify's fabric mockups. Uses only the already-loaded
+ * blank (no extra network / decode).
  */
 function applyShading(
   artCanvas: HTMLCanvasElement,
@@ -999,10 +1004,13 @@ function applyShading(
   w: number,
   h: number,
   artworkCorsClean: boolean,
-  opts?: { phoneCaseMap?: boolean },
+  opts?: { phoneCaseMap?: boolean; fabricWeave?: boolean },
 ): void {
   if (mode === "map" && shading && opts?.phoneCaseMap) {
     applyPhoneCaseMapShading(artCanvas, artCtx, shading, w, h);
+    if (opts.fabricWeave) {
+      applyFabricWeaveFromBlank(artCanvas, artCtx, blank, w, h);
+    }
     return;
   }
 
@@ -1040,14 +1048,59 @@ function applyShading(
   artCtx.save();
   if (normalized) {
     artCtx.globalCompositeOperation = "multiply";
+    // Decor weave: slightly softer AO multiply so the weave overlay can dominate.
+    artCtx.globalAlpha = opts?.fabricWeave ? 0.72 : 1;
     artCtx.drawImage(shade, 0, 0);
   } else {
     // Fallback: soft-light treats mid-gray as neutral without needing pixel
     // reads, at reduced strength so we never crush the artwork.
     artCtx.globalCompositeOperation = "soft-light";
-    artCtx.globalAlpha = 0.6;
+    artCtx.globalAlpha = opts?.fabricWeave ? 0.45 : 0.6;
     artCtx.drawImage(shade, 0, 0);
   }
+  artCtx.restore();
+
+  if (opts?.fabricWeave) {
+    applyFabricWeaveFromBlank(artCanvas, artCtx, blank, w, h);
+  }
+}
+
+/**
+ * Printify-like woven texture: contrast-boosted blank fabric overlaid on art.
+ * Filter-based (no getImageData) so it stays fast and CORS-safe.
+ */
+function applyFabricWeaveFromBlank(
+  artCanvas: HTMLCanvasElement,
+  artCtx: CanvasRenderingContext2D,
+  blank: HTMLImageElement,
+  w: number,
+  h: number,
+): void {
+  const weave = document.createElement("canvas");
+  weave.width = w;
+  weave.height = h;
+  const wctx = weave.getContext("2d");
+  if (!wctx) return;
+
+  // Boost local contrast so warp/weft threads survive compositing.
+  wctx.filter = "grayscale(1) contrast(1.55) brightness(1.02)";
+  wctx.drawImage(blank, 0, 0, w, h);
+  wctx.filter = "none";
+
+  wctx.globalCompositeOperation = "destination-in";
+  wctx.drawImage(artCanvas, 0, 0);
+  wctx.globalCompositeOperation = "source-over";
+
+  artCtx.save();
+  // Overlay keeps both dark and light thread detail (multiply alone clamps
+  // highlights away and reads as flat "speckle").
+  artCtx.globalCompositeOperation = "overlay";
+  artCtx.globalAlpha = 0.58;
+  artCtx.drawImage(weave, 0, 0);
+  // Soft multiply for a touch more fabric depth without crushing color.
+  artCtx.globalCompositeOperation = "multiply";
+  artCtx.globalAlpha = 0.22;
+  artCtx.drawImage(weave, 0, 0);
   artCtx.restore();
 }
 
@@ -1462,7 +1515,10 @@ export function renderFlatView(input: FlatRenderInput): void {
         outW,
         outH,
         artworkCorsClean,
-        { phoneCaseMap: shadeMode === "map" && !!shadeMapImg },
+        {
+          phoneCaseMap: shadeMode === "map" && !!shadeMapImg,
+          fabricWeave: !!decorMode && !edgeWrapMode,
+        },
       );
     }
 
@@ -1535,6 +1591,10 @@ export function renderFlatView(input: FlatRenderInput): void {
     W,
     H,
     artworkCorsClean,
+    {
+      phoneCaseMap: shadeMode === "map" && !!shading && !!edgeWrapMode,
+      fabricWeave: !!decorMode && !edgeWrapMode,
+    },
   );
 
   ctx.drawImage(art, 0, 0);

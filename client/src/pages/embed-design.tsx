@@ -1805,8 +1805,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const flatDecorMode = !!(
     productTypeConfig?.flatCalibration &&
     !flatEdgeWrapMode &&
+    !isApparel &&
     (productTypeConfig.flatCalibration.decorPerSize ||
-      productTypeConfig.designerType === "framed-print")
+      productTypeConfig.designerType === "framed-print" ||
+      productTypeConfig.designerType === "pillow" ||
+      // Tapestry / orientation products (26×36 vs 36×26) — enable fabric weave.
+      frameOptionsRedundantWithSizes ||
+      productTypeConfig.designerType === "generic")
   );
   const flatBlankColorId = useMemo(() => {
     if (!productTypeConfig?.flatCalibration) return selectedFrameColor || selectedSize || "";
@@ -6679,7 +6684,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flatPlacerActive && flatApplyStatus === "saving"
   );
 
-  const flatMockupBlankKey = `${flatBlankColorId}::${selectedSize ?? ""}::pc10`;
+  const flatMockupBlankKey = `${flatBlankColorId}::${selectedSize ?? ""}::pc11weave`;
 
   // Force mockup re-raster when the harvested blank key changes (shirt colour swap).
   useEffect(() => {
@@ -6731,6 +6736,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             stateForRender,
             view,
             artworkUrl,
+            { decorMode: flatDecorMode },
           );
           if (cancelled || !dataUrl) continue;
           let hostedUrl = dataUrl;
@@ -6776,6 +6782,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flatMockupBlankKey,
     selectedSize,
     printPlacement,
+    flatDecorMode,
     persistFlatMockupsForGallery,
   ]);
 

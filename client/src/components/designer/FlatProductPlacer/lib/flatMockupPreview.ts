@@ -14,6 +14,7 @@ export async function renderFlatMockupDataUrl(
   placerState: FlatProductPlacerState,
   view: FlatViewName,
   artworkUrl: string,
+  opts?: { decorMode?: boolean },
 ): Promise<string | null> {
   const assets = await loadFlatViewAssets(manifest, colorId, view);
   const calib = resolveFlatViewCalibration(manifest, colorId, view);
@@ -36,7 +37,7 @@ export async function renderFlatMockupDataUrl(
     tier: manifest.tier,
     forceShadingMap: !!manifest.edgeWrap,
     edgeWrapMode: !!manifest.edgeWrap,
-    decorMode: !!manifest.decorPerSize,
+    decorMode: opts?.decorMode === true || !!manifest.decorPerSize,
   });
 
   try {
