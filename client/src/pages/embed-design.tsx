@@ -1895,6 +1895,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     // `available` is the full Printify catalog pool for admin picker — not storefront carousel.
     const primary = imgs.primary || imgs.front || null;
     add(primary);
+    // Lifestyle/context shot when curated on the product (comforters, decor).
+    add(typeof imgs.lifestyle === "string" ? imgs.lifestyle : null);
     for (const url of Array.isArray(imgs.gallery) ? imgs.gallery : []) add(url);
     for (const url of Array.isArray((imgs as { custom?: string[] }).custom)
       ? (imgs as { custom?: string[] }).custom!
@@ -8875,14 +8877,24 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       designerType={productTypeConfig?.designerType || "generic"}
                       printShape={productTypeConfig?.printShape || "rectangle"}
                       canvasConfig={productTypeConfig?.canvasConfig}
-                      blankImageUrl={
-                        orientationBlankOverride ||
-                        flatCalibrationBlankUrl ||
-                        colorAwareBlankUrl ||
-                        catalogPreviewImages[catalogPreviewIndex] ||
-                        catalogPreviewImages[0] ||
-                        null
-                      }
+                      blankImageUrl={(() => {
+                        // Catalog carousel (Primary / View 2 / …) must win while
+                        // browsing placeholders — size-accurate blanks otherwise
+                        // pin every slide to the same flat/Shopify photo.
+                        const browsingCatalog =
+                          !generatedDesign?.imageUrl && catalogPreviewImages.length > 1;
+                        if (browsingCatalog && catalogPreviewIndex > 0) {
+                          return catalogPreviewImages[catalogPreviewIndex] || null;
+                        }
+                        return (
+                          orientationBlankOverride ||
+                          flatCalibrationBlankUrl ||
+                          colorAwareBlankUrl ||
+                          catalogPreviewImages[catalogPreviewIndex] ||
+                          catalogPreviewImages[0] ||
+                          null
+                        );
+                      })()}
                       aspectRatio={
                         selectedSizeConfig?.aspectRatio ||
                         productTypeConfig?.aspectRatio
