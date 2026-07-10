@@ -8,6 +8,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Loader2, Sparkles, ImagePlus, RefreshCw, X, Info } from "lucide-react";
 import { StyleSelector } from "./StyleSelector";
 import { useDesignerState } from "./useDesignerState";
+import {
+  selectableCategoriesForDesignerType,
+  styleMatchesSelectableCategories,
+} from "@shared/customizerPageStyles";
 import type {
   ProductDesignerConfig,
   StylePreset,
@@ -79,29 +83,14 @@ export function BaseDesigner({
 
   const allStylePresets = stylePresetsData?.stylePresets || [];
   
-  // Filter styles based on designerType
-  // - framed-print, pillow, mug -> "decor" category (full-bleed artwork)
-  // - apparel -> "apparel" category (centered graphics)
-  // - generic -> show all styles
-  // During initial load (no designerConfig yet), return empty to prevent briefly showing wrong styles
+  // Filter styles based on designerType (decor + graphics for pillows, etc.)
   const stylePresets = useMemo(() => {
     if (!designerConfig) return [];
-    
-    const designerType = designerConfig.designerType;
-    let targetCategory: "decor" | "apparel" | null = null;
-    
-    if (designerType === "apparel") {
-      targetCategory = "apparel";
-    } else if (designerType === "framed-print" || designerType === "pillow" || designerType === "mug") {
-      targetCategory = "decor";
-    }
-    
-    if (!targetCategory) return allStylePresets;
-    
-    // Return styles that match the category or are "all" (universal styles)
-    return allStylePresets.filter(s => 
-      s.category === targetCategory || s.category === "all" || !s.category
-    );
+
+    const selectable = selectableCategoriesForDesignerType(designerConfig.designerType);
+    if (selectable === "all") return allStylePresets;
+
+    return allStylePresets.filter((s) => styleMatchesSelectableCategories(s, selectable));
   }, [allStylePresets, designerConfig]);
 
   const state = useDesignerState(designerConfig || null);

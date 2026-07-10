@@ -166,6 +166,7 @@ const PLAN_DISPLAY: Record<string, string> = {
 const STYLE_CATEGORY_LABELS: Record<string, string> = {
   decor: "All Decor styles",
   apparel: "All Apparel styles",
+  graphics: "All Graphics styles",
   all: "All styles",
 };
 

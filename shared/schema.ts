@@ -815,6 +815,35 @@ export const STYLE_PRESETS = [
     promptPlaceholder: "Describe your illustrated motif (e.g. scary grizzly bear standing up, retro robot, floral skull)",
   },
 
+  // Graphics — isolated motifs for blankets, totes, patterns (chroma + SVG pipeline)
+  {
+    id: "graphics-centered-graphic",
+    name: "Centered Graphic (Graphics)",
+    promptPrefix:
+      "Centered flat vector illustration for large-format print, bold clean shapes, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of",
+    category: "graphics",
+    promptPlaceholder:
+      "Describe your centered graphic (e.g. geometric wolf, vintage skull, botanical emblem)",
+  },
+  {
+    id: "graphics-illustrated-motif",
+    name: "Illustrated Motif (Graphics)",
+    promptPrefix:
+      "Illustrated character motif for large-format print and patterns, detailed illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of",
+    category: "graphics",
+    promptPlaceholder:
+      "Describe your illustrated motif (e.g. retro robot, floral skull, camping bear)",
+  },
+  {
+    id: "graphics-pattern-maker",
+    name: "Pattern Maker (Graphics)",
+    promptPrefix:
+      "Seamless repeating pattern design for large-format products, tileable motif, clean vector shapes, flat colors (avoid white, light colors; DO NOT use solid hot pink (#FF00FF) or magenta in the design), high contrast, isolated on a solid hot pink (#FF00FF) background, no white mat, no rectangular frame. Create a repeating pattern of",
+    category: "graphics",
+    promptPlaceholder:
+      "Describe your pattern idea (e.g. tiny tacos, scattered leaves, geometric tiles)",
+  },
+
   // Decor Pet Portraits - Full-bleed scenic versions (no chroma key needed)
   {
     id: "pet-portraits-decor",

@@ -2,7 +2,9 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import {
   type CustomizerPageStyleConfig,
-  type CustomizerPageStyleCategory,
+  CUSTOMIZER_PAGE_CATEGORY_LABELS,
+  customizerPageCategoryOptions,
+  stylesForCustomizerPagePicker,
   suggestedStyleCategoryForDesignerType,
 } from "@shared/customizerPageStyles";
 
@@ -20,12 +22,6 @@ type Props = {
   disabled?: boolean;
 };
 
-const CATEGORY_LABELS: Record<CustomizerPageStyleCategory, string> = {
-  decor: "All Decor styles",
-  apparel: "All Apparel styles",
-  all: "All styles",
-};
-
 export default function CustomizerPageStyleSelector({
   designerType,
   availableStyles,
@@ -40,10 +36,8 @@ export default function CustomizerPageStyleSelector({
   const selectedIds =
     value?.mode === "selected" ? new Set(value.presetIds.map(String)) : new Set<string>();
 
-  const stylesForProduct = availableStyles.filter((s) => {
-    if (suggested === "all") return true;
-    return s.category === suggested || s.category === "all" || !s.category;
-  });
+  const stylesForProduct = stylesForCustomizerPagePicker(availableStyles, designerType);
+  const otherCategoryOptions = customizerPageCategoryOptions(suggested);
 
   return (
     <div className="space-y-3 rounded-lg border bg-muted/20 p-3">
@@ -65,28 +59,26 @@ export default function CustomizerPageStyleSelector({
               : "border-border hover:bg-muted/50"
           }`}
         >
-          {CATEGORY_LABELS[suggested]}
+          {CUSTOMIZER_PAGE_CATEGORY_LABELS[suggested]}
           <span className="mt-0.5 block text-[11px] font-normal text-muted-foreground">
             Recommended for this product type
           </span>
         </button>
-        {(["decor", "apparel", "all"] as const)
-          .filter((c) => c !== suggested)
-          .map((c) => (
-            <button
-              key={c}
-              type="button"
-              disabled={disabled}
-              onClick={() => onChange({ mode: "category", category: c })}
-              className={`rounded-md border px-3 py-2 text-left text-sm transition ${
-                mode === "category" && category === c
-                  ? "border-primary bg-primary/10 font-semibold"
-                  : "border-border hover:bg-muted/50"
-              }`}
-            >
-              {CATEGORY_LABELS[c]}
-            </button>
-          ))}
+        {otherCategoryOptions.map((c) => (
+          <button
+            key={c}
+            type="button"
+            disabled={disabled}
+            onClick={() => onChange({ mode: "category", category: c })}
+            className={`rounded-md border px-3 py-2 text-left text-sm transition ${
+              mode === "category" && category === c
+                ? "border-primary bg-primary/10 font-semibold"
+                : "border-border hover:bg-muted/50"
+            }`}
+          >
+            {CUSTOMIZER_PAGE_CATEGORY_LABELS[c]}
+          </button>
+        ))}
         <button
           type="button"
           disabled={disabled}

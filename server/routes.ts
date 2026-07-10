@@ -3,9 +3,9 @@ import { generatePattern, type PatternType } from "./replicate-bg-remover";
 import {
   processApparelMotif,
   trimTransparentBounds,
-  resolveApparelStylePrefix,
   resolveApparelDarkTierPrefix,
   resolveIsApparelGeneration,
+  resolveMotifStylePrefix,
   APPAREL_CHROMA_STYLE_BY_NAME,
   processApparelMotifToDataUrl,
 } from "./apparel-matting";
@@ -2432,7 +2432,12 @@ export async function registerRoutes(
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);
       if (isApparel && !isAllOverPrint) {
-        stylePromptPrefix = resolveApparelStylePrefix(styleName, stylePromptPrefix);
+        stylePromptPrefix = resolveMotifStylePrefix(
+          styleCategory,
+          styleName,
+          stylePreset,
+          stylePromptPrefix,
+        );
       } else if (isAllOverPrint && stylePromptPrefix) {
         stylePromptPrefix = sanitizeStylePrefixForAop(stylePromptPrefix);
       }
@@ -2478,7 +2483,7 @@ export async function registerRoutes(
       const userDescAdmin = (rawUserPromptAdmin || "").trim();
       let fullPrompt: string;
       
-      if (isApparel && colorTier === "dark" && stylePreset) {
+      if (styleCategory === "apparel" && isApparel && colorTier === "dark" && stylePreset) {
         const darkTierPrompt = resolveApparelDarkTierPrefix(stylePreset, stylePromptPrefixDark);
         if (darkTierPrompt) {
           fullPrompt = userDescAdmin ? `${userDescAdmin}, ${darkTierPrompt}` : darkTierPrompt;
@@ -3229,7 +3234,12 @@ console.log("[shopify/session] installation ok", {
       const embedIsApparelEarly = resolveIsApparelGeneration(productType, embedStyleCategory);
       const embedIsAllOverPrintEarly = !!(productType?.isAllOverPrint);
       if (embedIsApparelEarly && !embedIsAllOverPrintEarly) {
-        stylePromptPrefix = resolveApparelStylePrefix(styleName, stylePromptPrefix);
+        stylePromptPrefix = resolveMotifStylePrefix(
+          embedStyleCategory,
+          styleName,
+          stylePreset,
+          stylePromptPrefix,
+        );
       } else if (embedIsAllOverPrintEarly && stylePromptPrefix) {
         stylePromptPrefix = sanitizeStylePrefixForAop(stylePromptPrefix);
       }
@@ -7337,7 +7347,12 @@ ${textEdgeRestrictions}
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);
       if (isApparel && !isAllOverPrint) {
-        stylePromptPrefix = resolveApparelStylePrefix(styleName, stylePromptPrefix);
+        stylePromptPrefix = resolveMotifStylePrefix(
+          sfStyleCategory,
+          styleName,
+          stylePreset,
+          stylePromptPrefix,
+        );
       } else if (isAllOverPrint && stylePromptPrefix) {
         stylePromptPrefix = sanitizeStylePrefixForAop(stylePromptPrefix);
       }
@@ -7407,7 +7422,7 @@ MANDATORY IMAGE REQUIREMENTS FOR ALL-OVER PRINT (AOP) - FOLLOW EXACTLY:
           : "VIBRANT colors. White may be used inside the subject (teeth, eyes, highlights) but NOT as a background mat. AVOID hot pink/magenta in the design.";
 
         // Use dark tier prompt variant if available
-        if (isDarkTier && stylePreset) {
+        if (sfStyleCategory === "apparel" && isDarkTier && stylePreset) {
           const darkTierPrompt = resolveApparelDarkTierPrefix(stylePreset, stylePromptPrefixDark);
           if (darkTierPrompt) {
             fullPrompt = userDescSf ? `${userDescSf}, ${darkTierPrompt}` : darkTierPrompt;

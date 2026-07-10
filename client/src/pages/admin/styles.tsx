@@ -13,11 +13,13 @@ import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Palette, Plus, Trash2, Edit2, Copy, Frame, Shirt, RefreshCw, ImagePlus, X } from "lucide-react";
+import { Palette, Plus, Trash2, Edit2, Copy, Frame, Shirt, Shapes, RefreshCw, ImagePlus, X } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import type { StylePresetCategory } from "@shared/styleCategories";
 import AdminLayout from "@/components/admin-layout";
 import type { StylePresetDB } from "@shared/schema";
 
-type FilterCategory = "show-all" | "all" | "decor" | "apparel";
+type FilterCategory = "show-all" | StylePresetCategory;
 
 interface SubStyleChoice {
   id: string;
@@ -71,8 +73,7 @@ export default function AdminStyles() {
   const [styleName, setStyleName] = useState("");
   const [stylePrompt, setStylePrompt] = useState("");
   const [stylePromptDark, setStylePromptDark] = useState("");
-  // Category stored as Set of "decor" | "apparel" — empty means "all"
-  const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set());
+  const [styleCategory, setStyleCategory] = useState<StylePresetCategory>("decor");
   const [styleBaseImageUrls, setStyleBaseImageUrls] = useState<string[]>([]);
   const [stylePromptPlaceholder, setStylePromptPlaceholder] = useState<string>("");
   const [descriptionOptional, setDescriptionOptional] = useState(false);
@@ -226,7 +227,7 @@ export default function AdminStyles() {
     setStyleName("");
     setStylePrompt("");
     setStylePromptDark("");
-    setSelectedCategories(new Set());
+    setStyleCategory("decor");
     setStyleBaseImageUrls([]);
     setStylePromptPlaceholder("");
     setDescriptionOptional(false);
@@ -236,40 +237,15 @@ export default function AdminStyles() {
     setSubStyleChoices([]);
   };
 
-  // Convert Set<string> to the DB category string
-  const categoriesToDbValue = (cats: Set<string>): string => {
-    if (cats.has("decor") && cats.has("apparel")) return "all";
-    if (cats.has("decor")) return "decor";
-    if (cats.has("apparel")) return "apparel";
-    return "all"; // default: show for all
-  };
-
-  // Convert DB category string to Set<string>
-  const dbValueToCategories = (cat: string | null | undefined): Set<string> => {
-    if (!cat || cat === "all") return new Set(["decor", "apparel"]);
-    if (cat === "decor") return new Set(["decor"]);
-    if (cat === "apparel") return new Set(["apparel"]);
-    return new Set(["decor", "apparel"]);
-  };
-
-  const toggleCategory = (cat: string) => {
-    setSelectedCategories((prev) => {
-      const next = new Set(prev);
-      if (next.has(cat)) {
-        next.delete(cat);
-      } else {
-        next.add(cat);
-      }
-      return next;
-    });
-  };
-
   const handleEditStyle = (style: StylePresetDB) => {
     setEditingStyle(style);
     setStyleName(style.name);
     setStylePrompt(style.promptPrefix || "");
     setStylePromptDark((style as any).promptPrefixDark || "");
-    setSelectedCategories(dbValueToCategories(style.category));
+    const cat = (style.category || "all") as StylePresetCategory;
+    setStyleCategory(
+      cat === "decor" || cat === "apparel" || cat === "graphics" || cat === "all" ? cat : "all",
+    );
     // Load base images: prefer new array, fall back to legacy single URL
     const existingBaseUrls: string[] = (style as any).baseImageUrls ||
       ((style as any).baseImageUrl ? [(style as any).baseImageUrl] : []);
@@ -353,8 +329,6 @@ export default function AdminStyles() {
   };
 
   const handleSaveStyle = () => {
-    const category = categoriesToDbValue(selectedCategories);
-
     const options: StyleOptions | null =
       subStylesEnabled && subStyleChoices.length > 0
         ? {
@@ -368,7 +342,7 @@ export default function AdminStyles() {
       name: styleName,
       promptPrefix: stylePrompt,
       promptPrefixDark: stylePromptDark || null,
-      category,
+      category: styleCategory,
       // Send both: new array for multi-image support, legacy single for backwards compat
       baseImageUrl: styleBaseImageUrls[0] || null,
       baseImageUrls: styleBaseImageUrls.length > 0 ? styleBaseImageUrls : null,
@@ -406,7 +380,8 @@ export default function AdminStyles() {
     switch (category) {
       case "decor": return "Decor";
       case "apparel": return "Apparel";
-      default: return "Decor + Apparel";
+      case "graphics": return "Graphics";
+      default: return "All types";
     }
   };
 
@@ -414,6 +389,7 @@ export default function AdminStyles() {
     switch (category) {
       case "decor": return <Frame className="h-3 w-3" />;
       case "apparel": return <Shirt className="h-3 w-3" />;
+      case "graphics": return <Shapes className="h-3 w-3" />;
       default: return <Palette className="h-3 w-3" />;
     }
   };
@@ -421,9 +397,8 @@ export default function AdminStyles() {
   const filteredStyles = useMemo(() => {
     if (!styles) return [];
     if (filterCategory === "show-all") return styles;
-    if (filterCategory === "decor") return styles.filter((s) => s.category === "decor" || s.category === "all");
-    if (filterCategory === "apparel") return styles.filter((s) => s.category === "apparel" || s.category === "all");
-    return styles.filter((s) => s.category === filterCategory);
+    if (filterCategory === "all") return styles.filter((s) => s.category === "all" || !s.category);
+    return styles.filter((s) => s.category === filterCategory || s.category === "all");
   }, [styles, filterCategory]);
 
   return (
@@ -466,6 +441,10 @@ export default function AdminStyles() {
             <TabsTrigger value="apparel" data-testid="tab-apparel">
               <Shirt className="h-4 w-4 mr-2" />
               Apparel
+            </TabsTrigger>
+            <TabsTrigger value="graphics" data-testid="tab-graphics">
+              <Shapes className="h-4 w-4 mr-2" />
+              Graphics
             </TabsTrigger>
           </TabsList>
         </Tabs>
@@ -606,33 +585,24 @@ export default function AdminStyles() {
                 />
               </div>
 
-              {/* Product Category — checkboxes so both can be selected */}
               <div className="space-y-2">
-                <Label>Product Category</Label>
-                <div className="flex gap-6">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <Checkbox
-                      checked={selectedCategories.has("decor")}
-                      onCheckedChange={() => toggleCategory("decor")}
-                    />
-                    <span className="text-sm flex items-center gap-1.5">
-                      <Frame className="h-3.5 w-3.5" />
-                      Decor
-                    </span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <Checkbox
-                      checked={selectedCategories.has("apparel")}
-                      onCheckedChange={() => toggleCategory("apparel")}
-                    />
-                    <span className="text-sm flex items-center gap-1.5">
-                      <Shirt className="h-3.5 w-3.5" />
-                      Apparel
-                    </span>
-                  </label>
-                </div>
+                <Label>Style Category</Label>
+                <Select
+                  value={styleCategory}
+                  onValueChange={(v) => setStyleCategory(v as StylePresetCategory)}
+                >
+                  <SelectTrigger data-testid="select-style-category">
+                    <SelectValue placeholder="Choose category" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="decor">Decor — full-bleed artwork</SelectItem>
+                    <SelectItem value="apparel">Apparel — garment graphics</SelectItem>
+                    <SelectItem value="graphics">Graphics — isolated motifs (chroma + SVG)</SelectItem>
+                    <SelectItem value="all">All product types</SelectItem>
+                  </SelectContent>
+                </Select>
                 <p className="text-xs text-muted-foreground">
-                  Select both to show this style for all product types. Decor uses full-bleed artwork; Apparel uses centered graphics.
+                  Decor fills the canvas edge-to-edge. Apparel and Graphics use hot-pink chroma removal; Graphics is for blankets, totes, and patterns.
                 </p>
               </div>
 
@@ -671,11 +641,13 @@ export default function AdminStyles() {
                   data-testid="input-style-prompt"
                 />
                 <p className="text-xs text-muted-foreground">
-                  Light-garment prefix. Must include hot pink (#FF00FF) background language. Edits apply immediately — no deploy needed.
+                  {styleCategory === "decor"
+                    ? "Full-bleed prefix — artwork should extend to all edges."
+                    : "Must include hot pink (#FF00FF) background language for background removal. Edits apply immediately — no deploy needed."}
                 </p>
               </div>
 
-              {(selectedCategories.has("apparel") || selectedCategories.size === 0) && (
+              {styleCategory === "apparel" && (
                 <div className="space-y-2">
                   <Label htmlFor="style-prompt-dark">
                     Dark garment prompt prefix{" "}

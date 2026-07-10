@@ -26,7 +26,7 @@ export interface StylePreset {
   name: string;
   promptSuffix: string;
   thumbnailUrl?: string;
-  category?: "all" | "decor" | "apparel";
+  category?: "all" | "decor" | "apparel" | "graphics";
   promptPlaceholder?: string;
   baseImageUrl?: string;
   descriptionOptional?: boolean;

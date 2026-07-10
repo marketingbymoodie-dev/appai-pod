@@ -53,6 +53,8 @@ import {
   filterStylePresetsForPage,
   dedupeStylePresets,
   parseCustomizerPageStyleConfig,
+  selectableCategoriesForDesignerType,
+  styleMatchesSelectableCategories,
   type CustomizerPageStyleConfig,
 } from "@shared/customizerPageStyles";
 import {
@@ -1892,10 +1894,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
   }, [productTypeConfig, supportsPrintPlacementSelection, printPlacement]);
 
-  // Filter styles based on designerType
-  // - framed-print, pillow, mug -> "decor" category (full-bleed artwork)
-  // - apparel -> "apparel" category (centered graphics)
-  // - generic -> show all styles
+  // Filter styles based on designerType and per-page styleConfig
   const filteredStylePresets = useMemo(() => {
     const deduped = dedupeStylePresets(stylePresets);
     if (pageStyleConfig) {
@@ -1905,22 +1904,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         productTypeConfig?.designerType,
       );
     }
-    if (!productTypeConfig?.designerType) return deduped;
-
-    const designerType = productTypeConfig.designerType;
-    let targetCategory: "decor" | "apparel" | null = null;
-
-    if (designerType === "framed-print" || designerType === "pillow" || designerType === "mug") {
-      targetCategory = "decor";
-    } else if (designerType === "apparel") {
-      targetCategory = "apparel";
-    }
-
-    if (!targetCategory) return deduped;
-
-    return deduped.filter(s =>
-      s.category === targetCategory || s.category === "all" || !s.category
-    );
+    const selectable = selectableCategoriesForDesignerType(productTypeConfig?.designerType);
+    if (selectable === "all") return deduped;
+    return deduped.filter((s) => styleMatchesSelectableCategories(s, selectable));
   }, [stylePresets, productTypeConfig, pageStyleConfig]);
 
   useEffect(() => {

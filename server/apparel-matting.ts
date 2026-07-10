@@ -15,6 +15,10 @@ import {
   APPAREL_DARK_TIER_PROMPTS,
   isChromaSafeApparelPrefix,
 } from "@shared/apparel-chroma-prompts";
+import {
+  GRAPHICS_CHROMA_STYLE_BY_ID,
+  GRAPHICS_CHROMA_STYLE_BY_NAME,
+} from "@shared/graphics-chroma-prompts";
 
 export {
   APPAREL_CHROMA_STYLE_BY_NAME,
@@ -126,7 +130,7 @@ export function resolveIsApparelGeneration(
   const styleCat = (styleCategory || "all").toLowerCase();
   const designerType = (productType?.designerType || "").toLowerCase();
 
-  if (styleCat === "apparel") return true;
+  if (styleCat === "apparel" || styleCat === "graphics") return true;
   if (designerType === "apparel") return true;
 
   // Decor presets (Pop Art, Watercolor, etc.) — full bleed, no chroma plate
@@ -154,6 +158,41 @@ export function sanitizeApparelStylePrefix(prefix: string): string {
     cleaned = `${cleaned}, no white mat, no rectangular frame`;
   }
   return cleaned;
+}
+
+/** Graphics prefix: chroma + matting/SVG pipeline, large-format motif language. */
+export function resolveGraphicsStylePrefix(
+  styleName: string,
+  stylePresetId: string | null | undefined,
+  dbPrefix: string,
+): string {
+  const trimmed = dbPrefix.trim();
+  if (trimmed && isChromaSafeApparelPrefix(trimmed)) {
+    return sanitizeApparelStylePrefix(trimmed);
+  }
+  const idKey = (stylePresetId || "").trim().toLowerCase();
+  if (idKey && GRAPHICS_CHROMA_STYLE_BY_ID[idKey]) {
+    return sanitizeApparelStylePrefix(GRAPHICS_CHROMA_STYLE_BY_ID[idKey]);
+  }
+  const nameKey = styleName.trim().toLowerCase();
+  const canonical = GRAPHICS_CHROMA_STYLE_BY_NAME[nameKey];
+  if (canonical) {
+    return sanitizeApparelStylePrefix(canonical);
+  }
+  return sanitizeApparelStylePrefix(trimmed);
+}
+
+/** Route motif prefix resolution by style category (apparel vs graphics). */
+export function resolveMotifStylePrefix(
+  styleCategory: string | null | undefined,
+  styleName: string,
+  stylePresetId: string | null | undefined,
+  dbPrefix: string,
+): string {
+  if ((styleCategory || "").toLowerCase() === "graphics") {
+    return resolveGraphicsStylePrefix(styleName, stylePresetId, dbPrefix);
+  }
+  return resolveApparelStylePrefix(styleName, dbPrefix);
 }
 
 /** Light-garment prefix: prefer Admin/DB when chroma-safe; else repo fallback by style name. */

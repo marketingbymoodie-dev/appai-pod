@@ -3,7 +3,23 @@
  * Merchants attach explicit presets or allow all styles in a category.
  */
 
-export type CustomizerPageStyleCategory = "decor" | "apparel" | "all";
+import {
+  type CustomizerPageStyleCategory,
+  type StylePresetCategory,
+  CUSTOMIZER_PAGE_CATEGORY_OPTIONS,
+  isValidStylePresetCategory,
+  selectableCategoriesForDesignerType,
+  styleMatchesSelectableCategories,
+} from "./styleCategories";
+
+export type { CustomizerPageStyleCategory, StylePresetCategory } from "./styleCategories";
+export {
+  CUSTOMIZER_PAGE_CATEGORY_OPTIONS,
+  CUSTOMIZER_PAGE_CATEGORY_LABELS,
+  STYLE_PRESET_CATEGORY_LABELS,
+  selectableCategoriesForDesignerType,
+  styleMatchesSelectableCategories,
+} from "./styleCategories";
 
 export type CustomizerPageStyleConfig =
   | { mode: "category"; category: CustomizerPageStyleCategory }
@@ -24,7 +40,7 @@ export function parseCustomizerPageStyleConfig(
   if (!parsed || typeof parsed !== "object") return null;
   const o = parsed as Record<string, unknown>;
   if (o.mode === "category" && typeof o.category === "string") {
-    if (o.category === "decor" || o.category === "apparel" || o.category === "all") {
+    if (isValidStylePresetCategory(o.category)) {
       return { mode: "category", category: o.category };
     }
   }
@@ -39,7 +55,7 @@ export function validateCustomizerPageStyleConfig(
   config: CustomizerPageStyleConfig | null | undefined,
 ): string | null {
   if (!config) {
-    return "Choose one or more art styles, or select all styles in a category (Decor, Apparel, or All).";
+    return "Choose one or more art styles, or select all styles in a category (Decor, Apparel, Graphics, or All).";
   }
   if (config.mode === "selected" && config.presetIds.length === 0) {
     return "Select at least one art style.";
@@ -82,6 +98,15 @@ export function dedupeStylePresets<T extends { id: string; name?: string }>(
   });
 }
 
+/** Styles shown in admin "choose specific styles" for a product's designer type. */
+export function stylesForCustomizerPagePicker<T extends { category?: string | null }>(
+  presets: T[],
+  designerType?: string | null,
+): T[] {
+  const selectable = selectableCategoriesForDesignerType(designerType);
+  return presets.filter((p) => styleMatchesSelectableCategories(p, selectable));
+}
+
 export function filterStylePresetsForPage<T extends { id: string; category?: string | null }>(
   presets: T[],
   config: CustomizerPageStyleConfig | null | undefined,
@@ -111,4 +136,11 @@ export function sanitizeStylePrefixForAop(prefix: string): string {
     cleaned = `${cleaned}, isolated centered motif`;
   }
   return cleaned;
+}
+
+/** Category bundle buttons for the admin page wizard (excludes the recommended default). */
+export function customizerPageCategoryOptions(
+  suggested: CustomizerPageStyleCategory,
+): CustomizerPageStyleCategory[] {
+  return CUSTOMIZER_PAGE_CATEGORY_OPTIONS.filter((c) => c !== suggested);
 }

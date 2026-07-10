@@ -7,6 +7,7 @@ import {
   cleanupFlatGraphicAlpha,
   removeChromaKeyBackground,
   resolveApparelStylePrefix,
+  resolveGraphicsStylePrefix,
   resolveIsApparelGeneration,
   sanitizeApparelStylePrefix,
 } from "./apparel-matting";
@@ -77,6 +78,13 @@ describe("resolveIsApparelGeneration", () => {
   it("falls back to style category apparel", () => {
     expect(resolveIsApparelGeneration({ designerType: "generic" }, "apparel")).toBe(true);
   });
+
+  it("uses chroma matting for graphics styles", () => {
+    expect(resolveIsApparelGeneration({ designerType: "pillow" }, "graphics")).toBe(true);
+    expect(resolveIsApparelGeneration({ designerType: "generic", isAllOverPrint: true }, "graphics")).toBe(
+      true,
+    );
+  });
 });
 
 describe("sanitizeApparelStylePrefix", () => {
@@ -84,6 +92,18 @@ describe("sanitizeApparelStylePrefix", () => {
     const out = sanitizeApparelStylePrefix("Centered graphic on white background, bold colors");
     expect(out.toLowerCase()).toContain("#ff00ff");
     expect(out.toLowerCase()).not.toContain("white background");
+  });
+});
+
+describe("resolveGraphicsStylePrefix", () => {
+  it("uses canonical graphics prefix by preset id", () => {
+    const out = resolveGraphicsStylePrefix(
+      "Centered Graphic (Graphics)",
+      "graphics-centered-graphic",
+      "",
+    );
+    expect(out.toLowerCase()).toContain("#ff00ff");
+    expect(out.toLowerCase()).not.toContain("t-shirt");
   });
 });
 
