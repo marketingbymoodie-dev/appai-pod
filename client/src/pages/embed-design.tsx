@@ -50,6 +50,11 @@ import {
 import { resolveFlatBlankColorId, resolveFlatPlacementGeometryKey } from "@/components/designer/FlatProductPlacer/lib/flatAssets";
 import { STOREFRONT_FREE_GENERATION_LIMIT, storefrontArtworksRemaining } from "@shared/storefront-credits";
 import {
+  frameColorsRedundantWithSizes,
+  resolveFrameColorForSize,
+  resolveSizeAspectRatio,
+} from "@shared/productVariantOptions";
+import {
   filterStylePresetsForPage,
   dedupeStylePresets,
   parseCustomizerPageStyleConfig,
@@ -185,7 +190,7 @@ interface ProductTypeConfig {
   designerType?: DesignerType;
   printShape?: PrintShape;
   canvasConfig?: CanvasConfig;
-  sizes: Array<{ id: string; name: string; width: number; height: number }>;
+  sizes: Array<{ id: string; name: string; width: number; height: number; aspectRatio?: string }>;
   frameColors: Array<{ id: string; name: string; hex: string; variantAvailable?: boolean }>;
   variantMap?: Record<string, { printifyVariantId?: number | string; providerId?: number }>;
   hasPrintifyMockups?: boolean;
@@ -1289,9 +1294,21 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         name: s.name,
         width: s.width,
         height: s.height,
-        aspectRatio: productTypeConfig?.aspectRatio || "3:4",
+        aspectRatio:
+          s.aspectRatio ||
+          resolveSizeAspectRatio(s, productTypeConfig?.aspectRatio),
       })),
     [productTypeConfig],
+  );
+
+  const frameOptionsRedundantWithSizes = useMemo(
+    () =>
+      frameColorsRedundantWithSizes(
+        printSizes,
+        productTypeConfig?.frameColors || [],
+        productTypeConfig?.colorLabel,
+      ),
+    [printSizes, productTypeConfig?.frameColors, productTypeConfig?.colorLabel],
   );
 
   const frameColorObjects: FrameColor[] = useMemo(
@@ -1303,6 +1320,25 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       })),
     [productTypeConfig],
   );
+
+  const showFrameColorSelector =
+    frameColorObjects.length > 0 && !frameOptionsRedundantWithSizes;
+
+  // When OPTION duplicates SIZE (tapestry orientations), keep frameColor aligned for variantMap.
+  useEffect(() => {
+    if (!frameOptionsRedundantWithSizes || !selectedSize) return;
+    const sizeConfig = printSizes.find((s) => s.id === selectedSize);
+    const matched = resolveFrameColorForSize(sizeConfig, frameColorObjects);
+    if (matched && matched !== selectedFrameColor) {
+      setSelectedFrameColor(matched);
+    }
+  }, [
+    frameOptionsRedundantWithSizes,
+    selectedSize,
+    printSizes,
+    frameColorObjects,
+    selectedFrameColor,
+  ]);
 
   // Resolve shop domain - try URL param first, then try to extract from referrer
   // This handles cases where the theme extension hasn't been redeployed with the latest changes
@@ -3902,7 +3938,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       catalog,
       sizeName,
       frameName,
-      frameColorObjects.length > 0,
+      showFrameColorSelector,
       selectedFrameColor || undefined,
     );
   }, [
@@ -4011,7 +4047,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       properties['_mockup_url'] = mockupFullUrl;
     }
     if (selectedSize) properties['Size'] = selectedSize;
-    if (frameColorObjects.length > 0 && selectedFrameColor) {
+    if (showFrameColorSelector && selectedFrameColor) {
       properties['Color'] = selectedFrameColor;
     }
 
@@ -4796,7 +4832,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       return;
     }
 
-    const needsColorOptions = (productTypeConfig?.frameColors?.length ?? 0) > 0;
+    const needsColorOptions = showFrameColorSelector;
     const catalogUsable =
       variantCatalogIsUsable(shopifyVariants.length > 0 ? shopifyVariants : variants, needsColorOptions);
     if (variantsLoadedKeyRef.current === fetchKey && catalogUsable) {
@@ -4858,7 +4894,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const findVariantId = (): string | null => {
     if (!isShopify && !isStorefront) return null;
 
-    const hasColors = frameColorObjects.length > 0;
+    const hasColors = showFrameColorSelector;
     const sizeName = printSizes.find(s => s.id === selectedSize)?.name ?? selectedSize ?? "";
     const frameName =
       frameColorObjects.find(f => f.id === selectedFrameColor)?.name ?? selectedFrameColor ?? "";
@@ -5088,7 +5124,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     const variantId = findVariantId();
 
     if (!variantId) {
-      const hasColors = frameColorObjects.length > 0;
+      const hasColors = showFrameColorSelector;
       const errorMsg = hasColors
         ? "Unable to find matching product variant. Please select a valid size and color combination."
         : "Unable to find matching product variant. Please select a valid size.";
@@ -5219,7 +5255,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       properties['_mockup_url'] = mockupFullUrl;
     }
     if (selectedSize) properties['Size'] = selectedSize;
-    if (frameColorObjects.length > 0 && selectedFrameColor) {
+    if (showFrameColorSelector && selectedFrameColor) {
       properties['Color'] = selectedFrameColor;
     }
 
@@ -6734,7 +6770,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     const priceMap: Record<string, number> = {};
     if (!shopifyVariants || shopifyVariants.length === 0) return priceMap;
 
-    const hasColors = frameColorObjects.length > 0;
+    const hasColors = showFrameColorSelector;
     const frameName =
       frameColorObjects.find((f) => f.id === selectedFrameColor)?.name ??
       selectedFrameColor ??
@@ -6769,7 +6805,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
 
     return priceMap;
-  }, [shopifyVariants, printSizes, frameColorObjects, selectedFrameColor])
+  }, [shopifyVariants, printSizes, frameColorObjects, selectedFrameColor, showFrameColorSelector])
 
   // Auto-resolve the Shopify variant that matches the currently selected size + frame color.
   // Runs whenever size, frame color, or the variants list changes.
@@ -6784,7 +6820,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       shopifyVariants,
       sizeName,
       frameName,
-      frameColorObjects.length > 0,
+      showFrameColorSelector,
       selectedFrameColor || undefined,
     );
 
@@ -8179,7 +8215,35 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       sizes={printSizes}
                       selectedSize={selectedSize}
                       onSizeChange={(sizeId) => {
+                        const prevSize = printSizes.find((s) => s.id === selectedSize);
+                        const nextSize = printSizes.find((s) => s.id === sizeId);
+                        if (
+                          generatedDesign?.imageUrl &&
+                          prevSize &&
+                          nextSize &&
+                          prevSize.id !== nextSize.id
+                        ) {
+                          const prevAr = resolveSizeAspectRatio(
+                            prevSize,
+                            productTypeConfig?.aspectRatio,
+                          );
+                          const nextAr = resolveSizeAspectRatio(
+                            nextSize,
+                            productTypeConfig?.aspectRatio,
+                          );
+                          if (prevAr !== nextAr) {
+                            toast({
+                              title: "Size proportions changed",
+                              description:
+                                "Generate new artwork so it matches this size's aspect ratio.",
+                            });
+                          }
+                        }
                         setSelectedSize(sizeId);
+                        if (frameOptionsRedundantWithSizes) {
+                          const matched = resolveFrameColorForSize(nextSize, frameColorObjects);
+                          if (matched) setSelectedFrameColor(matched);
+                        }
                         const flatOnTheFly = !!(
                           (productTypeConfig?.onTheFlyTier === "flat" ||
                             productTypeConfig?.onTheFlyTier === "mesh") &&
@@ -8197,10 +8261,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   </div>
                 )}
 
-                {(frameColorObjects.length > 0 || supportsPrintPlacementSelection) && (
+                {(showFrameColorSelector || supportsPrintPlacementSelection) && (
                   <div className={showPresetsParam && filteredStylePresets.length > 0 && printSizes.length > 0 ? "sm:col-span-2" : ""}>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {frameColorObjects.length > 0 && (
+                      {showFrameColorSelector && (
                         <FrameColorSelector
                           frameColors={frameColorObjects}
                           selectedFrameColor={selectedFrameColor}
@@ -8802,7 +8866,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         catalogPreviewImages[0] ||
                         null
                       }
-                      aspectRatio={productTypeConfig?.aspectRatio}
+                      aspectRatio={
+                        selectedSizeConfig?.aspectRatio ||
+                        productTypeConfig?.aspectRatio
+                      }
                       mockupFit={flatEdgeWrapMode ? "contain" : "cover"}
                     />
                   );

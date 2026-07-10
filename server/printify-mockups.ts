@@ -13,6 +13,7 @@ const MAX_MOCKUP_VIEWS = 12;
 // Printify UI often shows "Front Side" / "Side Person"; URL `camera_label` may be spaced or kebab-case.
 const LEGGINGS_STYLE_PRIORITY = [
   "front",
+  "lifestyle",
   "back",
   "front side",
   "front-side",
@@ -1233,7 +1234,7 @@ export async function generatePrintifyMockup(
       }
     }
 
-    const placementForViews = !isAop ? effectivePrintPlacement : undefined;
+    const placementForViews = isAop ? effectivePrintPlacement : undefined;
     const selected = selectPreferredViews(mockupData.images, isAop, placementForViews);
 
     return {

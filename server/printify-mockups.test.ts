@@ -402,6 +402,19 @@ describe("Mockup camera_label preference", () => {
     expect(pickPreferredMockupViews(images).map((p) => p.label)).toEqual(["front", "back", "Front Side"]);
   });
 
+  it("prefers lifestyle mockups early for decor gallery (after front)", () => {
+    const images = [
+      { url: "https://x.example/back.png", label: "back" },
+      { url: "https://x.example/life.png", label: "lifestyle" },
+      { url: "https://x.example/front.png", label: "front" },
+    ];
+    expect(pickPreferredMockupViews(images).map((p) => p.label)).toEqual([
+      "front",
+      "lifestyle",
+      "back",
+    ]);
+  });
+
   it("dedupes by URL when the same asset appears under two labels", () => {
     const u = "https://x.example/same.png";
     const images = [
