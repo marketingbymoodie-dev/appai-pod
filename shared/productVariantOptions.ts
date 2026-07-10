@@ -6,7 +6,9 @@
 export type SizeLike = { id: string; name: string; width?: number; height?: number };
 export type ColorLike = { id: string; name: string };
 
-const DIM_PATTERN = /(\d+)\s*["']?\s*[xX×]\s*(\d+)/;
+/** Shopify / Printify option tokens: `26''_×_36''`, `26" x 36"`, `68x88`, etc. */
+const DIM_PATTERN =
+  /(\d+)\s*(?:''|"|″|inch|in)?\s*[_\s-]*[xX×]\s*[_\s-]*(\d+)\s*(?:''|"|″|inch|in)?/;
 
 export function extractDimensionalKey(value: string): string | null {
   const m = String(value || "").match(DIM_PATTERN);

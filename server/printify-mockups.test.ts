@@ -6,7 +6,7 @@
  * - Structured error responses with step info
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { normalizeMockupCameraLabel, pickPreferredMockupViews, extractBase64FromDataUrl, isWrapOnlyPlaceholder } from "./printify-mockups";
+import { normalizeMockupCameraLabel, pickPreferredMockupViews, shouldSupplementInlineMockups, extractBase64FromDataUrl, isWrapOnlyPlaceholder } from "./printify-mockups";
 
 // We test the module's exported function
 // Mock fetch for Printify API calls
@@ -413,6 +413,22 @@ describe("Mockup camera_label preference", () => {
       "lifestyle",
       "back",
     ]);
+  });
+
+  it("shouldSupplementInlineMockups when only front returned for decor", () => {
+    expect(
+      shouldSupplementInlineMockups([{ url: "https://x.example/f.png", label: "front" }], false),
+    ).toBe(true);
+    expect(
+      shouldSupplementInlineMockups(
+        [
+          { url: "https://x.example/f.png", label: "front" },
+          { url: "https://x.example/l.png", label: "lifestyle" },
+        ],
+        false,
+      ),
+    ).toBe(false);
+    expect(shouldSupplementInlineMockups([], true)).toBe(false);
   });
 
   it("dedupes by URL when the same asset appears under two labels", () => {

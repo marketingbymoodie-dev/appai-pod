@@ -621,6 +621,40 @@ function extractCameraLabel(url: string): string {
   }
 }
 
+/** True when inline create-product images are likely incomplete (e.g. decor lifestyle views). */
+export function shouldSupplementInlineMockups(images: MockupImage[], isAop: boolean): boolean {
+  if (isAop || images.length === 0) return false;
+  if (images.length >= 2) {
+    const norms = images.map((img) => normalizeMockupCameraLabel(img.label));
+    return !norms.some(
+      (n) =>
+        n.includes("lifestyle") ||
+        n.includes("context") ||
+        n.includes("room") ||
+        n.includes("bed") ||
+        n.includes("side person"),
+    );
+  }
+  return true;
+}
+
+function mergeMockupImages(
+  primary: { urls: string[]; images: MockupImage[] } | undefined,
+  extra: { urls: string[]; images: MockupImage[] },
+): { urls: string[]; images: MockupImage[] } {
+  const seen = new Set<string>();
+  const images: MockupImage[] = [];
+  for (const src of [primary?.images, extra.images]) {
+    if (!src) continue;
+    for (const img of src) {
+      if (!img?.url || seen.has(img.url)) continue;
+      seen.add(img.url);
+      images.push(img);
+    }
+  }
+  return { urls: images.map((img) => img.url), images };
+}
+
 /** Normalize Printify camera_label for comparison (spaces, + / %20, case). */
 export function normalizeMockupCameraLabel(raw: string): string {
   const s = raw.replace(/\+/g, " ").replace(/_/g, " ").trim();
@@ -1191,7 +1225,7 @@ export async function generatePrintifyMockup(
     let mockupData: { urls: string[]; images: MockupImage[] } | undefined;
     if (createResult.images.length > 0) {
       console.log(
-        `[Printify Mockup] Using ${createResult.images.length} image(s) returned inline in create-product response (skipping poll).`,
+        `[Printify Mockup] Using ${createResult.images.length} image(s) returned inline in create-product response.`,
       );
       mockupData = {
         urls: createResult.images.map((img) => img.url),
@@ -1199,10 +1233,15 @@ export async function generatePrintifyMockup(
       };
     }
 
-    if (!mockupData) {
+    const supplementInline = mockupData
+      ? shouldSupplementInlineMockups(mockupData.images, isAop)
+      : false;
+
+    if (!mockupData || supplementInline) {
       const pollStarted = Date.now();
+      const pollRetries = supplementInline && mockupData ? 20 : 60;
       try {
-        mockupData = await pRetry(
+        const polled = await pRetry(
           async (attemptNumber) => {
             const data = await getProductMockups(printifyShopId, productId!, printifyApiToken);
             if (!data || data.urls.length === 0) {
@@ -1212,9 +1251,7 @@ export async function generatePrintifyMockup(
             return data;
           },
           {
-            // Async job pattern lets us wait well past the old App Proxy 30s limit.
-            // Total budget ~120s: 0.5s + 1s + 2s*60 attempts.
-            retries: 60,
+            retries: pollRetries,
             minTimeout: 500,
             maxTimeout: 2000,
             onFailedAttempt: (err) => {
@@ -1223,14 +1260,26 @@ export async function generatePrintifyMockup(
             },
           }
         );
+        mockupData = mergeMockupImages(mockupData, polled);
+        if (supplementInline) {
+          console.log(
+            `[Printify Mockup] Merged inline + polled images (${mockupData.images.length} total) after ${Math.round((Date.now() - pollStarted) / 1000)}s`,
+          );
+        }
       } catch (pollErr: any) {
-        const elapsedSec = Math.round((Date.now() - pollStarted) / 1000);
-        const placementSummary = effectiveAopPositions?.length
-          ? `placeholder(s): ${effectiveAopPositions.map((p) => p.position).join(", ")}`
-          : `placement: ${effectivePrintPlacement ?? (doubleSided ? "both" : "front")}`;
-        throw new Error(
-          `Printify did not return mockup images after ${elapsedSec}s for blueprint ${blueprintId}, provider ${providerId}, variant ${variantId} (${placementSummary}). This product may need its Printify placeholder mapping updated.`,
-        );
+        if (mockupData && supplementInline) {
+          console.warn(
+            `[Printify Mockup] Supplement poll failed after ${Math.round((Date.now() - pollStarted) / 1000)}s — using inline image(s) only`,
+          );
+        } else {
+          const elapsedSec = Math.round((Date.now() - pollStarted) / 1000);
+          const placementSummary = effectiveAopPositions?.length
+            ? `placeholder(s): ${effectiveAopPositions.map((p) => p.position).join(", ")}`
+            : `placement: ${effectivePrintPlacement ?? (doubleSided ? "both" : "front")}`;
+          throw new Error(
+            `Printify did not return mockup images after ${elapsedSec}s for blueprint ${blueprintId}, provider ${providerId}, variant ${variantId} (${placementSummary}). This product may need its Printify placeholder mapping updated.`,
+          );
+        }
       }
     }
 

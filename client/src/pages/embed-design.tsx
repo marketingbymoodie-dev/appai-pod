@@ -47,7 +47,7 @@ import {
   flatViewsForColor,
   renderFlatMockupDataUrl,
 } from "@/components/designer/FlatProductPlacer/lib/flatMockupPreview";
-import { resolveFlatBlankColorId, resolveFlatPlacementGeometryKey } from "@/components/designer/FlatProductPlacer/lib/flatAssets";
+import { resolveFlatBlankColorId, resolveFlatPlacementGeometryKey, resolveFlatBlank } from "@/components/designer/FlatProductPlacer/lib/flatAssets";
 import { STOREFRONT_FREE_GENERATION_LIMIT, storefrontArtworksRemaining } from "@shared/storefront-credits";
 import {
   frameColorsRedundantWithSizes,
@@ -1324,6 +1324,23 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const showFrameColorSelector =
     frameColorObjects.length > 0 && !frameOptionsRedundantWithSizes;
 
+  /** Flat/mesh on-the-fly preview — respects merchant `storefrontMockupMode` override. */
+  const usesFlatOnTheFlyPreview = useMemo(() => {
+    const hasFlatAssets = !!(
+      (productTypeConfig?.onTheFlyTier === "flat" ||
+        productTypeConfig?.onTheFlyTier === "mesh") &&
+      productTypeConfig?.flatCalibration
+    );
+    const mode = productTypeConfig?.effectiveStorefrontMockupMode;
+    if (mode === "printify" || mode === "aop") return false;
+    if (mode === "flat") return hasFlatAssets;
+    return hasFlatAssets;
+  }, [
+    productTypeConfig?.effectiveStorefrontMockupMode,
+    productTypeConfig?.onTheFlyTier,
+    productTypeConfig?.flatCalibration,
+  ]);
+
   // When OPTION duplicates SIZE (tapestry orientations), keep frameColor aligned for variantMap.
   useEffect(() => {
     if (!frameOptionsRedundantWithSizes || !selectedSize) return;
@@ -1803,6 +1820,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     selectedFrameColor,
     isApparel,
   ]);
+
+  const flatCalibrationBlankUrl = useMemo(() => {
+    if (!usesFlatOnTheFlyPreview || !productTypeConfig?.flatCalibration || !flatBlankColorId) {
+      return null;
+    }
+    const blank = resolveFlatBlank(productTypeConfig.flatCalibration, flatBlankColorId);
+    return blank?.front || null;
+  }, [usesFlatOnTheFlyPreview, productTypeConfig?.flatCalibration, flatBlankColorId]);
+
   const flatPlacerGeometryKey = useMemo(() => {
     if (!productTypeConfig?.flatCalibration) return flatBlankColorId;
     return resolveFlatPlacementGeometryKey(productTypeConfig.flatCalibration, {
@@ -2687,9 +2713,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
       if (durableMockups.length > 0) {
         setPrintifyMockups(durableMockups);
-        const isFlatTier =
-          productTypeConfig?.onTheFlyTier === "flat" ||
-          productTypeConfig?.onTheFlyTier === "mesh";
+        const isFlatTier = usesFlatOnTheFlyPreview;
         setPrintifyMockupImages(
           durableMockups.map((url: string, i: number) => ({
             url,
@@ -3620,10 +3644,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
         setAopPatternUrl(null);
         setShowPatternStep(true);
-      } else if (
-        (productTypeConfig.onTheFlyTier === "flat" || productTypeConfig.onTheFlyTier === "mesh") &&
-        productTypeConfig.flatCalibration
-      ) {
+      } else if (usesFlatOnTheFlyPreview) {
         setFlatPlacerEditOpen(true);
       } else {
         fetchPrintifyMockups(
@@ -3637,7 +3658,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         );
       }
     }
-  }, [isSharedDesign, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, mockupLoading, mockupFailed, transform, fetchPrintifyMockups]);
+  }, [isSharedDesign, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, mockupLoading, mockupFailed, transform, fetchPrintifyMockups, useAopCustomizer, usesFlatOnTheFlyPreview]);
 
   // Fallback: trigger mockups if generation completed but productTypeConfig wasn't ready during onSuccess.
   // Also handles session restore. For AOP: show Pattern Customizer instead of auto-fetching mockups.
@@ -3661,10 +3682,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       return;
     }
 
-    if (
-      (productTypeConfig.onTheFlyTier === "flat" || productTypeConfig.onTheFlyTier === "mesh") &&
-      productTypeConfig.flatCalibration
-    ) {
+    if (usesFlatOnTheFlyPreview) {
       setFlatPlacerEditOpen(true);
       return;
     }
@@ -3684,11 +3702,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // Mark mockups as stale when transform changes and mockups already exist
   useEffect(() => {
     if (!printifyTransformEligible) return;
-    if (
-      (productTypeConfig?.onTheFlyTier === "flat" ||
-        productTypeConfig?.onTheFlyTier === "mesh") &&
-      productTypeConfig?.flatCalibration
-    ) {
+    if (usesFlatOnTheFlyPreview) {
       return;
     }
     if (suppressMockupStaleRef.current) {
@@ -3719,11 +3733,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   // When frame color changes, swap mockups from the per-color cache or auto-refetch
   useEffect(() => {
-    if (
-      (productTypeConfig?.onTheFlyTier === "flat" ||
-        productTypeConfig?.onTheFlyTier === "mesh") &&
-      productTypeConfig?.flatCalibration
-    ) {
+    if (usesFlatOnTheFlyPreview) {
       return;
     }
 
@@ -3767,11 +3777,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   // When size changes, swap mockups from size+color cache or mark stale / refetch
   useEffect(() => {
-    if (
-      (productTypeConfig?.onTheFlyTier === "flat" ||
-        productTypeConfig?.onTheFlyTier === "mesh") &&
-      productTypeConfig?.flatCalibration
-    ) {
+    if (usesFlatOnTheFlyPreview) {
       return;
     }
 
@@ -3928,27 +3934,29 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   /** Color-accurate garment photo from Shopify variant catalog (falls back to catalog placeholder). */
   const colorAwareBlankUrl = useMemo(() => {
-    if (productTypeConfig?.designerType !== "apparel" || !selectedSize) return null;
     const catalog = shopifyVariants.length > 0 ? shopifyVariants : variants;
-    if (catalog.length === 0) return null;
+    if (catalog.length === 0 || !selectedSize) return null;
     const sizeName = printSizes.find((s) => s.id === selectedSize)?.name ?? selectedSize;
     const frameName =
       frameColorObjects.find((f) => f.id === selectedFrameColor)?.name ?? selectedFrameColor ?? "";
+    const needsColorForVariantMatch =
+      showFrameColorSelector || frameOptionsRedundantWithSizes;
     return resolveVariantImageForSelection(
       catalog,
       sizeName,
       frameName,
-      showFrameColorSelector,
+      needsColorForVariantMatch,
       selectedFrameColor || undefined,
     );
   }, [
-    productTypeConfig?.designerType,
     selectedSize,
     selectedFrameColor,
     shopifyVariants,
     variants,
     printSizes,
     frameColorObjects,
+    showFrameColorSelector,
+    frameOptionsRedundantWithSizes,
   ]);
 
   const getPreferredMockupUrl = useCallback((opts?: { cartSafeOnly?: boolean }): string => {
@@ -4033,9 +4041,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
 
     const flatOnTheFlyEligible = !!(
-      (productTypeConfig?.onTheFlyTier === "flat" ||
-        productTypeConfig?.onTheFlyTier === "mesh") &&
-      productTypeConfig?.flatCalibration &&
+      usesFlatOnTheFlyPreview &&
       generatedDesign?.imageUrl &&
       !flatRenderFailed
     );
@@ -4052,9 +4058,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
 
     const flatPlacerOn = !!(
-      (productTypeConfig?.onTheFlyTier === "flat" ||
-        productTypeConfig?.onTheFlyTier === "mesh") &&
-      productTypeConfig?.flatCalibration &&
+      usesFlatOnTheFlyPreview &&
       generatedDesign?.imageUrl &&
       !flatRenderFailed &&
       flatPlacerEditOpen
@@ -4402,10 +4406,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           setAopPendingMotifUrl(toAbsoluteImageUrl(imageUrl));
           setAopPatternUrl(null);
           setShowPatternStep(true);
-        } else if (
-          (productTypeConfig?.onTheFlyTier === "flat" || productTypeConfig?.onTheFlyTier === "mesh") &&
-          productTypeConfig?.flatCalibration
-        ) {
+        } else if (usesFlatOnTheFlyPreview) {
           setFlatPlacerEditOpen(true);
         } else {
           console.log('[Mockups] Triggering mockup generation');
@@ -4765,10 +4766,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           setAopPendingMotifUrl(toAbsoluteImageUrl(importedImageUrl));
           setAopPatternUrl(null);
           setShowPatternStep(true);
-        } else if (
-          (productTypeConfig.onTheFlyTier === "flat" || productTypeConfig.onTheFlyTier === "mesh") &&
-          productTypeConfig.flatCalibration
-        ) {
+        } else if (usesFlatOnTheFlyPreview) {
           setFlatPlacerEditOpen(true);
         } else {
           fetchPrintifyMockups(toAbsoluteImageUrl(importedImageUrl), productTypeConfig.id, selectedSize, selectedFrameColor || 'default', zoomDefault, 50, 50);
@@ -5091,9 +5089,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (isAddingToCart) return; // double-click guard
 
     const flatEditorOpen = !!(
-      (productTypeConfig?.onTheFlyTier === "flat" ||
-        productTypeConfig?.onTheFlyTier === "mesh") &&
-      productTypeConfig?.flatCalibration &&
+      usesFlatOnTheFlyPreview &&
       generatedDesign?.imageUrl &&
       !flatRenderFailed &&
       flatPlacerEditOpen
@@ -5109,9 +5105,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
     if (mockupsStale) {
       const flatOnTheFly = !!(
-        (productTypeConfig?.onTheFlyTier === "flat" ||
-          productTypeConfig?.onTheFlyTier === "mesh") &&
-        productTypeConfig?.flatCalibration &&
+        usesFlatOnTheFlyPreview &&
         generatedDesign?.imageUrl &&
         !flatRenderFailed
       );
@@ -5145,12 +5139,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     // re-run handleAddToCart once mockups are ready via the atcWaitingForMockups path.
     const hasMockupProduct = !!(productTypeConfig?.hasPrintifyMockups);
     const hasMockups = printifyMockups.length > 0 || printifyMockupImages.length > 0;
-    const flatOnTheFlyCart = !!(
-      (productTypeConfig?.onTheFlyTier === "flat" ||
-        productTypeConfig?.onTheFlyTier === "mesh") &&
-      productTypeConfig?.flatCalibration &&
-      !flatRenderFailed
-    );
+    const flatOnTheFlyCart = !!(usesFlatOnTheFlyPreview && !flatRenderFailed);
     if (
       hasMockupProduct &&
       !hasMockups &&
@@ -6647,9 +6636,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const selectedFrameColorConfig = frameColorObjects.find((f) => f.id === selectedFrameColor) || null;
 
   const flatPlacerEligible = !!(
-    (productTypeConfig?.onTheFlyTier === "flat" ||
-      productTypeConfig?.onTheFlyTier === "mesh") &&
-    productTypeConfig?.flatCalibration &&
+    usesFlatOnTheFlyPreview &&
     generatedDesign?.imageUrl &&
     !flatRenderFailed
   );
@@ -8244,11 +8231,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                           const matched = resolveFrameColorForSize(nextSize, frameColorObjects);
                           if (matched) setSelectedFrameColor(matched);
                         }
-                        const flatOnTheFly = !!(
-                          (productTypeConfig?.onTheFlyTier === "flat" ||
-                            productTypeConfig?.onTheFlyTier === "mesh") &&
-                          productTypeConfig?.flatCalibration
-                        );
+                        const flatOnTheFly = usesFlatOnTheFlyPreview;
                         if (!flatOnTheFly) {
                           setTransform({ scale: defaultZoom, x: 50, y: 50 });
                         }
@@ -8287,11 +8270,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                               if (!generatedDesign?.imageUrl || !productTypeConfig || !selectedSize || useAopCustomizer) {
                                 return;
                               }
-                              const flatOnTheFly = !!(
-                                (productTypeConfig.onTheFlyTier === "flat" ||
-                                  productTypeConfig.onTheFlyTier === "mesh") &&
-                                productTypeConfig.flatCalibration
-                              );
+                              const flatOnTheFly = usesFlatOnTheFlyPreview;
                               if (flatOnTheFly) {
                                 setFlatPlacerState((prev) => ({
                                   view: prev?.view ?? "front",
@@ -8861,6 +8840,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       printShape={productTypeConfig?.printShape || "rectangle"}
                       canvasConfig={productTypeConfig?.canvasConfig}
                       blankImageUrl={
+                        flatCalibrationBlankUrl ||
                         colorAwareBlankUrl ||
                         catalogPreviewImages[catalogPreviewIndex] ||
                         catalogPreviewImages[0] ||

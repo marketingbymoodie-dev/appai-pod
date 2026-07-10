@@ -10,6 +10,30 @@ describe("productVariantOptions", () => {
   it("extractDimensionalKey parses inch dimensions", () => {
     expect(extractDimensionalKey('26" x 36"')).toBe("26x36");
     expect(extractDimensionalKey("36x26")).toBe("36x26");
+    expect(extractDimensionalKey("26''_×_36''")).toBe("26x36");
+    expect(extractDimensionalKey("36''_×_26''")).toBe("36x26");
+    expect(extractDimensionalKey("104''_x_88\"")).toBe("104x88");
+  });
+
+  it("resolveSizeAspectRatio from Shopify-style size id when width/height missing", () => {
+    expect(
+      resolveSizeAspectRatio({ id: "36''_×_26''", name: "36'' × 26''", width: 0, height: 0 }),
+    ).toBe("18:13");
+    expect(
+      resolveSizeAspectRatio({ id: "26''_×_36''", name: "26'' × 36''", width: 0, height: 0 }),
+    ).toBe("13:18");
+  });
+
+  it("detects redundant OPTION when ids use Shopify inch encoding", () => {
+    const sizes = [
+      { id: "26''_×_36''", name: "26'' × 36''", width: 0, height: 0 },
+      { id: "36''_×_26''", name: "36'' × 26''", width: 0, height: 0 },
+    ];
+    const frameColors = [
+      { id: "26''_×_36''", name: "26'' × 36''" },
+      { id: "36''_×_26''", name: "36'' × 26''" },
+    ];
+    expect(frameColorsRedundantWithSizes(sizes, frameColors, "Option")).toBe(true);
   });
 
   it("detects tapestry-style redundant option dimension", () => {
