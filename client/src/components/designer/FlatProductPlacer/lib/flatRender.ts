@@ -1130,18 +1130,19 @@ export type WeaveConfig = {
   multiplyAlpha: number;
 };
 
+// Defaults hand-tuned in the admin weave panel against Printify's tapestry render (2026-07).
 export const DEFAULT_WEAVE_CONFIG: WeaveConfig = {
-  weftMin: 12,
-  weftMax: 20,
-  warpMin: 4,
+  weftMin: 2,
+  weftMax: 5,
+  warpMin: 7,
   warpMax: 8,
-  scale: 1.15,
-  slub: 26,
-  cellNoise: 14,
-  grooveTone: 62,
-  ridgeTone: 172,
-  overlayAlpha: 0.85,
-  multiplyAlpha: 0.3,
+  scale: 0.35,
+  slub: 54,
+  cellNoise: 13,
+  grooveTone: 90, // groove darkness 38
+  ridgeTone: 172, // ridge brightness 44
+  overlayAlpha: 0.4,
+  multiplyAlpha: 0.45,
 };
 
 const WEAVE_STORAGE_KEY = "appai:weaveConfig";
