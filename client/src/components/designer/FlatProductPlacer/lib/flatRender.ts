@@ -1103,7 +1103,96 @@ function solidifyMaskForClip(
   return solid;
 }
 
-/** Cached weave tile — regenerated only if missing (no per-frame cost). */
+// ---------------------------------------------------------------------------
+// Fabric weave texture — tunable config
+// ---------------------------------------------------------------------------
+
+export type WeaveConfig = {
+  /** Horizontal (weft) yarn thickness range, px in the tile. */
+  weftMin: number;
+  weftMax: number;
+  /** Vertical (warp) yarn thickness range, px in the tile. */
+  warpMin: number;
+  warpMax: number;
+  /** Pattern scale multiplier on the rendered mockup (bigger = coarser). */
+  scale: number;
+  /** Per-yarn brightness variation (slub / thread irregularity), 0–60. */
+  slub: number;
+  /** Extra per-cell brightness wobble, 0–40. */
+  cellNoise: number;
+  /** Groove tone 0–128 — lower = darker crosshatch lines. */
+  grooveTone: number;
+  /** Thread highlight tone 128–255 — higher = shinier ridges. */
+  ridgeTone: number;
+  /** Overlay pass strength 0–1 (texture contrast). */
+  overlayAlpha: number;
+  /** Multiply pass strength 0–1 (overall darkening). */
+  multiplyAlpha: number;
+};
+
+export const DEFAULT_WEAVE_CONFIG: WeaveConfig = {
+  weftMin: 12,
+  weftMax: 20,
+  warpMin: 4,
+  warpMax: 8,
+  scale: 1.15,
+  slub: 26,
+  cellNoise: 14,
+  grooveTone: 62,
+  ridgeTone: 172,
+  overlayAlpha: 0.85,
+  multiplyAlpha: 0.3,
+};
+
+const WEAVE_STORAGE_KEY = "appai:weaveConfig";
+
+let activeWeaveConfig: WeaveConfig | null = null;
+
+function loadStoredWeaveConfig(): WeaveConfig {
+  try {
+    const raw = window.localStorage.getItem(WEAVE_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        return { ...DEFAULT_WEAVE_CONFIG, ...parsed };
+      }
+    }
+  } catch {
+    // Storage unavailable (partitioned iframe / privacy mode) — use defaults.
+  }
+  return { ...DEFAULT_WEAVE_CONFIG };
+}
+
+export function getWeaveConfig(): WeaveConfig {
+  if (!activeWeaveConfig) activeWeaveConfig = loadStoredWeaveConfig();
+  return activeWeaveConfig;
+}
+
+/** Update weave settings (admin tuning panel). Persists per-browser and
+ *  invalidates the cached tile so the next render uses the new values. */
+export function setWeaveConfig(patch: Partial<WeaveConfig>): WeaveConfig {
+  activeWeaveConfig = { ...getWeaveConfig(), ...patch };
+  fabricWeaveTile = null;
+  try {
+    window.localStorage.setItem(WEAVE_STORAGE_KEY, JSON.stringify(activeWeaveConfig));
+  } catch {
+    // Persistence is best-effort; in-memory config still applies this session.
+  }
+  return activeWeaveConfig;
+}
+
+export function resetWeaveConfig(): WeaveConfig {
+  activeWeaveConfig = { ...DEFAULT_WEAVE_CONFIG };
+  fabricWeaveTile = null;
+  try {
+    window.localStorage.removeItem(WEAVE_STORAGE_KEY);
+  } catch {
+    // Ignore storage errors.
+  }
+  return activeWeaveConfig;
+}
+
+/** Cached weave tile — regenerated when the config changes. */
 let fabricWeaveTile: HTMLCanvasElement | null = null;
 
 /** Deterministic PRNG so the weave looks identical on every render/session. */
@@ -1118,10 +1207,10 @@ function makeLcg(seed: number): () => number {
 /**
  * Irregular plain-weave tile centred on neutral gray for overlay blending:
  * values above 128 lift thread tops (visible in dark art), values below 128
- * cut grooves (visible in light art). Yarn widths and brightness vary per
+ * cut grooves (visible in light art). Yarn thickness and brightness vary per
  * thread (linen-style slubs) so it reads as woven fabric, not a printed grid.
  */
-function getFabricWeaveTile(): HTMLCanvasElement {
+function getFabricWeaveTile(cfg: WeaveConfig): HTMLCanvasElement {
   if (fabricWeaveTile) return fabricWeaveTile;
   const size = 160;
   const tile = document.createElement("canvas");
@@ -1132,22 +1221,23 @@ function getFabricWeaveTile(): HTMLCanvasElement {
 
   const rand = makeLcg(0x5eed);
 
-  // Irregular yarn bands: widths 4–8px, last band absorbs the remainder so
-  // the tile still wraps seamlessly.
-  const makeBands = () => {
+  // Irregular yarn bands; last band absorbs the remainder so the tile wraps.
+  const makeBands = (minW: number, maxW: number) => {
+    const lo = Math.max(2, Math.round(Math.min(minW, maxW)));
+    const hi = Math.max(lo, Math.round(Math.max(minW, maxW)));
     const bands: { start: number; width: number; tone: number }[] = [];
     let pos = 0;
     while (pos < size) {
-      let w = 4 + Math.floor(rand() * 5);
-      if (size - pos < 4 || pos + w > size) w = size - pos;
+      let w = lo + Math.floor(rand() * (hi - lo + 1));
+      if (size - pos < lo || pos + w > size) w = size - pos;
       // Per-yarn brightness wobble — slub/thickness variation along the cloth.
-      bands.push({ start: pos, width: w, tone: (rand() - 0.5) * 26 });
+      bands.push({ start: pos, width: w, tone: (rand() - 0.5) * cfg.slub });
       pos += w;
     }
     return bands;
   };
-  const rows = makeBands();
-  const cols = makeBands();
+  const rows = makeBands(cfg.weftMin, cfg.weftMax); // horizontal yarns
+  const cols = makeBands(cfg.warpMin, cfg.warpMax); // vertical yarns
 
   const gray = (v: number) => {
     const c = Math.max(0, Math.min(255, Math.round(v)));
@@ -1161,14 +1251,14 @@ function getFabricWeaveTile(): HTMLCanvasElement {
       const x = col.start;
       const y = row.start;
       const warpOnTop = (ri + ci) % 2 === 0;
-      const slub = (row.tone + col.tone) / 2 + (rand() - 0.5) * 14;
+      const slub = (row.tone + col.tone) / 2 + (rand() - 0.5) * cfg.cellNoise;
 
       // Yarn body: raised yarn catches light, recessed yarn sits lower.
       ctx.fillStyle = gray((warpOnTop ? 146 : 118) + slub);
       ctx.fillRect(x, y, col.width, row.width);
 
       // Bright ridge along the raised yarn — jittered so ridges don't align.
-      ctx.fillStyle = gray(172 + slub);
+      ctx.fillStyle = gray(cfg.ridgeTone + slub);
       if (warpOnTop) {
         const ry = y + 1 + Math.floor(rand() * Math.max(1, row.width - 2));
         ctx.fillRect(x + 1, ry, Math.max(1, col.width - 2), 1);
@@ -1178,7 +1268,7 @@ function getFabricWeaveTile(): HTMLCanvasElement {
       }
 
       // Deep grooves between yarns — darkness varies per cell.
-      ctx.fillStyle = gray(62 + (rand() - 0.5) * 24);
+      ctx.fillStyle = gray(cfg.grooveTone + (rand() - 0.5) * 24);
       if (warpOnTop) {
         ctx.fillRect(x, y, 1, row.width);
         ctx.fillRect(x + col.width - 1, y, 1, row.width);
@@ -1205,15 +1295,15 @@ function applyProceduralFabricWeave(
   w: number,
   h: number,
 ): void {
-  const tile = getFabricWeaveTile();
+  const cfg = getWeaveConfig();
+  const tile = getFabricWeaveTile(cfg);
   const weave = document.createElement("canvas");
   weave.width = w;
   weave.height = h;
   const wctx = weave.getContext("2d");
   if (!wctx) return;
 
-  // Coarse threads: ~6–7px visible yarns on a ~900px preview (tile yarns are 4–8px).
-  const scale = 1.15;
+  const scale = Math.max(0.25, cfg.scale);
   const pattern = wctx.createPattern(tile, "repeat");
   if (!pattern) return;
   wctx.save();
@@ -1229,11 +1319,11 @@ function applyProceduralFabricWeave(
   artCtx.save();
   // Pass 1: overlay — strong weave contrast without flattening the art.
   artCtx.globalCompositeOperation = "overlay";
-  artCtx.globalAlpha = 0.85;
+  artCtx.globalAlpha = Math.max(0, Math.min(1, cfg.overlayAlpha));
   artCtx.drawImage(weave, 0, 0);
   // Pass 2: multiply — fabric absorbs light, matching Printify's darker render.
   artCtx.globalCompositeOperation = "multiply";
-  artCtx.globalAlpha = 0.3;
+  artCtx.globalAlpha = Math.max(0, Math.min(1, cfg.multiplyAlpha));
   artCtx.drawImage(weave, 0, 0);
   artCtx.restore();
 }
