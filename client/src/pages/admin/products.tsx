@@ -1030,25 +1030,29 @@ export default function AdminProducts() {
                           Refresh Colors
                         </Button>
                       )}
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleUpdateShopifyProduct(pt)}
-                        disabled={shopifyMutatingProductId === pt.id}
-                        data-testid={`button-refresh-shopify-${pt.id}`}
-                      >
-                        {pt.shopifyProductId ? (
-                          <>
-                            <RefreshCw className={`h-3 w-3 mr-1 ${shopifyMutatingProductId === pt.id ? 'animate-spin' : ''}`} />
-                            Refresh Shopify
-                          </>
-                        ) : (
-                          <>
-                            <Upload className={`h-3 w-3 mr-1 ${shopifyMutatingProductId === pt.id ? 'animate-spin' : ''}`} />
-                            Send to Shopify
-                          </>
-                        )}
-                      </Button>
+                      {pt.shopifyProductId ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleUpdateShopifyProduct(pt)}
+                          disabled={shopifyMutatingProductId === pt.id}
+                          data-testid={`button-refresh-shopify-${pt.id}`}
+                        >
+                          <RefreshCw className={`h-3 w-3 mr-1 ${shopifyMutatingProductId === pt.id ? 'animate-spin' : ''}`} />
+                          Refresh Shopify
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => navigate(`/admin/customizer-pages?createForProductType=${pt.id}`)}
+                          title="Set up a storefront customizer page for this product — the Shopify product is created automatically as part of that flow."
+                          data-testid={`button-create-customizer-page-${pt.id}`}
+                        >
+                          <Upload className="h-3 w-3 mr-1" />
+                          Create Customizer Page
+                        </Button>
+                      )}
                       {pt.shopifyProductId && (
                         <Button
                           variant="outline"

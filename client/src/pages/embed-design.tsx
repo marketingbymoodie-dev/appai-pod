@@ -867,9 +867,15 @@ if (typeof window !== 'undefined' && !(window as any).__APP_AI_EMBED_PINGED__) {
  *   Renders the IDENTICAL customizer UI but sources data from the admin-authenticated /api/* endpoints
  *   (no shop param, no storefront identity/cart/checkout/shadow-SKU). Lets the Generator Tester always
  *   stay in sync with the live customizer without maintaining a separate copy.
+ * - merchant-studio: Hosted in-process inside the merchant admin "My Designs" studio. Unlike admin-tester,
+ *   this uses the SAME storefront endpoints (config, generate, mockups, save-design, my-designs) as real
+ *   customers so output and save behaviour are identical — but identity comes from the merchant's own
+ *   admin session (not an anonymous localStorage id), and the generate call omits customerId so billing
+ *   stays on the shop's plan quota rather than the 10-free-generation customer bucket. Cart/checkout/
+ *   shadow-SKU UI is hidden — merchants are designing a permanent product, not shopping.
  * - standalone: Direct access without Shopify context. Uses standard auth.
  */
-type RuntimeMode = 'storefront' | 'admin-embedded' | 'admin-tester' | 'standalone';
+type RuntimeMode = 'storefront' | 'admin-embedded' | 'admin-tester' | 'merchant-studio' | 'standalone';
 
 function detectRuntimeMode(params: URLSearchParams): RuntimeMode {
   const path = window.location.pathname;
@@ -973,10 +979,17 @@ function ProductInfoSections({
  * When omitted (storefront, /s/designer, standalone) the component behaves exactly as before.
  */
 export interface EmbedDesignProps {
-  embeddedContext?: {
-    mode: 'admin-tester';
-    productTypeId: string | number;
-  };
+  embeddedContext?:
+    | {
+        mode: 'admin-tester';
+        productTypeId: string | number;
+      }
+    | {
+        mode: 'merchant-studio';
+        productTypeId: string | number;
+        /** Merchant's connected shop domain ({handle}.myshopify.com) — resolved server-side, not guessed from URL/referrer. */
+        shop: string;
+      };
 }
 
 /**
@@ -1084,21 +1097,24 @@ function resolvePostGenMockupUrl(
 export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) {
   const searchParams = new URLSearchParams(window.location.search);
 
-  // Detect runtime mode. When hosted in-process by the admin tester, the prop forces
-  // 'admin-tester' regardless of the surrounding admin URL/path.
+  // Detect runtime mode. When hosted in-process by the admin tester or merchant design
+  // studio, the prop forces that mode regardless of the surrounding admin URL/path.
   const runtimeMode: RuntimeMode = embeddedContext?.mode === 'admin-tester'
     ? 'admin-tester'
-    : detectRuntimeMode(searchParams);
+    : embeddedContext?.mode === 'merchant-studio'
+      ? 'merchant-studio'
+      : detectRuntimeMode(searchParams);
 
-  const isStorefront = runtimeMode === 'storefront';
-  // admin-tester: merchant admin "Art Generator Tester" host. Behaves like standalone for
-  // endpoints (admin-authenticated /api/*), with storefront identity/cart/checkout/shadow-SKU
-  // left inert. Force isEmbedded off so it renders as a clean standalone designer surface.
   const isAdminTester = runtimeMode === 'admin-tester';
+  // merchant-studio: merchant admin "My Designs" studio. Uses the same storefront endpoints
+  // as real customers (see RuntimeMode doc above) — folded into isStorefront so config/
+  // generate/mockup/save-design/my-designs all pick the storefront API branch automatically.
+  const isMerchantStudio = runtimeMode === 'merchant-studio';
+  const isStorefront = runtimeMode === 'storefront' || isMerchantStudio;
   // Legacy params - kept for backwards compatibility
   // Storefront mode must override embedded Shopify mode: when both
   // storefront=true and shopify=true appear in the URL, storefront wins.
-  const isEmbedded = !isAdminTester && searchParams.get("embedded") === "true";
+  const isEmbedded = !isAdminTester && !isMerchantStudio && searchParams.get("embedded") === "true";
   const isShopify = !isStorefront && !isAdminTester && searchParams.get("shopify") === "true";
   // State (not a plain const) so it can react LIVE to the parent embed
   // script's `ai-art-studio:set-scroll-mode` message. Shopify's theme editor
@@ -1117,7 +1133,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // Anonymous session ID for storefront free-generation tracking.
   // Persisted in localStorage so it survives page refreshes.
   const [anonSessionId] = useState(() => {
-    if (!isStorefront) return '';
+    // merchant-studio has its own server-resolved identity (see identity bootstrap effect below)
+    // and must never mix into a real customer's anonymous session on the same browser.
+    if (!isStorefront || isMerchantStudio) return '';
     const key = 'appai_session';
     let id = localStorage.getItem(key);
     if (!id) {
@@ -1443,6 +1461,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // Resolve shop domain - try URL param first, then try to extract from referrer
   // This handles cases where the theme extension hasn't been redeployed with the latest changes
   const resolveShopDomain = (): string => {
+    // merchant-studio runs in-process inside the admin app — there is no theme iframe or
+    // referrer to inspect, so the shop domain is resolved server-side and passed explicitly.
+    if (embeddedContext?.mode === 'merchant-studio') return embeddedContext.shop;
+
     // URL param is set by the theme embed (?shop=…). It is often the short handle only
     // (same as window.Shopify.shop), but /api/storefront/* must use *.myshopify.com
     // to match OAuth rows in the database.
@@ -1471,6 +1493,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   
   // Get the myshopify.com domain specifically for API calls that require it
   const getMyShopifyDomain = (): string | null => {
+    if (embeddedContext?.mode === 'merchant-studio') return embeddedContext.shop;
+
     const shopParam = searchParams.get("shop") || "";
     
     // If already has .myshopify.com suffix, use it
@@ -1541,7 +1565,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   });
 
   useEffect(() => {
-    if (!isStorefront || !shopDomain || !anonSessionId) return;
+    if (!isStorefront || isMerchantStudio || !shopDomain || !anonSessionId) return;
     const shopifyCustomerId = searchParams.get("customerId") || null;
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (storefrontIdentityToken) headers.Authorization = `Bearer ${storefrontIdentityToken}`;
@@ -1583,7 +1607,27 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       })
       .catch((err) => console.warn('[EmbedDesign] identity bootstrap failed', err));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isStorefront, shopDomain, anonSessionId]);
+  }, [isStorefront, isMerchantStudio, shopDomain, anonSessionId]);
+
+  // merchant-studio identity: resolve/create a dedicated "merchant" customer record via the
+  // admin-authenticated session (App Bridge token / admin cookie), instead of the anonymous
+  // localStorage flow above. Treated as already logged in — no OTP tray needed. `customer`
+  // (credits/freeGenerationsUsed) is deliberately left unset so the client-side
+  // "insufficient credits" gate never fires here; the server enforces the real limit
+  // (shop plan quota) on /api/storefront/generate.
+  useEffect(() => {
+    if (!isMerchantStudio || !shopDomain) return;
+    safeFetch(`${API_BASE}/api/appai/design-studio/identity?shop=${encodeURIComponent(shopDomain)}`, {
+      credentials: 'include',
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!data?.customerId) return;
+        setStorefrontCustomerId(data.customerId);
+        setGalleryLimit(data.savedLimit || 30);
+      })
+      .catch((err) => console.warn('[EmbedDesign] merchant-studio identity bootstrap failed', err));
+  }, [isMerchantStudio, shopDomain]);
 
   const completeStorefrontLogin = useCallback((data: {
     customerId: string;
@@ -4764,7 +4808,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         sessionToken: (isShopify && !isStorefront) ? sessionToken || undefined : undefined,
         productTypeId: productTypeConfig?.id ? String(productTypeConfig.id) : productTypeId,
         sessionId: isStorefront ? anonSessionId : undefined,
-        customerId: storefrontCustomerId || undefined,
+        // merchant-studio omits customerId so billing stays in "merchant" mode (shop plan
+        // quota) instead of the 10-free-generation customer bucket. The job is still linked
+        // to the merchant's identity afterward via the auto-save-on-success save-design call
+        // (see saveCustomerId fallback to storefrontCustomerId below).
+        customerId: isMerchantStudio ? undefined : (storefrontCustomerId || undefined),
       });
       scrollArtworkIntoViewOnMobile(50);
     } catch (err: any) {
@@ -7169,7 +7217,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
     return (
       <div className={`flex-1 min-w-0 ${className}`}>
-        {(isShopify || isStorefront) && generatedDesign ? (
+        {(isShopify || isStorefront) && !isMerchantStudio && generatedDesign ? (
           addedToCart ? (
             <Button
               className="w-full h-11 text-base font-medium bg-green-600 hover:bg-green-700 text-white"
@@ -8034,7 +8082,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               <div className="flex flex-col sm:flex-row gap-2">
                 {/* Primary action button — left, wider: Generate OR Add to Cart */}
                 <div className="hidden md:block flex-1 min-w-0">
-                  {(isShopify || isStorefront) && generatedDesign ? (
+                  {(isShopify || isStorefront) && !isMerchantStudio && generatedDesign ? (
                     /* ── Add to Cart state ── */
                     addedToCart ? (
                       <Button

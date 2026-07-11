@@ -206,6 +206,13 @@ export default function AdminCustomizerPages() {
   const [, navigate] = useLocation();
 
   const [createOpen, setCreateOpen] = useState(false);
+  // Deep-link from Products page ("Create Customizer Page" button):
+  // ?createForProductType={productTypeId} opens the wizard pre-selecting that product.
+  const [pendingCreateProductTypeId, setPendingCreateProductTypeId] = useState<number | null>(() => {
+    const raw = new URLSearchParams(window.location.search).get("createForProductType");
+    const parsed = raw ? parseInt(raw, 10) : NaN;
+    return Number.isFinite(parsed) ? parsed : null;
+  });
   const [deleteTarget, setDeleteTarget] = useState<CustomizerPage | null>(null);
   const [syncPricesTarget, setSyncPricesTarget] = useState<CustomizerPage | null>(null);
   const [editTarget, setEditTarget] = useState<CustomizerPage | null>(null);
@@ -286,6 +293,25 @@ export default function AdminCustomizerPages() {
     queryKey: ["/api/appai/blanks"],
     enabled: createOpen || !!editTarget,
   });
+
+  // Open the create wizard as soon as we know a deep-linked product is pending.
+  useEffect(() => {
+    if (pendingCreateProductTypeId != null) setCreateOpen(true);
+  }, [pendingCreateProductTypeId]);
+
+  // Once blanks have loaded, pre-select the deep-linked product and clear the query param.
+  useEffect(() => {
+    if (pendingCreateProductTypeId == null) return;
+    if (!blanksData?.blanks) return;
+    const match = blanksData.blanks.find((b) => b.productTypeId === pendingCreateProductTypeId);
+    if (match) {
+      setFormProductId(match.productId ? match.productId : `pt:${match.productTypeId}`);
+    }
+    setPendingCreateProductTypeId(null);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("createForProductType");
+    window.history.replaceState({}, "", url.toString());
+  }, [pendingCreateProductTypeId, blanksData]);
 
   const { data: adminStyles = [] } = useQuery<Array<{ id: number; name: string; category?: string | null }>>({
     queryKey: ["/api/admin/styles"],

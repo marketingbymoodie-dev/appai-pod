@@ -684,6 +684,59 @@ export const insertPublishedProductSchema = createInsertSchema(publishedProducts
 export type PublishedProduct = typeof publishedProducts.$inferSelect;
 export type InsertPublishedProduct = z.infer<typeof insertPublishedProductSchema>;
 
+// Design Products — permanent, browsable Shopify products merchants publish from a saved
+// My Designs studio design (generationJobs row). Unlike publishedProducts/customizerDesigns
+// (ephemeral shadow SKUs for a single anonymous customer's cart), these are real catalog
+// listings with a full size/color variant set, owned by the merchant, auto-fulfilled via
+// the same artwork + placement stored on the source generation job. Plan-limited (see
+// PLAN_DESIGN_PRODUCT_LIMITS in server/customizer-plans.ts) — only `status: "active"` rows
+// count against that limit; "inactive" rows stay in the library unpublished (Shopify draft).
+export const designProducts = pgTable("design_products", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  merchantId: varchar("merchant_id").notNull(),
+  shop: text("shop").notNull(),
+  jobId: varchar("job_id").notNull(),              // generationJobs.id — source artwork + placement
+  productTypeId: integer("product_type_id"),
+  shopifyProductId: text("shopify_product_id"),
+  handle: text("handle"),
+  title: text("title").notNull(),
+  status: text("status").notNull().default("active"), // active | inactive
+  /** { [shopifyVariantId]: { sizeId, colorId, printifyVariantId } } */
+  variantMap: json("variant_map"),
+  mockupUrls: json("mockup_urls"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertDesignProductSchema = createInsertSchema(designProducts).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type DesignProduct = typeof designProducts.$inferSelect;
+export type InsertDesignProduct = z.infer<typeof insertDesignProductSchema>;
+
+// Design Product Events — lightweight sales/ATC analytics for design products, backing the
+// My Orders stats dashboard. Populated from the orders/paid webhook (sale) and carts
+// create/update webhooks (atc), matched by design_products.variantMap.
+export const designProductEvents = pgTable("design_product_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  designProductId: varchar("design_product_id").notNull(),
+  eventType: text("event_type").notNull(),          // sale | atc
+  quantity: integer("quantity").notNull().default(1),
+  amountCents: integer("amount_cents"),              // only set for "sale" events
+  shopifyOrderId: text("shopify_order_id"),          // set for "sale" events
+  cartToken: text("cart_token"),                     // set for "atc" events (dedupe key)
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertDesignProductEventSchema = createInsertSchema(designProductEvents).omit({
+  id: true,
+  createdAt: true,
+});
+export type DesignProductEvent = typeof designProductEvents.$inferSelect;
+export type InsertDesignProductEvent = z.infer<typeof insertDesignProductEventSchema>;
+
 // Credit transactions
 export const creditTransactions = pgTable("credit_transactions", {
   id: serial("id").primaryKey(),

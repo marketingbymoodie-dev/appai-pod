@@ -21,7 +21,7 @@ import sharp from "sharp";
 import jwt from "jsonwebtoken";
 import { storage } from "./storage";
 import { pool, db } from "./db";
-import { customizerDesigns, customizerPages, generationJobs, productTypes, publishedProducts, cachedPanelImages } from "@shared/schema";
+import { customizerDesigns, customizerPages, generationJobs, productTypes, publishedProducts, cachedPanelImages, designProducts, designProductEvents } from "@shared/schema";
 import { eq, and, desc, inArray, sql, or } from "drizzle-orm";
 import { resolvePrintifyColorHex } from "@shared/printifyColorResolver";
 import { slugPrintifyColorId } from "@shared/printifyColorSlug";
@@ -70,7 +70,7 @@ import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { syncCreditEntitlementMetafield } from "./credit-entitlements";
 import { privacyPolicyHtml } from "./privacy-policy";
 import Stripe from "stripe";
-import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota } from "./customizer-plans";
+import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota, getDesignProductLimit, canActivateDesignProduct } from "./customizer-plans";
 import { extractUsageLineItemId, retryPendingOverageCharges } from "./usage-billing";
 import { peekMerchantGenerationQuota, quotaBlockBody } from "./generation-quota";
 import {
@@ -95,6 +95,7 @@ import {
   OVERAGE_PRICE_CENTS,
 } from "./overage-settings";
 import { logMerchantGeneration } from "./merchant-generation-log";
+import { recordDesignProductSalesForOrder, recordDesignProductAtcForCart } from "./design-product-events";
 import type { CustomizerPage } from "@shared/schema";
 import { ObjectStorageService, registerObjectStorageRoutes, objectStorageClient, getStorageDir } from "./replit_integrations/object_storage";
 import {
@@ -7176,9 +7177,10 @@ ${textEdgeRestrictions}
         }
       }
 
-      // Gallery limit check for logged-in customers (20 saved designs max)
-      const GALLERY_LIMIT = 20;
+      // Gallery limit check for logged-in customers (20 saved designs max; 30 for the
+      // merchant's own design-studio identity — see getGalleryLimitForCustomer).
       if (customerId) {
+        const GALLERY_LIMIT = await getGalleryLimitForCustomer(customerId);
         const savedCount = await db
           .select({ count: sql<number>`count(*)` })
           .from(generationJobs)
@@ -7882,6 +7884,35 @@ ${textEdgeRestrictions}
       // Only save if the job is complete (has an image)
       if (job.status !== 'complete' || !job.designImageUrl) {
         return res.status(400).json({ error: "Design generation is not complete yet" });
+      }
+
+      // Merchant design-studio identities skip the generate-time GALLERY_FULL check (their
+      // generate call omits customerId to preserve shop-plan billing), so enforce the cap
+      // here instead, at the point the job actually becomes "saved". Real customer identities
+      // are unaffected — they were already capped before this job could complete.
+      if (job.customerId !== customerId) {
+        const aliases = await storage.getCustomerAliases(customerId).catch(() => []);
+        if (aliases.some((a) => a.aliasType === MERCHANT_STUDIO_ALIAS_TYPE)) {
+          const savedCount = await db
+            .select({ count: sql<number>`count(*)` })
+            .from(generationJobs)
+            .where(
+              and(
+                eq(generationJobs.shop, shop),
+                eq(generationJobs.customerId, customerId),
+                eq(generationJobs.status, "complete"),
+              ),
+            );
+          const currentCount = Number(savedCount[0]?.count ?? 0);
+          if (currentCount >= MERCHANT_STUDIO_GALLERY_LIMIT) {
+            return res.status(400).json({
+              error: "GALLERY_FULL",
+              message: `Your saved designs library is full (${MERCHANT_STUDIO_GALLERY_LIMIT} max). Delete some designs to save new ones.`,
+              count: currentCount,
+              limit: MERCHANT_STUDIO_GALLERY_LIMIT,
+            });
+          }
+        }
       }
 
       // Link the job to the customer account
@@ -8981,7 +9012,7 @@ ${textEdgeRestrictions}
       if (!installation) {
         return res.status(403).json({ error: "Shop not authorized" });
       }
-      const GALLERY_LIMIT = 20;
+      const GALLERY_LIMIT = await getGalleryLimitForCustomer(customerId);
       console.log(`[MyDesigns] shop=${shop} customerId=${customerId}`);
       const rows = await db
         .select()
@@ -9817,9 +9848,57 @@ ${textEdgeRestrictions}
         })();
       }
 
+      // ── Permanent design-product sale recording (My Orders stats dashboard) ─
+      // Unlike the flat-fulfillment block above, this only writes an internal
+      // analytics row (no Printify/shipping calls), so it isn't gated behind
+      // FLAT_ORDER_FULFILLMENT_ENABLED — just a valid webhook HMAC. Dormant in
+      // practice until orders/paid is resubscribed in shopify.app.toml (see the
+      // comment there re: Protected Customer Data approval).
+      if (shop && hmacValid && Array.isArray(order.line_items)) {
+        void recordDesignProductSalesForOrder(shop, order).catch((e: any) =>
+          console.warn("[Shopify Orders Paid] design product sale recording failed:", e?.message || e),
+        );
+      }
+
       return res.status(200).send("OK");
     } catch (error: any) {
       console.error("[Shopify Orders Paid] error:", error);
+      return res.status(200).send("OK");
+    }
+  });
+
+  // ── Add-to-cart analytics for permanent design products (My Orders dashboard) ──
+  // Same Protected Customer Data gate as orders/paid above — subscriptions stay
+  // commented out in shopify.app.toml until approved. Handlers are wired now so
+  // enabling is just an app.toml + reinstall away.
+  app.post("/shopify/webhooks/carts-create", async (req: Request, res: Response) => {
+    try {
+      const shop = req.headers["x-shopify-shop-domain"] as string;
+      const hmacValid = verifyShopifyWebhookHmac(req);
+      if (shop && hmacValid) {
+        void recordDesignProductAtcForCart(shop, req.body || {}).catch((e: any) =>
+          console.warn("[Shopify Carts Create] atc recording failed:", e?.message || e),
+        );
+      }
+      return res.status(200).send("OK");
+    } catch (error: any) {
+      console.error("[Shopify Carts Create] error:", error);
+      return res.status(200).send("OK");
+    }
+  });
+
+  app.post("/shopify/webhooks/carts-update", async (req: Request, res: Response) => {
+    try {
+      const shop = req.headers["x-shopify-shop-domain"] as string;
+      const hmacValid = verifyShopifyWebhookHmac(req);
+      if (shop && hmacValid) {
+        void recordDesignProductAtcForCart(shop, req.body || {}).catch((e: any) =>
+          console.warn("[Shopify Carts Update] atc recording failed:", e?.message || e),
+        );
+      }
+      return res.status(200).send("OK");
+    } catch (error: any) {
+      console.error("[Shopify Carts Update] error:", error);
       return res.status(200).send("OK");
     }
   });
@@ -16006,6 +16085,38 @@ ${textEdgeRestrictions}
     return { ok: true, installation };
   }
 
+  // ==================== MERCHANT DESIGN STUDIO IDENTITY ====================
+  // Merchants create designs through the SAME storefront customizer real customers use
+  // (client renders EmbedDesign in-process with embeddedContext.mode = 'merchant-studio'),
+  // but identity comes from the admin session rather than an anonymous localStorage id.
+  // A dedicated customer-alias type keeps this fully separate from real shopper accounts,
+  // and lets us raise the saved-design cap (30, flat — see plan) without touching the
+  // 20-design cap that applies to real customers.
+  const MERCHANT_STUDIO_ALIAS_TYPE = "merchant_studio";
+  const MERCHANT_STUDIO_GALLERY_LIMIT = 30;
+
+  async function resolveMerchantStudioCustomer(merchantId: string, shop: string) {
+    return storage.resolveOrCreateCustomerAlias({
+      aliasType: MERCHANT_STUDIO_ALIAS_TYPE,
+      aliasValue: merchantId,
+      shop,
+      legacyUserId: `merchant_studio:${shop}:${merchantId}`,
+    });
+  }
+
+  /** Real customers keep the existing 20-design cap; the merchant's own studio gets 30 (flat, not plan-tied). */
+  async function getGalleryLimitForCustomer(customerId: string): Promise<number> {
+    try {
+      const aliases = await storage.getCustomerAliases(customerId);
+      if (aliases.some((a) => a.aliasType === MERCHANT_STUDIO_ALIAS_TYPE)) {
+        return MERCHANT_STUDIO_GALLERY_LIMIT;
+      }
+    } catch (err) {
+      console.warn("[getGalleryLimitForCustomer] alias lookup failed:", (err as Error)?.message);
+    }
+    return 20;
+  }
+
   /**
    * Legacy helper kept for older routes that still look up a merchant.
    * New /api/appai/* routes use resolveShopInstallation instead.
@@ -16036,6 +16147,538 @@ ${textEdgeRestrictions}
     }
     return { ok: true, merchant, installation };
   }
+
+  /**
+   * GET /api/appai/design-studio/identity
+   * Resolves (or creates) the merchant's own design-studio customer identity for their
+   * connected shop, plus their current saved-design count. The client (EmbedDesign in
+   * merchant-studio mode, and the My Designs library page) uses the returned shop +
+   * customerId for all subsequent storefront-API calls (generate/save-design/my-designs).
+   */
+  app.get("/api/appai/design-studio/identity", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+    const { merchant, installation } = resolved;
+    const shop: string = installation.shopDomain;
+
+    const customer = await resolveMerchantStudioCustomer(merchant.id, shop);
+
+    const savedCountRows = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(generationJobs)
+      .where(
+        and(
+          eq(generationJobs.shop, shop),
+          eq(generationJobs.customerId, customer.id),
+          eq(generationJobs.status, "complete"),
+        ),
+      );
+    const savedCount = Number(savedCountRows[0]?.count ?? 0);
+
+    res.json({
+      shop,
+      customerId: customer.id,
+      savedCount,
+      savedLimit: MERCHANT_STUDIO_GALLERY_LIMIT,
+    });
+  }));
+
+  // ==================== PERMANENT DESIGN PRODUCTS ====================
+  // "List as product" turns a saved My Designs studio design (generation_jobs row) into a
+  // real, browsable, non-customizable Shopify listing (design_products), auto-fulfilled via
+  // the SAME artwork stored on that job. See docs in shared/schema.ts (designProducts) and
+  // server/flat-order-fulfillment.ts (findDesignProductByVariant) for the fulfillment side.
+  //
+  // v1 scope: publishes variants for every size available on the design's product, all fixed
+  // to the ONE color/style the design was generated in (per-color re-rendering is a follow-up —
+  // see the plan's "Colors that can't render are excluded from the variant set" note).
+
+  /** Live Shopify prices for a product type's customizer page, keyed by "sizeId:colorId" / "sizeId:default". */
+  async function fetchCustomizerPagePriceMap(
+    shop: string,
+    installation: any,
+    productType: any,
+  ): Promise<Record<string, string>> {
+    try {
+      const allSizes = typeof productType.sizes === "string" ? JSON.parse(productType.sizes || "[]") : productType.sizes || [];
+      const allColors = typeof productType.frameColors === "string" ? JSON.parse(productType.frameColors || "[]") : productType.frameColors || [];
+      const pages = await storage.listCustomizerPagesByProductTypeId(productType.id);
+      const page = pages.find((p: any) => p.shop === shop && p.baseProductId);
+      if (!page) return {};
+      const prodRes = await shopifyApiCall(shop, installation.accessToken, `products/${page.baseProductId}.json?fields=id,variants`);
+      const variants = prodRes.data?.product?.variants || [];
+      const priceMap: Record<string, string> = {};
+      for (const v of variants) {
+        const size = allSizes.find((s: any) => s.name === v.option1);
+        if (!size) continue;
+        if (v.option2) {
+          const color = allColors.find((c: any) => c.name === v.option2);
+          if (color) priceMap[`${size.id}:${color.id}`] = v.price;
+        } else {
+          priceMap[`${size.id}:default`] = v.price;
+        }
+      }
+      return priceMap;
+    } catch (e: any) {
+      console.warn("[design-products] fetchCustomizerPagePriceMap failed:", e?.message ?? e);
+      return {};
+    }
+  }
+
+  /** Build the Shopify variant list + parallel {sizeId,colorId} metadata for a design product. */
+  function buildDesignProductVariants(
+    productType: any,
+    job: any,
+    priceMap: Record<string, string>,
+  ): {
+    shopifyVariants: Array<{ option1: string; option2?: string; price: string; sku: string; inventory_management: null; inventory_policy: string }>;
+    variantMeta: Array<{ sizeId: string; colorId: string }>;
+    productOptions: Array<{ name: string; values: string[] }>;
+  } {
+    const allSizes = typeof productType.sizes === "string" ? JSON.parse(productType.sizes || "[]") : productType.sizes || [];
+    const variantMap = typeof productType.variantMap === "string" ? JSON.parse(productType.variantMap || "{}") : productType.variantMap || {};
+    const savedSizeIds: string[] = typeof productType.selectedSizeIds === "string" ? JSON.parse(productType.selectedSizeIds || "[]") : productType.selectedSizeIds || [];
+    const sizeIdsToUse = savedSizeIds.length > 0 ? savedSizeIds : allSizes.map((s: any) => s.id);
+    const sizesToUse = allSizes.filter((s: any) => sizeIdsToUse.includes(s.id));
+
+    const jobColorId = job.frameColor || null;
+
+    const shopifyVariants: Array<{ option1: string; option2?: string; price: string; sku: string; inventory_management: null; inventory_policy: string }> = [];
+    const variantMeta: Array<{ sizeId: string; colorId: string }> = [];
+
+    for (const size of sizesToUse) {
+      const colorKey = jobColorId ? `${size.id}:${jobColorId}` : null;
+      const defaultKey = `${size.id}:default`;
+      if (!(colorKey && variantMap[colorKey]) && !variantMap[defaultKey]) continue;
+      const price = (colorKey && priceMap[colorKey]) || priceMap[defaultKey] || "0.00";
+      const numericPrice = parseFloat(price);
+      shopifyVariants.push({
+        option1: size.name,
+        price: Number.isFinite(numericPrice) && numericPrice > 0 ? numericPrice.toFixed(2) : "0.00",
+        sku: `DP-${productType.id}-${size.id}-${jobColorId || "default"}`,
+        inventory_management: null,
+        inventory_policy: "continue",
+      });
+      variantMeta.push({ sizeId: size.id, colorId: jobColorId || "default" });
+    }
+
+    const productOptions: Array<{ name: string; values: string[] }> = [];
+    if (shopifyVariants.length > 0) {
+      productOptions.push({ name: "Size", values: Array.from(new Set(shopifyVariants.map((v) => v.option1))) });
+    }
+
+    return { shopifyVariants, variantMeta, productOptions };
+  }
+
+  /**
+   * POST /api/appai/design-products
+   * Publish a saved My Designs studio design (generation_jobs row) as a permanent,
+   * browsable Shopify product. Plan-gated: at the active-product-design limit, the
+   * Shopify product is still created but as a draft (status "inactive").
+   */
+  app.post("/api/appai/design-products", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+    const { merchant, installation } = resolved;
+    const shop: string = installation.shopDomain;
+
+    const { jobId, title: titleOverride } = req.body as { jobId?: string; title?: string };
+    if (!jobId) return res.status(400).json({ error: "jobId is required" });
+
+    const job = await storage.getGenerationJob(jobId);
+    if (!job || job.shop !== shop) {
+      return res.status(404).json({ error: "Design not found" });
+    }
+    if (job.status !== "complete") {
+      return res.status(400).json({ error: "This design hasn't finished generating yet" });
+    }
+
+    const productTypeId = Number(job.productTypeId);
+    if (!Number.isFinite(productTypeId)) {
+      return res.status(400).json({ error: "This design has no product attached" });
+    }
+    const productType = await storage.getProductType(productTypeId);
+    if (!productType) return res.status(404).json({ error: "Product type not found" });
+
+    const plan = getEffectivePlan(installation as any, shop);
+    const activeCountRows = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(designProducts)
+      .where(and(eq(designProducts.merchantId, merchant.id), eq(designProducts.status, "active")));
+    const activeCount = Number(activeCountRows[0]?.count ?? 0);
+    const { allowed, limit } = canActivateDesignProduct(plan.planName, activeCount);
+    const initialStatus: "active" | "inactive" = allowed ? "active" : "inactive";
+
+    const priceMap = await fetchCustomizerPagePriceMap(shop, installation, productType);
+    const { shopifyVariants, variantMeta, productOptions } = buildDesignProductVariants(productType, job, priceMap);
+
+    if (shopifyVariants.length === 0) {
+      return res.status(400).json({ error: "Couldn't find any purchasable sizes for this design. Check the product's variant setup in the platform catalog." });
+    }
+    if (shopifyVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+      return res.status(400).json({ error: `Too many variants (${shopifyVariants.length}). Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}.` });
+    }
+
+    const imageUrl: string | null =
+      (Array.isArray(job.mockupUrls) && (job.mockupUrls as string[])[0]) ||
+      (job as any).thumbnailUrl ||
+      job.designImageUrl ||
+      null;
+    const rawTitle = (titleOverride && titleOverride.trim()) || job.userPrompt || `Custom ${productType.name}`;
+    const cleanTitle = rawTitle.slice(0, 250);
+
+    const shopifyProductPayload = {
+      product: {
+        title: cleanTitle,
+        body_html: job.userPrompt ? `<p>${String(job.userPrompt).replace(/</g, "&lt;")}</p>` : undefined,
+        vendor: merchant.storeName || "AI Art Studio",
+        product_type: productType.name,
+        status: initialStatus === "active" ? "active" : "draft",
+        published: initialStatus === "active",
+        tags: ["ai-art-studio-design", "design-product"],
+        options: productOptions.length > 0 ? productOptions : undefined,
+        variants: shopifyVariants,
+        images: imageUrl ? [{ src: imageUrl, alt: cleanTitle }] : undefined,
+      },
+    };
+
+    const createRes = await fetch(`https://${shop}/admin/api/2025-10/products.json`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": installation.accessToken },
+      body: JSON.stringify(shopifyProductPayload),
+    });
+    if (!createRes.ok) {
+      const errText = await createRes.text();
+      console.error("[design-products] Shopify create failed:", createRes.status, errText);
+      return res.status(502).json({ error: "Failed to create Shopify product", details: errText });
+    }
+    const created = await createRes.json();
+    const shopifyProductId = String(created.product.id);
+    const shopifyHandle = created.product.handle as string;
+    const createdVariants: any[] = created.product.variants || [];
+
+    const variantMapOut: Record<string, { sizeId: string; colorId: string }> = {};
+    createdVariants.forEach((v: any, idx: number) => {
+      const meta = variantMeta[idx];
+      if (meta) variantMapOut[String(v.id)] = meta;
+    });
+
+    if (initialStatus === "active") {
+      try {
+        await ensureProductPublishedToOnlineStore(shop, installation.accessToken, Number(shopifyProductId));
+      } catch (e: any) {
+        console.warn("[design-products] publish to online store failed:", e.message);
+      }
+    }
+
+    const [row] = await db
+      .insert(designProducts)
+      .values({
+        merchantId: merchant.id,
+        shop,
+        jobId: job.id,
+        productTypeId,
+        shopifyProductId,
+        handle: shopifyHandle,
+        title: cleanTitle,
+        status: initialStatus,
+        variantMap: variantMapOut,
+        mockupUrls: imageUrl ? [imageUrl] : [],
+      })
+      .returning();
+
+    res.json({
+      success: true,
+      designProduct: row,
+      shopifyProductId,
+      shopifyAdminUrl: `https://${shop}/admin/products/${shopifyProductId}`,
+      status: initialStatus,
+      limitReached: !allowed,
+      limit,
+    });
+  }));
+
+  /** GET /api/appai/design-products — merchant's published design listings. */
+  app.get("/api/appai/design-products", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+    const { merchant, installation } = resolved;
+    const shop: string = installation.shopDomain;
+
+    const rows = await db
+      .select()
+      .from(designProducts)
+      .where(and(eq(designProducts.merchantId, merchant.id), eq(designProducts.shop, shop)))
+      .orderBy(desc(designProducts.createdAt));
+
+    const plan = getEffectivePlan(installation as any, shop);
+    const limit = getDesignProductLimit(plan.planName);
+    const activeCount = rows.filter((r) => r.status === "active").length;
+
+    res.json({ designProducts: rows, activeCount, limit });
+  }));
+
+  /**
+   * GET /api/appai/design-products/stats — My Orders dashboard data source.
+   * Per-product units sold / revenue / add-to-carts / conversion, all-time and
+   * last 30 days. Backed by design_product_events (see server/design-product-events.ts);
+   * empty until sale/atc-producing webhooks are live (see shopify.app.toml notes).
+   */
+  app.get("/api/appai/design-products/stats", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+    const { merchant, installation } = resolved;
+    const shop: string = installation.shopDomain;
+
+    const products = await db
+      .select()
+      .from(designProducts)
+      .where(and(eq(designProducts.merchantId, merchant.id), eq(designProducts.shop, shop)))
+      .orderBy(desc(designProducts.createdAt));
+
+    const emptyBucket = () => ({ unitsSold: 0, revenueCents: 0, atc: 0, conversion: null as number | null });
+    const emptyTotals = () => ({ allTime: emptyBucket(), last30d: emptyBucket() });
+
+    if (products.length === 0) {
+      return res.json({ products: [], totals: emptyTotals() });
+    }
+
+    const ids = products.map((p) => p.id);
+    const statsResult = await pool.query<{
+      design_product_id: string;
+      sale_count_all: string; units_sold_all: string; revenue_cents_all: string; atc_count_all: string;
+      sale_count_30d: string; units_sold_30d: string; revenue_cents_30d: string; atc_count_30d: string;
+    }>(
+      `SELECT
+         design_product_id,
+         COUNT(*) FILTER (WHERE event_type = 'sale') AS sale_count_all,
+         COALESCE(SUM(quantity) FILTER (WHERE event_type = 'sale'), 0) AS units_sold_all,
+         COALESCE(SUM(amount_cents) FILTER (WHERE event_type = 'sale'), 0) AS revenue_cents_all,
+         COUNT(*) FILTER (WHERE event_type = 'atc') AS atc_count_all,
+         COUNT(*) FILTER (WHERE event_type = 'sale' AND created_at >= NOW() - INTERVAL '30 days') AS sale_count_30d,
+         COALESCE(SUM(quantity) FILTER (WHERE event_type = 'sale' AND created_at >= NOW() - INTERVAL '30 days'), 0) AS units_sold_30d,
+         COALESCE(SUM(amount_cents) FILTER (WHERE event_type = 'sale' AND created_at >= NOW() - INTERVAL '30 days'), 0) AS revenue_cents_30d,
+         COUNT(*) FILTER (WHERE event_type = 'atc' AND created_at >= NOW() - INTERVAL '30 days') AS atc_count_30d
+       FROM design_product_events
+       WHERE design_product_id = ANY($1::text[])
+       GROUP BY design_product_id`,
+      [ids],
+    );
+    const statsById = new Map(statsResult.rows.map((r) => [r.design_product_id, r]));
+
+    const productsOut = products.map((p) => {
+      const s = statsById.get(p.id);
+      const saleCountAll = Number(s?.sale_count_all ?? 0);
+      const atcCountAll = Number(s?.atc_count_all ?? 0);
+      const saleCount30d = Number(s?.sale_count_30d ?? 0);
+      const atcCount30d = Number(s?.atc_count_30d ?? 0);
+      return {
+        id: p.id,
+        title: p.title,
+        status: p.status,
+        shopifyProductId: p.shopifyProductId,
+        handle: p.handle,
+        mockupUrl: Array.isArray(p.mockupUrls) ? (p.mockupUrls as string[])[0] ?? null : null,
+        allTime: {
+          unitsSold: Number(s?.units_sold_all ?? 0),
+          revenueCents: Number(s?.revenue_cents_all ?? 0),
+          atc: atcCountAll,
+          conversion: atcCountAll > 0 ? saleCountAll / atcCountAll : null,
+        },
+        last30d: {
+          unitsSold: Number(s?.units_sold_30d ?? 0),
+          revenueCents: Number(s?.revenue_cents_30d ?? 0),
+          atc: atcCount30d,
+          conversion: atcCount30d > 0 ? saleCount30d / atcCount30d : null,
+        },
+      };
+    });
+
+    const totals = productsOut.reduce(
+      (acc, p) => {
+        acc.allTime.unitsSold += p.allTime.unitsSold;
+        acc.allTime.revenueCents += p.allTime.revenueCents;
+        acc.allTime.atc += p.allTime.atc;
+        acc.last30d.unitsSold += p.last30d.unitsSold;
+        acc.last30d.revenueCents += p.last30d.revenueCents;
+        acc.last30d.atc += p.last30d.atc;
+        return acc;
+      },
+      emptyTotals(),
+    );
+
+    res.json({ products: productsOut, totals });
+  }));
+
+  /** PATCH /api/appai/design-products/:id — activate/deactivate (flips Shopify active/draft). */
+  app.patch("/api/appai/design-products/:id", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+    const { merchant, installation } = resolved;
+    const shop: string = installation.shopDomain;
+
+    const { status } = req.body as { status?: "active" | "inactive" };
+    if (status !== "active" && status !== "inactive") {
+      return res.status(400).json({ error: "status must be 'active' or 'inactive'" });
+    }
+
+    const [row] = await db
+      .select()
+      .from(designProducts)
+      .where(and(eq(designProducts.id, req.params.id), eq(designProducts.merchantId, merchant.id)));
+    if (!row) return res.status(404).json({ error: "Design product not found" });
+
+    if (status === "active" && row.status !== "active") {
+      const activeCountRows = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(designProducts)
+        .where(and(eq(designProducts.merchantId, merchant.id), eq(designProducts.status, "active")));
+      const activeCount = Number(activeCountRows[0]?.count ?? 0);
+      const plan = getEffectivePlan(installation as any, shop);
+      const { allowed, limit } = canActivateDesignProduct(plan.planName, activeCount);
+      if (!allowed) {
+        return res.status(402).json({
+          error: `You've reached your plan's limit of ${limit} active product design${limit === 1 ? "" : "s"}. Deactivate one or upgrade your plan.`,
+          limit,
+          activeCount,
+        });
+      }
+    }
+
+    if (row.shopifyProductId) {
+      try {
+        await fetch(`https://${shop}/admin/api/2025-10/products/${row.shopifyProductId}.json`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": installation.accessToken },
+          body: JSON.stringify({
+            product: {
+              id: Number(row.shopifyProductId),
+              status: status === "active" ? "active" : "draft",
+              published: status === "active",
+            },
+          }),
+        });
+        if (status === "active") {
+          await ensureProductPublishedToOnlineStore(shop, installation.accessToken, Number(row.shopifyProductId));
+        }
+      } catch (e: any) {
+        console.warn("[design-products] Shopify status update failed:", e.message);
+      }
+    }
+
+    const [updated] = await db
+      .update(designProducts)
+      .set({ status, updatedAt: new Date() })
+      .where(eq(designProducts.id, row.id))
+      .returning();
+    res.json({ success: true, designProduct: updated });
+  }));
+
+  /** DELETE /api/appai/design-products/:id — unpublish: remove the Shopify product + the listing. */
+  app.delete("/api/appai/design-products/:id", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+    const { merchant, installation } = resolved;
+    const shop: string = installation.shopDomain;
+
+    const [row] = await db
+      .select()
+      .from(designProducts)
+      .where(and(eq(designProducts.id, req.params.id), eq(designProducts.merchantId, merchant.id)));
+    if (!row) return res.status(404).json({ error: "Design product not found" });
+
+    if (row.shopifyProductId) {
+      await deleteShopifyProductBestEffort(shop, installation.accessToken, row.shopifyProductId);
+    }
+    await db.delete(designProductEvents).where(eq(designProductEvents.designProductId, row.id));
+    await db.delete(designProducts).where(eq(designProducts.id, row.id));
+    res.json({ success: true });
+  }));
+
+  /**
+   * POST /api/appai/design-products/:id/printify-mockups
+   * Optional add-on: renders a real Printify mockup for the design's resolved
+   * size/color variant (using the merchant's own Printify credentials) and
+   * appends it to the Shopify product's image gallery alongside the AI Art
+   * Studio preview image.
+   */
+  app.post("/api/appai/design-products/:id/printify-mockups", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+    const { merchant, installation } = resolved;
+    const shop: string = installation.shopDomain;
+
+    const [row] = await db
+      .select()
+      .from(designProducts)
+      .where(and(eq(designProducts.id, req.params.id), eq(designProducts.merchantId, merchant.id)));
+    if (!row) return res.status(404).json({ error: "Design product not found" });
+    if (!merchant.printifyApiToken || !merchant.printifyShopId) {
+      return res.status(400).json({ error: "Connect your Printify account before adding Printify mockups." });
+    }
+
+    const job = await storage.getGenerationJob(row.jobId);
+    if (!job) return res.status(404).json({ error: "Source design not found" });
+    const productType = row.productTypeId != null ? await storage.getProductType(row.productTypeId) : undefined;
+    if (!productType) return res.status(404).json({ error: "Product type not found" });
+
+    const variantMapData: VariantMap = typeof productType.variantMap === "string" ? JSON.parse(productType.variantMap || "{}") : productType.variantMap || {};
+    const sizeId = job.size || "default";
+    const colorId = job.frameColor || "default";
+    const resolvedVariant = resolveVariantFromMap(variantMapData, sizeId, colorId, { allowSizeFallbackForColor: true });
+    const printifyVariantId = resolvedVariant?.entry?.printifyVariantId;
+    const blueprintId = Number(productType.printifyBlueprintId);
+    const providerId = Number((resolvedVariant?.entry as any)?.providerId ?? productType.printifyProviderId ?? 1);
+    if (!printifyVariantId || !Number.isFinite(blueprintId)) {
+      return res.status(400).json({ error: "Couldn't resolve a Printify variant for this design's size/color." });
+    }
+
+    const artworkUrl = job.designImageUrl || (Array.isArray(job.mockupUrls) && (job.mockupUrls as string[])[0]);
+    if (!artworkUrl) return res.status(400).json({ error: "This design has no artwork to render." });
+
+    const designState: any = typeof job.designState === "string" ? JSON.parse(job.designState || "{}") : job.designState || {};
+
+    const { generatePrintifyMockup } = await import("./printify-mockups.js");
+    const result = await generatePrintifyMockup({
+      blueprintId,
+      providerId,
+      variantId: Number(printifyVariantId),
+      imageUrl: artworkUrl,
+      printifyApiToken: merchant.printifyApiToken,
+      printifyShopId: merchant.printifyShopId,
+      scale: typeof designState.scale === "number" ? designState.scale / 100 : undefined,
+      x: typeof designState.x === "number" ? designState.x / 100 : undefined,
+      y: typeof designState.y === "number" ? designState.y / 100 : undefined,
+    });
+
+    if (!result.success || !result.mockupUrls?.length) {
+      return res.status(502).json({ error: result.error || "Printify mockup generation failed" });
+    }
+
+    if (row.shopifyProductId) {
+      for (const url of result.mockupUrls) {
+        try {
+          await fetch(`https://${shop}/admin/api/2025-10/products/${row.shopifyProductId}/images.json`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": installation.accessToken },
+            body: JSON.stringify({ image: { src: url } }),
+          });
+        } catch (e: any) {
+          console.warn("[design-products] Failed to attach Printify mockup image:", e.message);
+        }
+      }
+    }
+
+    const existingMockups: string[] = Array.isArray(row.mockupUrls) ? (row.mockupUrls as string[]) : [];
+    const mergedMockups = Array.from(new Set([...existingMockups, ...result.mockupUrls]));
+    const [updated] = await db
+      .update(designProducts)
+      .set({ mockupUrls: mergedMockups, updatedAt: new Date() })
+      .where(eq(designProducts.id, row.id))
+      .returning();
+
+    res.json({ success: true, designProduct: updated, addedCount: result.mockupUrls.length });
+  }));
 
   /** GET /api/appai/customizer-pages */
   app.get("/api/appai/customizer-pages", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
