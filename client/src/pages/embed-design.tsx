@@ -1969,16 +1969,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
     // Merchant-curated placeholders only (Customizer Pages primary + gallery picks).
     // `available` is the full Printify catalog pool for admin picker — not storefront carousel.
+    // Do not add legacy `lifestyle` or deselected `custom` — editor saves are primary+gallery only.
     const primary = imgs.primary || imgs.front || null;
     add(primary);
-    // Lifestyle/context shot when curated on the product (comforters, decor).
-    add(typeof imgs.lifestyle === "string" ? imgs.lifestyle : null);
     for (const url of Array.isArray(imgs.gallery) ? imgs.gallery : []) add(url);
-    for (const url of Array.isArray((imgs as { custom?: string[] }).custom)
-      ? (imgs as { custom?: string[] }).custom!
-      : []) {
-      add(url);
-    }
     return out.slice(0, 5);
   }, [productTypeConfig?.baseMockupImages]);
 

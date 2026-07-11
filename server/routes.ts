@@ -12726,6 +12726,37 @@ ${textEdgeRestrictions}
     };
   }
 
+  /** Apply merchant placeholder picks from the customizer editor — clears stale lifestyle/custom. */
+  function applyCuratedPlaceholderSelection(
+    currentImages: Record<string, unknown>,
+    incoming: { primary?: string; gallery?: string[]; custom?: string[] },
+  ): Record<string, unknown> {
+    const available = Array.isArray(currentImages.available) ? currentImages.available : [];
+    const gallery = Array.isArray(incoming.gallery)
+      ? incoming.gallery.map(String).filter(Boolean).slice(0, 4)
+      : [];
+    const primary =
+      typeof incoming.primary === "string" && incoming.primary
+        ? incoming.primary
+        : String(currentImages.primary || currentImages.front || "");
+
+    const incomingCustom = Array.isArray(incoming.custom)
+      ? incoming.custom.map(String).filter(Boolean)
+      : [];
+    const selected = new Set([primary, ...gallery].filter(Boolean));
+    const custom = incomingCustom.filter((url) => selected.has(url)).slice(0, 4);
+
+    const next: Record<string, unknown> = {
+      ...currentImages,
+      ...(primary ? { primary, front: primary } : { primary: undefined, front: undefined }),
+      gallery,
+      custom,
+      available,
+    };
+    delete next.lifestyle;
+    return next;
+  }
+
   // GET available placeholder images before importing a Printify product.
   app.get("/api/admin/printify/blueprints/:blueprintId/providers/:providerId/placeholders", isAuthenticated, async (req: any, res: Response) => {
     try {
@@ -16536,26 +16567,9 @@ ${textEdgeRestrictions}
         const currentImages = typeof linkedPt.baseMockupImages === "string"
           ? JSON.parse(linkedPt.baseMockupImages || "{}")
           : linkedPt.baseMockupImages || {};
-        const gallery = Array.isArray(incomingBaseMockupImages.gallery)
-          ? incomingBaseMockupImages.gallery.map(String).filter(Boolean).slice(0, 4)
-          : (currentImages.gallery || []);
-        const primary =
-          typeof incomingBaseMockupImages.primary === "string" && incomingBaseMockupImages.primary
-            ? incomingBaseMockupImages.primary
-            : currentImages.primary;
-        const custom = Array.isArray(incomingBaseMockupImages.custom)
-          ? incomingBaseMockupImages.custom.map(String).filter(Boolean).slice(0, 4)
-          : (currentImages.custom || []);
-        const available = Array.isArray(currentImages.available) ? currentImages.available : [];
+        const nextImages = applyCuratedPlaceholderSelection(currentImages, incomingBaseMockupImages);
         await storage.updateProductType(resolvedProductTypeId, {
-          baseMockupImages: JSON.stringify({
-            ...currentImages,
-            primary,
-            front: primary || currentImages.front,
-            gallery,
-            custom,
-            available,
-          }),
+          baseMockupImages: JSON.stringify(nextImages),
         });
       }
     }
@@ -16702,18 +16716,7 @@ ${textEdgeRestrictions}
         ? JSON.parse(linkedProductType.baseMockupImages || "{}")
         : linkedProductType.baseMockupImages || {};
       const incomingImages = req.body.baseMockupImages || {};
-      const available = Array.isArray(currentImages.available) ? currentImages.available : [];
-      const custom = Array.isArray(incomingImages.custom) ? incomingImages.custom.map(String).filter(Boolean).slice(0, 4) : (currentImages.custom || []);
-      const gallery = Array.isArray(incomingImages.gallery) ? incomingImages.gallery.map(String).filter(Boolean).slice(0, 4) : (currentImages.gallery || []);
-      const primary = typeof incomingImages.primary === "string" && incomingImages.primary ? incomingImages.primary : currentImages.primary;
-      const nextImages = {
-        ...currentImages,
-        primary,
-        front: primary || currentImages.front,
-        gallery,
-        custom,
-        available,
-      };
+      const nextImages = applyCuratedPlaceholderSelection(currentImages, incomingImages);
       await storage.updateProductType(linkedProductType.id, {
         baseMockupImages: JSON.stringify(nextImages),
       });

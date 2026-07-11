@@ -135,6 +135,21 @@ async function uploadPlaceholderFile(file: File): Promise<string> {
 
 const MAX_GALLERY_PLACEHOLDERS = 4;
 
+function buildCuratedPlaceholderPayload(
+  primary: string,
+  gallery: Set<string>,
+  existingCustom: string[] | undefined,
+  newCustomUrl: string,
+): { primary: string; gallery: string[]; custom: string[] } {
+  const galleryArr = Array.from(gallery);
+  const selected = new Set([primary, ...galleryArr].filter(Boolean));
+  const custom = [...(existingCustom || []), newCustomUrl.trim()]
+    .filter(Boolean)
+    .filter((url) => selected.has(url))
+    .slice(0, MAX_GALLERY_PLACEHOLDERS);
+  return { primary, gallery: galleryArr, custom };
+}
+
 type PlaceholderImageOption = { url: string; label: string; position?: string; source?: string };
 
 function buildAvailablePlaceholderImages(
@@ -345,18 +360,16 @@ export default function AdminCustomizerPages() {
       if (!editTarget) throw new Error("No customizer page selected");
       const styleErr = validateCustomizerPageStyleConfig(editStyleConfig);
       if (styleErr) throw new Error(styleErr);
-      const custom = [
-        ...(editBlank?.baseMockupImages?.custom || []),
-        editCustomPlaceholder.trim(),
-      ].filter(Boolean).slice(0, MAX_GALLERY_PLACEHOLDERS);
+      const curated = buildCuratedPlaceholderPayload(
+        editPrimaryPlaceholder,
+        editGalleryPlaceholders,
+        editBlank?.baseMockupImages?.custom,
+        editCustomPlaceholder,
+      );
       const res = await apiRequest("PATCH", `/api/appai/customizer-pages/${editTarget.id}`, {
         description: editDescription,
         styleConfig: editStyleConfig,
-        baseMockupImages: {
-          primary: editPrimaryPlaceholder,
-          gallery: Array.from(editGalleryPlaceholders),
-          custom,
-        },
+        baseMockupImages: curated,
       });
       return res.json();
     },
@@ -766,6 +779,12 @@ export default function AdminCustomizerPages() {
     // For products on Shopify: pass their shopify productId.
     // For products not yet on Shopify: pass the productTypeId so the backend can auto-send.
     const isSync = selectedBlank?.needsShopifySync;
+    const curated = buildCuratedPlaceholderPayload(
+      formPrimaryPlaceholder,
+      formGalleryPlaceholders,
+      selectedBlank?.baseMockupImages?.custom,
+      formCustomPlaceholder,
+    );
     createMutation.mutate({
       title: formTitle,
       handle: formHandle,
@@ -773,14 +792,7 @@ export default function AdminCustomizerPages() {
       productTypeId: isSync ? selectedBlank?.productTypeId : undefined,
       variantPrices,
       styleConfig: formStyleConfig,
-      baseMockupImages: {
-        primary: formPrimaryPlaceholder,
-        gallery: Array.from(formGalleryPlaceholders),
-        custom: [
-          ...(selectedBlank?.baseMockupImages?.custom || []),
-          formCustomPlaceholder.trim(),
-        ].filter(Boolean).slice(0, MAX_GALLERY_PLACEHOLDERS),
-      },
+      baseMockupImages: curated,
     });
   }
 
