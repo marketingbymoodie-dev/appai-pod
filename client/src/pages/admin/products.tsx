@@ -33,6 +33,7 @@ import ShippingLocationBadges from "@/components/catalog/ShippingLocationBadges"
 import { usePrintifyCatalogFilters } from "@/hooks/usePrintifyCatalogFilters";
 import { PLATFORM_CATALOG_CATEGORIES, platformCatalogCategoryLabel } from "@shared/platformCatalogCategories";
 import { PRINTIFY_SHIPPING_REGIONS } from "@shared/printifyShippingRegions";
+import { resolveFabricWeaveTexture } from "@shared/fabricWeave";
 
 interface VariantOption {
   id: string;
@@ -420,6 +421,22 @@ export default function AdminProducts() {
     },
     onError: (error: Error) => {
       toast({ title: "Failed to update AOP flag", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const toggleFabricWeaveMutation = useMutation({
+    mutationFn: async (data: { id: number; fabricWeaveTexture: boolean }) => {
+      const response = await apiRequest("PATCH", `/api/admin/product-types/${data.id}`, {
+        fabricWeaveTexture: data.fabricWeaveTexture,
+      });
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
+      toast({ title: "Woven texture setting updated" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to update woven texture", description: error.message, variant: "destructive" });
     },
   });
 
@@ -846,6 +863,28 @@ export default function AdminProducts() {
                         All-Over Print (AOP)
                       </Label>
                     </div>
+                    {(pt.onTheFlyTier === "flat" || pt.onTheFlyTier === "mesh") && (
+                      <div className="flex items-center gap-2 mt-3">
+                        <Switch
+                          id={`weave-toggle-${pt.id}`}
+                          checked={resolveFabricWeaveTexture({
+                            fabricWeaveTexture: (pt as ProductType & { fabricWeaveTexture?: boolean | null })
+                              .fabricWeaveTexture,
+                            printifyBlueprintId: pt.printifyBlueprintId,
+                          })}
+                          onCheckedChange={(checked) =>
+                            toggleFabricWeaveMutation.mutate({
+                              id: pt.id,
+                              fabricWeaveTexture: checked,
+                            })
+                          }
+                          data-testid={`switch-weave-${pt.id}`}
+                        />
+                        <Label htmlFor={`weave-toggle-${pt.id}`} className="text-sm cursor-pointer">
+                          Woven fabric texture (mockup)
+                        </Label>
+                      </div>
+                    )}
                     {(pt.isAllOverPrint || productUsesToteFolded(pt)) && (
                       <div className="mt-3 space-y-2 rounded-md border p-3">
                         <p className="text-xs font-medium text-muted-foreground">Layout overrides</p>

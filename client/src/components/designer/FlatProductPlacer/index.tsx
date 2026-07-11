@@ -116,6 +116,8 @@ export type FlatProductPlacerProps = {
   edgeWrapMode?: boolean;
   /** Framed posters / decor — mat-based placement, zoom past 100%. */
   decorMode?: boolean;
+  /** Woven fabric procedural texture (tapestry; admin-toggleable). */
+  fabricWeave?: boolean;
   /** When size orientation is landscape but manifest was harvested portrait-only. */
   landscapeOrientation?: boolean;
   /** Fallback blank photo when manifest lacks per-orientation blanks (tapestry). */
@@ -222,6 +224,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       skipInitialAutoApply = false,
       edgeWrapMode = false,
       decorMode = false,
+      fabricWeave = false,
       landscapeOrientation = false,
       blankUrlOverride = null,
     },
@@ -424,6 +427,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           forceShadingMap: edgeWrapMode,
           edgeWrapMode,
           decorMode,
+          fabricWeave,
           cropToBackFace: false,
           sizeId: colorId,
           layerAdjust: resolveCalibratorLayerAdjust(manifest, geometryKey, v),
@@ -435,7 +439,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         return false;
       }
     },
-    [state, assets, manifest, geometryKey, artworkImg, artworkCorsClean, edgeWrapMode, decorMode],
+    [state, assets, manifest, geometryKey, artworkImg, artworkCorsClean, edgeWrapMode, decorMode, fabricWeave],
   );
 
   // ---------- Live canvas ----------

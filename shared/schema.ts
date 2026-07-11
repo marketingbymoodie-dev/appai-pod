@@ -491,6 +491,11 @@ export const productTypes = pgTable("product_types", {
   storefrontMockupMode: text("storefront_mockup_mode"),
   /** Override order print-file layout: auto | standard | flat | aop | tote_folded_v1 */
   fulfillmentLayout: text("fulfillment_layout"),
+  /**
+   * Procedural woven-fabric texture on flat on-the-fly mockups (tapestry, etc.).
+   * Defaults off; blueprint 1649 enables automatically unless explicitly set.
+   */
+  fabricWeaveTexture: boolean("fabric_weave_texture"),
   colorOptionName: text("color_option_name"), // Actual option name from Printify blueprint (e.g. "Material", "Fabric", "Color")
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),

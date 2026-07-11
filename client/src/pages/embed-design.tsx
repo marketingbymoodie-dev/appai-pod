@@ -55,6 +55,7 @@ import {
   resolveFrameColorForSize,
   resolveSizeAspectRatio,
 } from "@shared/productVariantOptions";
+import { resolveFabricWeaveTexture } from "@shared/fabricWeave";
 import {
   filterStylePresetsForPage,
   dedupeStylePresets,
@@ -224,6 +225,8 @@ interface ProductTypeConfig {
   panelFlatLayImages?: Record<string, string>;
   colorLabel?: string;
   printifyBlueprintId?: number;
+  /** Admin override for woven fabric texture on flat mockups (null = blueprint default). */
+  fabricWeaveTexture?: boolean | null;
   sizeChart?: NormalizedSizeChart | null;
 }
 
@@ -1887,11 +1890,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     !isApparel &&
     (productTypeConfig.flatCalibration.decorPerSize ||
       productTypeConfig.designerType === "framed-print" ||
-      productTypeConfig.designerType === "pillow" ||
-      // Tapestry / orientation products (26×36 vs 36×26) — enable fabric weave.
-      frameOptionsRedundantWithSizes ||
-      productTypeConfig.designerType === "generic")
+      productTypeConfig.designerType === "pillow")
   );
+  const flatFabricWeave = resolveFabricWeaveTexture({
+    fabricWeaveTexture: productTypeConfig?.fabricWeaveTexture,
+    printifyBlueprintId: productTypeConfig?.printifyBlueprintId,
+  });
   const flatBlankColorId = useMemo(() => {
     if (!productTypeConfig?.flatCalibration) return selectedFrameColor || selectedSize || "";
     if (frameOptionsRedundantWithSizes && selectedSize) return selectedSize;
@@ -2193,6 +2197,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       panelFlatLayImages: dc.panelFlatLayImages || {},
       colorLabel: dc.colorLabel || "Color",
       printifyBlueprintId: dc.printifyBlueprintId,
+      fabricWeaveTexture: dc.fabricWeaveTexture ?? null,
       sizeChart: dc.sizeChart || null,
     });
     if (dc.sizeChart) {
@@ -2543,6 +2548,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             panelFlatLayImages: designerConfig.panelFlatLayImages || {},
             colorLabel: designerConfig.colorLabel || "Color",
             printifyBlueprintId: designerConfig.printifyBlueprintId,
+            fabricWeaveTexture: designerConfig.fabricWeaveTexture ?? null,
             sizeChart: designerConfig.sizeChart || null,
           });
 
@@ -6768,7 +6774,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flatPlacerActive && flatApplyStatus === "saving"
   );
 
-  const flatMockupBlankKey = `${flatBlankColorId}::${selectedSize ?? ""}::pc18weave5`;
+  const flatMockupBlankKey = `${flatBlankColorId}::${selectedSize ?? ""}::${flatFabricWeave ? "weave" : "plain"}`;
 
   // Force mockup re-raster when the harvested blank key changes (shirt colour swap).
   useEffect(() => {
@@ -6820,7 +6826,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             stateForRender,
             view,
             artworkUrl,
-            { decorMode: flatDecorMode },
+            { decorMode: flatDecorMode, fabricWeave: flatFabricWeave },
           );
           if (cancelled || !dataUrl) continue;
           let hostedUrl = dataUrl;
@@ -6867,6 +6873,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     selectedSize,
     printPlacement,
     flatDecorMode,
+    flatFabricWeave,
     persistFlatMockupsForGallery,
   ]);
 
@@ -8857,6 +8864,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   onAssetsFailed={handleFlatAssetsFailed}
                   edgeWrapMode={flatEdgeWrapMode}
                   decorMode={flatDecorMode}
+                  fabricWeave={flatFabricWeave}
                   landscapeOrientation={flatLandscapeOrientation}
                   blankUrlOverride={orientationBlankOverride}
                   skipInitialAutoApply={!!flatPlacerState}

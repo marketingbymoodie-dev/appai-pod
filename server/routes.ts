@@ -64,6 +64,7 @@ import {
   usesAopStorefrontCustomizer,
   usesToteFoldedFulfillment,
 } from "@shared/productLayoutPolicy";
+import { resolveFabricWeaveTexture, WOVEN_WALL_TAPESTRY_BLUEPRINT_ID } from "@shared/fabricWeave";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShopifyToken } from "./shopify";
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { syncCreditEntitlementMetafield } from "./credit-entitlements";
@@ -5606,6 +5607,7 @@ ${textEdgeRestrictions}
         name: productType.name,
         description: productType.description,
         printifyBlueprintId: productType.printifyBlueprintId,
+        fabricWeaveTexture: (productType as any).fabricWeaveTexture ?? null,
         aspectRatio: designerDisplayAspectRatio(productType),
         printShape: productType.printShape || "rectangle",
         printAreaWidth: productType.printAreaWidth,
@@ -5949,6 +5951,7 @@ ${textEdgeRestrictions}
       name: productTypeToUse.name,
       description: productTypeToUse.description,
       printifyBlueprintId: productTypeToUse.printifyBlueprintId,
+      fabricWeaveTexture: (productTypeToUse as any).fabricWeaveTexture ?? null,
       aspectRatio: displayAspectRatio,
       printShape: productTypeToUse.printShape || "rectangle",
       printAreaWidth: productTypeToUse.printAreaWidth,
@@ -13745,6 +13748,7 @@ ${textEdgeRestrictions}
           catalogEntry.kind === "aop" ? catalogEntry.panelMappingTemplate ?? null : null,
         storefrontMockupMode: catalogStorefrontMode,
         fulfillmentLayout: catalogFulfillmentLayout,
+        fabricWeaveTexture: blueprintIdNum === WOVEN_WALL_TAPESTRY_BLUEPRINT_ID,
         isActive: true,
         sortOrder: existingTypes.length,
         ...(printifyCostsAtImport ? { printifyCosts: printifyCostsAtImport } : {}),

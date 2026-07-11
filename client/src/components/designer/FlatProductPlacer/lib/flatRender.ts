@@ -116,6 +116,8 @@ export type FlatRenderInput = {
   edgeWrapMode?: boolean;
   /** Framed / decor — placement uses visible mat opening; scale may exceed 1. */
   decorMode?: boolean;
+  /** Woven fabric procedural texture (tapestry only unless admin-enabled). */
+  fabricWeave?: boolean;
   sizeId?: string;
   /** Crop to back face when the mockup has a side-profile strip (iPhone 14/15). */
   cropToBackFace?: boolean;
@@ -1533,6 +1535,7 @@ export function renderFlatView(input: FlatRenderInput): void {
     forceShadingMap = false,
     edgeWrapMode = false,
     decorMode = false,
+    fabricWeave = false,
     layerAdjust,
     previewLayers,
   } = input;
@@ -1742,7 +1745,7 @@ export function renderFlatView(input: FlatRenderInput): void {
         artworkCorsClean,
         {
           phoneCaseMap: shadeMode === "map" && !!shadeMapImg,
-          fabricWeave: !!decorMode && !edgeWrapMode,
+          fabricWeave: fabricWeave && !edgeWrapMode,
         },
       );
     }
@@ -1801,7 +1804,7 @@ export function renderFlatView(input: FlatRenderInput): void {
 
   if (mask) {
     actx.globalCompositeOperation = "destination-in";
-    if (decorMode && !edgeWrapMode) {
+    if (fabricWeave && !edgeWrapMode) {
       // Woven-fabric harvests produce masks with pinhole noise (magenta
       // detection stumbles on thread grooves). Clipping with the raw mask
       // lets the light blank show through as white speckle — solidify first.
@@ -1825,7 +1828,7 @@ export function renderFlatView(input: FlatRenderInput): void {
     artworkCorsClean,
     {
       phoneCaseMap: shadeMode === "map" && !!shading && !!edgeWrapMode,
-      fabricWeave: !!decorMode && !edgeWrapMode,
+      fabricWeave: fabricWeave && !edgeWrapMode,
     },
   );
 
