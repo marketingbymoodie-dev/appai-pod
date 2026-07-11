@@ -999,6 +999,85 @@ function hasStoredLoggedInIdentity(): boolean {
   return false;
 }
 
+/** Dedupe carousel/mockup URLs by origin+pathname (ignore query strings). */
+function mockupImageUrlKey(url: string): string {
+  try {
+    const u = new URL(url, "https://example.com");
+    return `${u.origin}${u.pathname}`.toLowerCase();
+  } catch {
+    return url.split(/[?#]/)[0].toLowerCase();
+  }
+}
+
+type PostGenGalleryItem =
+  | { kind: "artwork"; label: string }
+  | { kind: "mockup"; url: string; label: string }
+  | { kind: "catalog"; url: string; label: string };
+
+function formatPostGenMockupLabel(raw: string, fallback: string): string {
+  const l = raw.toLowerCase();
+  if (l === "front" || l === "mockup 1") return "Front";
+  if (l === "back" || l === "mockup 2") return "Back";
+  return raw || fallback;
+}
+
+/** Artwork + Printify mockups + merchant catalog extras (deduped). */
+function buildPostGenGalleryItems(
+  catalogPreviewImages: string[],
+  printifyMockupImages: Array<{ url: string; label: string }>,
+  printifyMockups: string[],
+): PostGenGalleryItem[] {
+  const items: PostGenGalleryItem[] = [{ kind: "artwork", label: "Artwork" }];
+  const seen = new Set<string>();
+
+  const printifyEntries =
+    printifyMockupImages.length > 0
+      ? printifyMockupImages.slice(0, 3).map((img, i) => ({
+          url: img.url,
+          label: formatPostGenMockupLabel(img.label, `View ${i + 1}`),
+        }))
+      : printifyMockups.slice(0, 3).map((url, i) => ({
+          url,
+          label: formatPostGenMockupLabel("", i === 0 ? "Front" : i === 1 ? "Back" : `View ${i + 1}`),
+        }));
+
+  for (const entry of printifyEntries) {
+    if (!entry.url) continue;
+    const key = mockupImageUrlKey(entry.url);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    items.push({ kind: "mockup", url: entry.url, label: entry.label });
+  }
+
+  for (let i = 0; i < catalogPreviewImages.length; i++) {
+    const url = catalogPreviewImages[i];
+    if (!url) continue;
+    const key = mockupImageUrlKey(url);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    items.push({
+      kind: "catalog",
+      url,
+      label: i === 0 ? "Primary" : `View ${i + 1}`,
+    });
+  }
+
+  return items;
+}
+
+function resolvePostGenMockupUrl(
+  index: number,
+  items: PostGenGalleryItem[],
+  preferredMockupUrl: string,
+): string | null {
+  const item = items[index];
+  if (!item) return null;
+  if (item.kind === "mockup" || item.kind === "catalog") return item.url;
+  const hasMockupSlots = items.some((i) => i.kind === "mockup");
+  if (!hasMockupSlots && preferredMockupUrl) return preferredMockupUrl;
+  return null;
+}
+
 export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) {
   const searchParams = new URLSearchParams(window.location.search);
 
@@ -1880,17 +1959,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
     const seen = new Set<string>();
     const out: string[] = [];
-    const urlKey = (url: string) => {
-      try {
-        const u = new URL(url, 'https://example.com');
-        return `${u.origin}${u.pathname}`.toLowerCase();
-      } catch {
-        return url.split(/[?#]/)[0].toLowerCase();
-      }
-    };
     const add = (url: string | null | undefined) => {
       if (!url || typeof url !== 'string') return;
-      const key = urlKey(url);
+      const key = mockupImageUrlKey(url);
       if (seen.has(key)) return;
       seen.add(key);
       out.push(url);
@@ -1942,6 +2013,25 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   useEffect(() => {
     setCatalogPreviewIndex(0);
   }, [productTypeConfig?.id, catalogPreviewImages.join("|")]);
+
+  const postGenGalleryItems = useMemo(
+    () =>
+      generatedDesign?.imageUrl
+        ? buildPostGenGalleryItems(
+            catalogPreviewImages,
+            printifyMockupImages,
+            printifyMockups,
+          )
+        : [],
+    [generatedDesign?.imageUrl, catalogPreviewImages, printifyMockupImages, printifyMockups],
+  );
+
+  useEffect(() => {
+    if (!generatedDesign?.imageUrl) return;
+    setSelectedMockupIndex((prev) =>
+      prev >= postGenGalleryItems.length ? 0 : prev,
+    );
+  }, [generatedDesign?.imageUrl, postGenGalleryItems.length]);
 
   // Storefront / theme iframe: land on the product preview box after hard refresh.
   // The parent page often restores scroll at the footer once the iframe auto-resizes.
@@ -7060,13 +7150,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   );
   const atcFlatOnTheFly = flatPlacerEligible;
   const atcMockupsStaleBlocks = mockupsStale && !atcFlatOnTheFly;
-  const galleryMockupCount =
-    printifyMockupImages.length > 0 ? printifyMockupImages.length : printifyMockups.length;
   const showingMockupAtArtworkSlot = !!(
-    isStorefront &&
+    (isShopify || isStorefront) &&
+    generatedDesign?.imageUrl &&
     selectedMockupIndex === 0 &&
-    galleryMockupCount === 0 &&
-    getPreferredMockupUrl()
+    resolvePostGenMockupUrl(0, postGenGalleryItems, getPreferredMockupUrl())
   );
   const canShowDragHint = !!(
     printifyTransformEligible &&
@@ -8852,23 +8940,20 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     : (isGeneratingMockups || isAopReapplying) ? "mockups"
                     : null;
 
-                  // Resolve which mockup URL to show based on gallery selection.
-                  // selectedMockupIndex 0 = raw artwork; 1+ = mockup at that index.
-                  const galleryMockups: string[] =
-                    printifyMockupImages.length > 0
-                      ? printifyMockupImages.map(img => img.url)
-                      : printifyMockups;
-                  const selectedMockupUrl =
-                    isStorefront && selectedMockupIndex > 0 && galleryMockups.length >= selectedMockupIndex
-                      ? galleryMockups[selectedMockupIndex - 1]
-                      : isStorefront && selectedMockupIndex === 0 && galleryMockups.length === 0
-                        ? (getPreferredMockupUrl() || null)
-                        : null;
+                  // Unified post-gen gallery: artwork + Printify mockups + merchant catalog extras.
+                  const selectedPreviewMockupUrl =
+                    (isShopify || isStorefront) && generatedDesign?.imageUrl
+                      ? resolvePostGenMockupUrl(
+                          selectedMockupIndex,
+                          postGenGalleryItems,
+                          getPreferredMockupUrl(),
+                        )
+                      : null;
 
                   return (
                     <ProductMockup
                       imageUrl={generatedDesign?.imageUrl}
-                      mockupUrl={selectedMockupUrl}
+                      mockupUrl={selectedPreviewMockupUrl}
                       isLoading={isGeneratingArtwork || isGeneratingMockups || isAopReapplying || isLoadingSaved}
                       loadingStage={loadingStage}
                       // Paint the gallery's mockup instantly while a saved
@@ -8880,7 +8965,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       selectedFrameColor={selectedFrameColorConfig}
                       transform={transform}
                       onTransformChange={setTransform}
-                      enableDrag={!!generatedDesign?.imageUrl && selectedMockupIndex === 0 && printifyTransformEligible}
+                      enableDrag={
+                        !!generatedDesign?.imageUrl &&
+                        selectedMockupIndex === 0 &&
+                        !selectedPreviewMockupUrl &&
+                        printifyTransformEligible
+                      }
                       designerType={productTypeConfig?.designerType || "generic"}
                       printShape={productTypeConfig?.printShape || "rectangle"}
                       canvasConfig={productTypeConfig?.canvasConfig}
@@ -8940,34 +9030,33 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 </>
               )}
 
-              {/* Left/right arrow navigation — only when mockups are available */}
-              {isStorefront && generatedDesign?.imageUrl && (() => {
-                const galleryMockupCount = printifyMockupImages.length > 0
-                  ? printifyMockupImages.slice(0, 3).length
-                  : printifyMockups.slice(0, 3).length;
-                const totalItems = 1 + galleryMockupCount;
-                if (totalItems <= 1) return null;
-                return (
-                  <>
-                    <button
-                      type="button"
-                      aria-label="Previous"
-                      onClick={() => setSelectedMockupIndex(i => (i - 1 + totalItems) % totalItems)}
-                      className="absolute left-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
-                    >
-                      <ChevronLeft className="w-5 h-5" />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Next"
-                      onClick={() => setSelectedMockupIndex(i => (i + 1) % totalItems)}
-                      className="absolute right-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
-                    >
-                      <ChevronRight className="w-5 h-5" />
-                    </button>
-                  </>
-                );
-              })()}
+              {/* Left/right arrow navigation — after artwork exists */}
+              {(isShopify || isStorefront) && generatedDesign?.imageUrl && postGenGalleryItems.length > 1 && (
+                <>
+                  <button
+                    type="button"
+                    aria-label="Previous"
+                    onClick={() =>
+                      setSelectedMockupIndex(
+                        (i) => (i - 1 + postGenGalleryItems.length) % postGenGalleryItems.length,
+                      )
+                    }
+                    className="absolute left-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
+                  >
+                    <ChevronLeft className="w-5 h-5" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Next"
+                    onClick={() =>
+                      setSelectedMockupIndex((i) => (i + 1) % postGenGalleryItems.length)
+                    }
+                    className="absolute right-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
+                  >
+                    <ChevronRight className="w-5 h-5" />
+                  </button>
+                </>
+              )}
 
               {/* Stale mockups overlay */}
               {atcHasMockups && atcMockupsStaleBlocks && !mockupLoading && generatedDesign?.imageUrl && (
@@ -9011,47 +9100,37 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               </div>
             )}
 
-            {/* Carousel indicators with labels — directly under image */}
-            {(isShopify || isStorefront) && productTypeConfig?.hasPrintifyMockups && generatedDesign?.imageUrl && (() => {
-              const galleryMockups: Array<{ url: string; label: string }> =
-                printifyMockupImages.length > 0
-                  ? printifyMockupImages
-                  : printifyMockups.map((url, i) => ({ url, label: i === 0 ? "Front" : i === 1 ? "Back" : `View ${i + 1}` }));
-              const hasMockups = galleryMockups.length > 0;
-              if (!hasMockups) return null;
-              const totalItems = 1 + galleryMockups.slice(0, 3).length;
-              const getLabel = (idx: number) => {
-                if (idx === 0) return "Artwork";
-                const raw = (galleryMockups[idx - 1]?.label || "").toLowerCase();
-                if (raw === "front" || raw === "mockup 1") return "Front";
-                if (raw === "back" || raw === "mockup 2") return "Back";
-                return galleryMockups[idx - 1]?.label || `View ${idx}`;
-              };
-              return (
-                <div className="flex justify-center gap-3 mt-1">
-                  {Array.from({ length: totalItems }).map((_, idx) => (
-                    <button
-                      key={idx}
-                      type="button"
-                      onClick={() => setSelectedMockupIndex(idx)}
-                      aria-label={getLabel(idx)}
-                      className={`flex flex-col items-center gap-0.5 transition-all duration-200 ${
-                        selectedMockupIndex === idx ? "opacity-100" : "opacity-40 hover:opacity-70"
-                      }`}
-                    >
-                      <span className={`rounded-full transition-all duration-200 ${
+            {/* Post-generation carousel indicators — artwork, mockups, merchant gallery */}
+            {(isShopify || isStorefront) && generatedDesign?.imageUrl && postGenGalleryItems.length > 1 && (
+              <div className="flex justify-center gap-3 mt-1">
+                {postGenGalleryItems.map((item, idx) => (
+                  <button
+                    key={`${item.kind}-${idx}`}
+                    type="button"
+                    onClick={() => setSelectedMockupIndex(idx)}
+                    aria-label={item.label}
+                    className={`flex flex-col items-center gap-0.5 transition-all duration-200 ${
+                      selectedMockupIndex === idx ? "opacity-100" : "opacity-40 hover:opacity-70"
+                    }`}
+                  >
+                    <span
+                      className={`rounded-full transition-all duration-200 ${
                         selectedMockupIndex === idx
                           ? "w-4 h-2 bg-foreground"
                           : "w-2 h-2 bg-foreground/60"
-                      }`} />
-                      <span className={`text-[10px] leading-tight font-medium ${
+                      }`}
+                    />
+                    <span
+                      className={`text-[10px] leading-tight font-medium ${
                         selectedMockupIndex === idx ? "text-foreground" : "text-muted-foreground"
-                      }`}>{getLabel(idx)}</span>
-                    </button>
-                  ))}
-                </div>
-              );
-            })()}
+                      }`}
+                    >
+                      {item.label}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
 
             {generatedDesign?.imageUrl && !useAopCustomizer && !flatPlacerEligible && (
               <ZoomControls
