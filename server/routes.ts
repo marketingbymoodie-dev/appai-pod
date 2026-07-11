@@ -10370,11 +10370,34 @@ ${textEdgeRestrictions}
     }
   });
 
+  // Product-type fields only the platform operator may change; merchants
+  // manage these implicitly via Platform Catalog import, never directly.
+  const OPERATOR_ONLY_PRODUCT_TYPE_FIELDS = [
+    "isAllOverPrint",
+    "fabricWeaveTexture",
+    "storefrontMockupMode",
+    "fulfillmentLayout",
+    "aopTemplateId",
+    "panelMappingTemplate",
+    "onTheFlyTier",
+    "flatCalibrationStatus",
+  ] as const;
+
   app.patch("/api/admin/product-types/:id", isAuthenticated, async (req: any, res: Response) => {
     try {
       const id = parseInt(req.params.id);
       const updates = req.body;
-      
+
+      if (!isPlatformAdminRequest(req)) {
+        const blocked = OPERATOR_ONLY_PRODUCT_TYPE_FIELDS.filter((f) => f in updates);
+        if (blocked.length > 0) {
+          return res.status(403).json({
+            error: `These settings are managed by the platform: ${blocked.join(", ")}`,
+            code: "OPERATOR_ONLY_FIELDS",
+          });
+        }
+      }
+
       if (updates.sizes && Array.isArray(updates.sizes)) {
         updates.sizes = JSON.stringify(updates.sizes);
       }
@@ -13817,6 +13840,12 @@ ${textEdgeRestrictions}
   // background; poll the product's flatCalibrationStatus for progress.
   app.post("/api/admin/product-types/:id/calibrate-flat", isAuthenticated, async (req: any, res: Response) => {
     try {
+      if (!isPlatformAdminRequest(req)) {
+        return res.status(403).json({
+          error: "Calibration is managed by the platform via the Platform Catalog.",
+          code: "OPERATOR_ONLY",
+        });
+      }
       const userId = req.user.claims.sub;
       const productTypeId = parseInt(req.params.id);
       const merchant = await storage.getMerchantByUserId(userId);

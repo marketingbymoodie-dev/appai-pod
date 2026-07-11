@@ -140,7 +140,6 @@ export default function AdminProducts() {
   const [aopTemplateMutatingId, setAopTemplateMutatingId] = useState<number | null>(null);
   const [layoutPolicyMutatingId, setLayoutPolicyMutatingId] = useState<number | null>(null);
   const [testOrderMutatingId, setTestOrderMutatingId] = useState<number | null>(null);
-  const [calibrateMutatingId, setCalibrateMutatingId] = useState<number | null>(null);
   const [resyncPricesTarget, setResyncPricesTarget] = useState<ProductType | null>(null);
 
   const { data: merchant } = useQuery<Merchant>({
@@ -510,30 +509,6 @@ export default function AdminProducts() {
     onSettled: () => setTestOrderMutatingId(null),
   });
 
-  // (Re)run on-the-fly flat/mesh calibration for an existing product. Only
-  // surfaced for products that have never been calibrated (legacy imports) or
-  // whose last run failed — new imports auto-calibrate, so this never lingers.
-  const calibrateFlatMutation = useMutation({
-    mutationFn: async (id: number) => {
-      setCalibrateMutatingId(id);
-      const response = await apiRequest("POST", `/api/admin/product-types/${id}/calibrate-flat`);
-      return response.json();
-    },
-    onSuccess: () => {
-      toast({
-        title: "Calibration started",
-        description:
-          "Harvesting masks and blank photos via Printify (up to 8 colours, not all variants). " +
-          "Apparel with front + back usually takes 3–8 min. This page auto-refreshes status.",
-      });
-      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
-    },
-    onError: (error: Error) => {
-      toast({ title: "Couldn't start calibration", description: error.message, variant: "destructive" });
-    },
-    onSettled: () => setCalibrateMutatingId(null),
-  });
-
   // Fetch connected Shopify shops
   const { data: shopifyShops } = useQuery<{ shops: Array<{ id: number; shopDomain: string }> }>({
     queryKey: ["/api/shopify/shops"],
@@ -850,20 +825,24 @@ export default function AdminProducts() {
                       <div>Sizes: {JSON.parse(pt.sizes || "[]").length}</div>
                       <div>Colors: {JSON.parse(pt.frameColors || "[]").length}</div>
                     </div>
-                    <div className="flex items-center gap-2 mt-3">
-                      <Switch
-                        id={`aop-toggle-${pt.id}`}
-                        checked={!!pt.isAllOverPrint}
-                        onCheckedChange={(checked) =>
-                          toggleAopMutation.mutate({ id: pt.id, isAllOverPrint: checked })
-                        }
-                        data-testid={`switch-aop-${pt.id}`}
-                      />
-                      <Label htmlFor={`aop-toggle-${pt.id}`} className="text-sm cursor-pointer">
-                        All-Over Print (AOP)
-                      </Label>
-                    </div>
-                    {(pt.onTheFlyTier === "flat" || pt.onTheFlyTier === "mesh") && (
+                    {/* Platform-operator controls — merchants never configure these. */}
+                    {showOperatorCalibrationTools && (
+                      <div className="flex items-center gap-2 mt-3">
+                        <Switch
+                          id={`aop-toggle-${pt.id}`}
+                          checked={!!pt.isAllOverPrint}
+                          onCheckedChange={(checked) =>
+                            toggleAopMutation.mutate({ id: pt.id, isAllOverPrint: checked })
+                          }
+                          data-testid={`switch-aop-${pt.id}`}
+                        />
+                        <Label htmlFor={`aop-toggle-${pt.id}`} className="text-sm cursor-pointer">
+                          All-Over Print (AOP)
+                        </Label>
+                      </div>
+                    )}
+                    {showOperatorCalibrationTools &&
+                      (pt.onTheFlyTier === "flat" || pt.onTheFlyTier === "mesh") && (
                       <div className="flex items-center gap-2 mt-3">
                         <Switch
                           id={`weave-toggle-${pt.id}`}
@@ -885,7 +864,7 @@ export default function AdminProducts() {
                         </Label>
                       </div>
                     )}
-                    {(pt.isAllOverPrint || productUsesToteFolded(pt)) && (
+                    {showOperatorCalibrationTools && (pt.isAllOverPrint || productUsesToteFolded(pt)) && (
                       <div className="mt-3 space-y-2 rounded-md border p-3">
                         <p className="text-xs font-medium text-muted-foreground">Layout overrides</p>
                         <div className="space-y-1">
@@ -957,7 +936,7 @@ export default function AdminProducts() {
                         )}
                       </div>
                     )}
-                    {pt.isAllOverPrint && (
+                    {showOperatorCalibrationTools && pt.isAllOverPrint && (
                       <div className="mt-3 space-y-3 rounded-md border p-3">
                         <div className="space-y-1">
                           <Label className="text-xs text-muted-foreground">
@@ -1081,75 +1060,7 @@ export default function AdminProducts() {
                           Resync Prices
                         </Button>
                       )}
-                      {/* On-the-fly calibration tools — platform operator only */}
-                      {showOperatorCalibrationTools && !pt.isAllOverPrint && !pt.onTheFlyTier && pt.flatCalibrationStatus !== "unsupported" && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => calibrateFlatMutation.mutate(pt.id)}
-                          disabled={calibrateMutatingId === pt.id}
-                          title="Probe this product's print area and harvest masks/blanks so it can use on-the-fly mockups (flat/mesh) instead of Printify. Runs in the background (~1–2 min). Click again to restart if it stalls."
-                          data-testid={`button-calibrate-flat-${pt.id}`}
-                        >
-                          {(calibrateMutatingId === pt.id || pt.flatCalibrationStatus === "pending" || pt.flatCalibrationStatus === "running") ? (
-                            <>
-                              <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                              Calibrating… (click to restart)
-                            </>
-                          ) : pt.flatCalibrationStatus === "failed" ? (
-                            <>
-                              <FlaskConical className="h-3 w-3 mr-1" />
-                              Retry calibration
-                            </>
-                          ) : (
-                            <>
-                              <FlaskConical className="h-3 w-3 mr-1" />
-                              Calibrate for on-the-fly
-                            </>
-                          )}
-                        </Button>
-                      )}
-                      {showOperatorCalibrationTools && pt.onTheFlyTier && (
-                        <Badge
-                          variant={pt.onTheFlyTier === "reject" ? "secondary" : "default"}
-                          className="self-center"
-                          title={
-                            pt.onTheFlyTier === "reject"
-                              ? "Curved/3D surface — stays on Printify mockups."
-                              : "Eligible for on-the-fly local mockups."
-                          }
-                        >
-                          {pt.onTheFlyTier === "flat" ? "On-the-fly: flat" : pt.onTheFlyTier === "mesh" ? "On-the-fly: mesh" : "On-the-fly: n/a"}
-                        </Badge>
-                      )}
-                      {/* Re-run calibration for products that already have a tier
-                          (e.g. after a code fix, or when a prior run left masks
-                          but missing blank photos). */}
-                      {showOperatorCalibrationTools &&
-                        !pt.isAllOverPrint &&
-                        (pt.onTheFlyTier === "flat" || pt.onTheFlyTier === "mesh") &&
-                        pt.flatCalibrationStatus !== "unsupported" && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => calibrateFlatMutation.mutate(pt.id)}
-                          disabled={calibrateMutatingId === pt.id}
-                          title="Re-harvest masks, shading, and up to 8 blank garment photos (not one per variant). Apparel front+back: typically 3–8 min."
-                          data-testid={`button-recalibrate-flat-${pt.id}`}
-                        >
-                          {(calibrateMutatingId === pt.id || pt.flatCalibrationStatus === "pending" || pt.flatCalibrationStatus === "running") ? (
-                            <>
-                              <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                              Recalibrating…
-                            </>
-                          ) : (
-                            <>
-                              <FlaskConical className="h-3 w-3 mr-1" />
-                              Recalibrate
-                            </>
-                          )}
-                        </Button>
-                      )}
+                      {/* Calibration lives in Platform Catalog (Flat calibrator) — not shown here. */}
                       {showOperatorCalibrationTools && productSupportsTestPrintifyOrder(pt) && (
                         <Button
                           variant="outline"
