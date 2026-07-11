@@ -14,7 +14,13 @@
   NS.latest = NS.latest || null;
 
   var LOG_PREFIX = "[AppAI Cart Guard]";
-  var CART_GUARD_VERSION = '1.3';
+  var CART_GUARD_VERSION = '1.5';
+  var HIDDEN_CART_PROP_KEYS = [
+    '_appai_job_id',
+    '_artwork_url',
+    '_mockup_url',
+    '_design_id',
+  ];
   /* DEBUG MARKERS (search these in DevTools console to diagnose issues):
      [AppAI Cart Guard] Loaded                        → script running (set ENABLE_DEBUG=true to see all logs)
      [AppAI Cart Guard] Ignored setLatestDesign       → payload missing _mockup_url; check embed-design.tsx handleAddToCart
@@ -76,11 +82,14 @@
   // --------- Product-page guard ----------
   // Only patch fetch/XHR/forms on pages that could add to cart.
   var path = window.location.pathname;
+  var isCartPage = path === "/cart" || path.indexOf("/cart/") === 0;
   var isRelevantPage = path.indexOf("/products/") !== -1 ||
     path.indexOf("/products_preview") !== -1 ||
-    path === "/cart" ||
-    path.indexOf("/cart/") === 0 ||
+    isCartPage ||
     !!document.querySelector('form[action^="/cart/add"]');
+
+  // Cart property hiding runs even when interceptors are skipped (see bottom).
+  setupCartPropertyHiding();
 
   if (!isRelevantPage) {
     debug("Not a product/cart page, skipping interceptors. Path:", path);
@@ -331,6 +340,160 @@
 
   if (NS.latest && NS.latest._mockup_url) {
     syncHiddenInputsIntoAllProductForms(NS.latest);
+  }
+
+  // --------- Hide internal line properties on cart page ----------
+  // Shopify hides underscore props at checkout, but many themes still render them on /cart.
+  // Modern themes (Dawn, Horizon, etc.) render <cart-items> inside shadow DOM — plain
+  // document.querySelectorAll misses those nodes, which is why props were still visible.
+  function isHiddenCartPropLabel(text) {
+    if (!text) return false;
+    var t = String(text).trim().replace(/:$/, '').toLowerCase();
+    for (var i = 0; i < HIDDEN_CART_PROP_KEYS.length; i++) {
+      if (t === HIDDEN_CART_PROP_KEYS[i]) return true;
+    }
+    return t.charAt(0) === '_';
+  }
+
+  function hideCartPropertyRow(el) {
+    if (!el || el.getAttribute('data-appai-hidden-prop') === '1') return;
+    el.setAttribute('data-appai-hidden-prop', '1');
+    el.style.setProperty('display', 'none', 'important');
+  }
+
+  function collectElementTrees(root, out) {
+    if (!root || root.nodeType !== 1) return;
+    out.push(root);
+    if (root.shadowRoot) collectElementTrees(root.shadowRoot, out);
+    var kids = root.children || [];
+    for (var i = 0; i < kids.length; i++) collectElementTrees(kids[i], out);
+  }
+
+  function deepCollectElements(start) {
+    var out = [];
+    collectElementTrees(start, out);
+    return out;
+  }
+
+  function propertyLabelFromText(text) {
+    var trimmed = String(text || '').trim();
+    if (!trimmed) return '';
+    var colon = trimmed.indexOf(':');
+    if (colon > 0 && colon < 40) return trimmed.slice(0, colon).trim();
+    return trimmed.replace(/:$/, '').trim();
+  }
+
+  function textLooksLikeHiddenCartProp(text) {
+    var trimmed = String(text || '').trim();
+    if (!trimmed) return false;
+    if (isHiddenCartPropLabel(propertyLabelFromText(trimmed))) return true;
+    for (var i = 0; i < HIDDEN_CART_PROP_KEYS.length; i++) {
+      var key = HIDDEN_CART_PROP_KEYS[i];
+      if (trimmed.indexOf(key + ':') === 0 || trimmed.indexOf(key + ' :') === 0) return true;
+    }
+    return trimmed.charAt(0) === '_' && /^_[\w-]+:\s/.test(trimmed);
+  }
+
+  function hideHiddenPropRowFrom(el) {
+    if (!el) return;
+    hideCartPropertyRow(el);
+    var row = el.closest('.product-option, .cart-item__property, [class*="property"], li, tr, dl, p, dd, dt');
+    if (row) hideCartPropertyRow(row);
+    var parent = el.parentElement;
+    if (parent && parent !== document.body && parent.children.length <= 4) hideCartPropertyRow(parent);
+    var next = el.nextElementSibling;
+    if (next) hideCartPropertyRow(next);
+  }
+
+  function hideInternalCartProperties() {
+    if (!isCartPage) return;
+
+    var scopes = [];
+    var scopeSelectors = [
+      'form[action="/cart"]',
+      'form[action^="/cart"]',
+      'cart-items',
+      '.cart-items',
+      '#main-cart-items',
+      'main'
+    ];
+    for (var s = 0; s < scopeSelectors.length; s++) {
+      var nodes = document.querySelectorAll(scopeSelectors[s]);
+      for (var n = 0; n < nodes.length; n++) scopes.push(nodes[n]);
+    }
+    if (!scopes.length) scopes = [document.body];
+
+    for (var si = 0; si < scopes.length; si++) {
+      var elements = deepCollectElements(scopes[si]);
+      for (var i = 0; i < elements.length; i++) {
+        var el = elements[i];
+        if (el.getAttribute('data-appai-hidden-prop') === '1') continue;
+
+        var tag = el.tagName;
+        if (tag === 'DT' || tag === 'DD') {
+          if (isHiddenCartPropLabel(el.textContent)) hideHiddenPropRowFrom(el);
+          continue;
+        }
+
+        if (el.classList && (el.classList.contains('product-option') || String(el.className || '').indexOf('property') !== -1)) {
+          var label = el.querySelector('dt, .product-option__name, .caption-with-letter-spacing, [class*="property"] > :first-child');
+          if (label && isHiddenCartPropLabel(label.textContent)) hideHiddenPropRowFrom(el);
+        }
+
+        var text = (el.textContent || '').trim();
+        if (!text || text.length > 400) continue;
+        if (el.children.length > 5) continue;
+
+        if (textLooksLikeHiddenCartProp(text)) {
+          hideHiddenPropRowFrom(el);
+          continue;
+        }
+
+        if (el.children.length <= 2) {
+          var first = el.firstElementChild;
+          if (first && isHiddenCartPropLabel(first.textContent)) hideHiddenPropRowFrom(el);
+        }
+      }
+    }
+  }
+
+  var observedShadowRoots = typeof WeakSet !== 'undefined' ? new WeakSet() : null;
+
+  function observeShadowRoot(root, onChange) {
+    if (!root || typeof MutationObserver === 'undefined') return;
+    if (observedShadowRoots && observedShadowRoots.has(root)) return;
+    if (observedShadowRoots) observedShadowRoots.add(root);
+    try {
+      var obs = new MutationObserver(onChange);
+      obs.observe(root, { childList: true, subtree: true });
+    } catch (_) {}
+  }
+
+  function observeAllShadowRoots(onChange) {
+    observeShadowRoot(document.documentElement, onChange);
+    var all = deepCollectElements(document.documentElement);
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].shadowRoot) observeShadowRoot(all[i].shadowRoot, onChange);
+    }
+  }
+
+  function setupCartPropertyHiding() {
+    if (!isCartPage) return;
+
+    NS.hideInternalCartProperties = hideInternalCartProperties;
+
+    hideInternalCartProperties();
+    window.addEventListener('appai:cart-updated', hideInternalCartProperties);
+    window.addEventListener('pageshow', hideInternalCartProperties);
+
+    if (typeof MutationObserver !== 'undefined') {
+      var rerun = function() { hideInternalCartProperties(); };
+      observeAllShadowRoots(rerun);
+      window.setInterval(function() {
+        observeAllShadowRoots(rerun);
+        hideInternalCartProperties();
+      }, 800);
+    }
   }
 
   console.log(LOG_PREFIX, 'Loaded. version=' + CART_GUARD_VERSION + ' isRelevantPage=' + isRelevantPage);

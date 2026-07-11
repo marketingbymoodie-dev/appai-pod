@@ -491,6 +491,11 @@ export const productTypes = pgTable("product_types", {
   storefrontMockupMode: text("storefront_mockup_mode"),
   /** Override order print-file layout: auto | standard | flat | aop | tote_folded_v1 */
   fulfillmentLayout: text("fulfillment_layout"),
+  /**
+   * Procedural woven-fabric texture on flat on-the-fly mockups (tapestry, etc.).
+   * Defaults off; blueprint 1649 enables automatically unless explicitly set.
+   */
+  fabricWeaveTexture: boolean("fabric_weave_texture"),
   colorOptionName: text("color_option_name"), // Actual option name from Printify blueprint (e.g. "Material", "Fabric", "Color")
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -570,6 +575,8 @@ export const customizerPages = pgTable("customizer_pages", {
   baseProductPrice: text("base_product_price"),    // cached price string
   baseProductHandle: text("base_product_handle"),  // Shopify product handle for embed iframe
   productTypeId: integer("product_type_id"),       // links to our product type for generation
+  /** JSON: { mode: "category", category } | { mode: "selected", presetIds[] } */
+  styleConfig: json("style_config"),
   status: text("status").notNull().default("active"),  // active | disabled
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -676,6 +683,59 @@ export const insertPublishedProductSchema = createInsertSchema(publishedProducts
 });
 export type PublishedProduct = typeof publishedProducts.$inferSelect;
 export type InsertPublishedProduct = z.infer<typeof insertPublishedProductSchema>;
+
+// Design Products — permanent, browsable Shopify products merchants publish from a saved
+// My Designs studio design (generationJobs row). Unlike publishedProducts/customizerDesigns
+// (ephemeral shadow SKUs for a single anonymous customer's cart), these are real catalog
+// listings with a full size/color variant set, owned by the merchant, auto-fulfilled via
+// the same artwork + placement stored on the source generation job. Plan-limited (see
+// PLAN_DESIGN_PRODUCT_LIMITS in server/customizer-plans.ts) — only `status: "active"` rows
+// count against that limit; "inactive" rows stay in the library unpublished (Shopify draft).
+export const designProducts = pgTable("design_products", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  merchantId: varchar("merchant_id").notNull(),
+  shop: text("shop").notNull(),
+  jobId: varchar("job_id").notNull(),              // generationJobs.id — source artwork + placement
+  productTypeId: integer("product_type_id"),
+  shopifyProductId: text("shopify_product_id"),
+  handle: text("handle"),
+  title: text("title").notNull(),
+  status: text("status").notNull().default("active"), // active | inactive
+  /** { [shopifyVariantId]: { sizeId, colorId, printifyVariantId } } */
+  variantMap: json("variant_map"),
+  mockupUrls: json("mockup_urls"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertDesignProductSchema = createInsertSchema(designProducts).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type DesignProduct = typeof designProducts.$inferSelect;
+export type InsertDesignProduct = z.infer<typeof insertDesignProductSchema>;
+
+// Design Product Events — lightweight sales/ATC analytics for design products, backing the
+// My Orders stats dashboard. Populated from the orders/paid webhook (sale) and carts
+// create/update webhooks (atc), matched by design_products.variantMap.
+export const designProductEvents = pgTable("design_product_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  designProductId: varchar("design_product_id").notNull(),
+  eventType: text("event_type").notNull(),          // sale | atc
+  quantity: integer("quantity").notNull().default(1),
+  amountCents: integer("amount_cents"),              // only set for "sale" events
+  shopifyOrderId: text("shopify_order_id"),          // set for "sale" events
+  cartToken: text("cart_token"),                     // set for "atc" events (dedupe key)
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertDesignProductEventSchema = createInsertSchema(designProductEvents).omit({
+  id: true,
+  createdAt: true,
+});
+export type DesignProductEvent = typeof designProductEvents.$inferSelect;
+export type InsertDesignProductEvent = z.infer<typeof insertDesignProductEventSchema>;
 
 // Credit transactions
 export const creditTransactions = pgTable("credit_transactions", {
@@ -811,6 +871,35 @@ export const STYLE_PRESETS = [
     promptPrefix: APPAREL_CHROMA_STYLE_BY_NAME["illustrated motif"],
     category: "apparel",
     promptPlaceholder: "Describe your illustrated motif (e.g. scary grizzly bear standing up, retro robot, floral skull)",
+  },
+
+  // Graphics — isolated motifs for blankets, totes, patterns (chroma + SVG pipeline)
+  {
+    id: "graphics-centered-graphic",
+    name: "Centered Graphic (Graphics)",
+    promptPrefix:
+      "Centered flat vector illustration for large-format print, bold clean shapes, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of",
+    category: "graphics",
+    promptPlaceholder:
+      "Describe your centered graphic (e.g. geometric wolf, vintage skull, botanical emblem)",
+  },
+  {
+    id: "graphics-illustrated-motif",
+    name: "Illustrated Motif (Graphics)",
+    promptPrefix:
+      "Illustrated character motif for large-format print and patterns, detailed illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of",
+    category: "graphics",
+    promptPlaceholder:
+      "Describe your illustrated motif (e.g. retro robot, floral skull, camping bear)",
+  },
+  {
+    id: "graphics-pattern-maker",
+    name: "Pattern Maker (Graphics)",
+    promptPrefix:
+      "Seamless repeating pattern design for large-format products, tileable motif, clean vector shapes, flat colors (avoid white, light colors; DO NOT use solid hot pink (#FF00FF) or magenta in the design), high contrast, isolated on a solid hot pink (#FF00FF) background, no white mat, no rectangular frame. Create a repeating pattern of",
+    category: "graphics",
+    promptPlaceholder:
+      "Describe your pattern idea (e.g. tiny tacos, scattered leaves, geometric tiles)",
   },
 
   // Decor Pet Portraits - Full-bleed scenic versions (no chroma key needed)

@@ -14,6 +14,26 @@ export const PLAN_PAGE_LIMITS: Record<string, number> = {
 };
 
 /**
+ * Max ACTIVE permanent "design products" (merchant-published standalone product
+ * listings from My Designs) allowed per plan. Trial gets none. Saved designs in
+ * the library are capped separately at a flat 30 regardless of plan (see
+ * MERCHANT_STUDIO_GALLERY_LIMIT in server/routes.ts) — this limit only governs
+ * how many of those saved designs can be live Shopify products at once.
+ */
+export const PLAN_DESIGN_PRODUCT_LIMITS: Record<string, number> = {
+  trial:    0,
+  starter:  1,
+  dabbler:  5,
+  pro:      15,
+  pro_plus: 30,
+};
+
+export function getDesignProductLimit(planName: string | null | undefined): number {
+  if (!planName) return 0;
+  return PLAN_DESIGN_PRODUCT_LIMITS[planName] ?? 0;
+}
+
+/**
  * Monthly free AI-generation allotment per plan.
  *
  * NOTE: These numbers currently drive the billing/pricing DISPLAY (plan picker
@@ -250,4 +270,13 @@ export function canCreatePage(
 ): { allowed: boolean; limit: number; currentCount: number } {
   const limit = getPageLimit(planName);
   return { allowed: currentCount < limit, limit, currentCount };
+}
+
+/** Check whether a shop can activate another permanent design product. */
+export function canActivateDesignProduct(
+  planName: string | null | undefined,
+  currentActiveCount: number
+): { allowed: boolean; limit: number; currentCount: number } {
+  const limit = getDesignProductLimit(planName);
+  return { allowed: currentActiveCount < limit, limit, currentCount: currentActiveCount };
 }

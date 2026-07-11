@@ -10,6 +10,7 @@ import {
   ensureLocalMapperDirs,
 } from "./aopMapperStorage";
 import { ensureHoodieTemplatesBucket } from "./supabaseHoodieTemplates";
+import sharp from "sharp";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 const POLL_INTERVAL_MS = 1500;
@@ -54,22 +55,29 @@ function extractImages(product: any): MockupImage[] {
 }
 
 async function uploadTransparentPng(token: string): Promise<string> {
-  const png = Buffer.from(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
-    "base64",
-  );
-  const form = new FormData();
-  form.append(
-    "file",
-    new Blob([png], { type: "image/png" }),
-    "blank.png",
-  );
+  // Printify expects JSON { file_name, contents } — not multipart FormData.
+  // Use a 1024² transparent PNG (same minimum size as mockup harvest elsewhere).
+  const png = await sharp({
+    create: { width: 1024, height: 1024, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+  })
+    .png()
+    .toBuffer();
+
   const res = await fetch(`${PRINTIFY_API_BASE}/uploads/images.json`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-    body: form,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      file_name: `mapper-blank-${Date.now()}.png`,
+      contents: png.toString("base64"),
+    }),
   });
-  if (!res.ok) throw new Error(`Printify image upload → ${res.status}`);
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Printify image upload → ${res.status}: ${body.slice(0, 200)}`);
+  }
   const data = (await res.json()) as { id?: string };
   if (!data.id) throw new Error("Printify image upload returned no id");
   return data.id;
@@ -120,10 +128,63 @@ function pickView(images: MockupImage[], view: "front" | "back"): MockupImage | 
   );
 }
 
+type PrintPlaceholder = { position: string; width: number; height: number };
+
+function listVariantPrintPlaceholders(variant: any): PrintPlaceholder[] {
+  const out: PrintPlaceholder[] = [];
+  for (const ph of variant?.placeholders || []) {
+    const w = Number(ph.width);
+    const h = Number(ph.height);
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) continue;
+    out.push({ position: String(ph.position || "default"), width: w, height: h });
+  }
+  return out;
+}
+
+async function resolveProviderId(token: string, blueprintId: number): Promise<number> {
+  const providers = await pf<any[]>(
+    `/catalog/blueprints/${blueprintId}/print_providers.json`,
+    token,
+  );
+  if (!Array.isArray(providers) || providers.length === 0) {
+    throw new Error(`No print providers listed for blueprint ${blueprintId}`);
+  }
+  const id = Number(providers[0]?.id);
+  if (!Number.isFinite(id) || id <= 0) {
+    throw new Error(`No print provider found for blueprint ${blueprintId}`);
+  }
+  return id;
+}
+
+async function resolveCatalogVariant(
+  token: string,
+  blueprintId: number,
+  providerId: number,
+): Promise<{ variantId: number; placeholders: PrintPlaceholder[] }> {
+  const variantsData = await pf<any>(
+    `/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`,
+    token,
+  );
+  const variants: any[] = variantsData?.variants ?? (Array.isArray(variantsData) ? variantsData : []);
+  if (variants.length === 0) {
+    throw new Error(`No catalog variants for blueprint ${blueprintId}, provider ${providerId}`);
+  }
+  const variant = variants[0];
+  const variantId = Number(variant?.id ?? variant?.variant_id);
+  if (!Number.isFinite(variantId) || variantId <= 0) {
+    throw new Error(`Invalid catalog variant for blueprint ${blueprintId}`);
+  }
+  const placeholders = listVariantPrintPlaceholders(variant);
+  if (placeholders.length === 0) {
+    throw new Error("Blueprint variant has no print placeholders");
+  }
+  return { variantId, placeholders };
+}
+
 export type FetchPrintifyBlanksResult = {
   ok: true;
   blueprintId: number;
-  downloaded: Array<{ view: "front" | "back"; filename: string; url: string; bytes: number }>;
+  downloaded: Array<{ view: "front" | "back"; filename: string; url: string; bytes: number; width: number; height: number }>;
 };
 
 export async function fetchPrintifyBlankMockups(args: {
@@ -144,30 +205,18 @@ export async function fetchPrintifyBlankMockups(args: {
   await ensureHoodieTemplatesBucket();
   ensureLocalMapperDirs();
 
-  const catalog = await pf<any>(`/catalog/blueprints/${blueprintId}.json`, token);
-  const providers = catalog?.print_providers ?? [];
-  const providerId = providers[0]?.id;
-  if (!providerId) throw new Error(`No print provider found for blueprint ${blueprintId}`);
-  const provider = await pf<any>(
-    `/catalog/blueprints/${blueprintId}/print_providers/${providerId}.json`,
-    token,
-  );
-  const variant = provider?.variants?.[0];
-  if (!variant?.id) throw new Error(`No catalog variant for blueprint ${blueprintId}`);
+  const providerId = await resolveProviderId(token, blueprintId);
+  const { variantId, placeholders } = await resolveCatalogVariant(token, blueprintId, providerId);
 
-  const placeholders = (variant.placeholders ?? []) as Array<{ position: string; width: number; height: number }>;
   const primary =
     placeholders.find((p) => p.position === "front") ||
     placeholders.find((p) => p.position === "default") ||
     placeholders[0];
-  if (!primary) throw new Error("Blueprint variant has no print placeholders");
-
   const hasBack = placeholders.some((p) => p.position === "back");
   const transparentId = await uploadTransparentPng(token);
 
   const printAreas: Array<{ variant_ids: number[]; placeholders: Array<{ position: string; images: unknown[] }> }> =
     [];
-  const variantId = variant.id;
   if (hasBack) {
     printAreas.push({
       variant_ids: [variantId],
@@ -212,6 +261,10 @@ export async function fetchPrintifyBlankMockups(args: {
       const res = await fetch(match.url);
       if (!res.ok) continue;
       const buf = Buffer.from(await res.arrayBuffer());
+      const meta = await sharp(buf).metadata();
+      const width = meta.width ?? 0;
+      const height = meta.height ?? 0;
+      if (width <= 0 || height <= 0) continue;
       const filename = `${templateName}-${view}.png`;
       await writeAssetBuffer("mockups", filename, buf);
       downloaded.push({
@@ -219,6 +272,8 @@ export async function fetchPrintifyBlankMockups(args: {
         filename,
         url: `${mockupUrlBase}/${encodeURIComponent(filename)}`,
         bytes: buf.length,
+        width,
+        height,
       });
     }
   } finally {

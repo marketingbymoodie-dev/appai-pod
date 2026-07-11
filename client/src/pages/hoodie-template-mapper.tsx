@@ -4,6 +4,7 @@ import HoodieCanvas from "@/components/hoodie-template-mapper/canvas/HoodieCanva
 import LeftSidebar from "@/components/hoodie-template-mapper/LeftSidebar";
 import RightSidebar from "@/components/hoodie-template-mapper/RightSidebar";
 import Toolbar from "@/components/hoodie-template-mapper/Toolbar";
+import DeleteLayerConfirmDialog from "@/components/hoodie-template-mapper/DeleteLayerConfirmDialog";
 import { useHoodieMapperStore } from "@/components/hoodie-template-mapper/store";
 import {
   loadTemplate as apiLoadTemplate,
@@ -20,6 +21,8 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { History, X } from "lucide-react";
 import type { HoodieView } from "@shared/hoodieTemplate";
+import { isValidAopTemplateSlug, normalizeAopTemplateSlugInput } from "@shared/hoodieTemplate";
+import { readMapperAssetDimensions } from "@/components/hoodie-template-mapper/lib/mapperAssetImage";
 import {
   Dialog,
   DialogContent,
@@ -40,12 +43,7 @@ import { Input } from "@/components/ui/input";
  */
 
 function readImageDimsFromUrl(url: string): Promise<{ width: number; height: number } | null> {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
-    img.onerror = () => resolve(null);
-    img.src = url;
-  });
+  return readMapperAssetDimensions(url).catch(() => null);
 }
 
 export default function HoodieTemplateMapperPage() {
@@ -155,13 +153,23 @@ export default function HoodieTemplateMapperPage() {
     };
   }, [actions, templateName, frontMockup, backMockup]);
 
-  async function handleLoad(name: string) {
-    if (!name.trim()) return;
+  async function handleLoad(rawName: string) {
+    const name = normalizeAopTemplateSlugInput(rawName);
+    if (!name) return;
+    if (!isValidAopTemplateSlug(name)) {
+      toast({
+        title: "Invalid slug",
+        description: "Use letters, numbers, dashes, and underscores — e.g. Spun_Polyester_Square_Pillow",
+        variant: "destructive",
+      });
+      return;
+    }
     actions.setBusy(true);
     try {
-      const tpl = await apiLoadTemplate(name.trim());
+      const tpl = await apiLoadTemplate(name);
       actions.loadTemplate(tpl);
       setOpenLoad(false);
+      setLoadName("");
       setAutosavePrompt(null);
       clearAutosave();
       toast({ title: "Template loaded", description: tpl.name });
@@ -213,7 +221,7 @@ export default function HoodieTemplateMapperPage() {
           </div>
         </header>
 
-        <Toolbar onOpenLoadDialog={() => setOpenLoad(true)} />
+        <Toolbar onOpenLoadDialog={() => setOpenLoad(true)} onLoadTemplate={handleLoad} />
 
         {autosavePrompt && (
           <div
@@ -266,13 +274,15 @@ export default function HoodieTemplateMapperPage() {
             <DialogHeader>
               <DialogTitle>Load template</DialogTitle>
               <DialogDescription>
-                Enter the slug of a template saved under <code>tmp/hoodie-templates/templates/</code>, or pick one from the left sidebar list.
+                Enter the admin slug (letters, numbers, dashes, underscores), or pick one from the left sidebar.
+                Spaces are converted automatically — e.g. &quot;Spun Polyester Square Pillow&quot; becomes{" "}
+                <span className="font-mono">Spun_Polyester_Square_Pillow</span>.
               </DialogDescription>
             </DialogHeader>
             <Input
-              placeholder="zip-hoodie-aop-L"
+              placeholder="Spun_Polyester_Square_Pillow"
               value={loadName}
-              onChange={(e) => setLoadName(e.target.value)}
+              onChange={(e) => setLoadName(normalizeAopTemplateSlugInput(e.target.value))}
               onKeyDown={(e) => {
                 if (e.key === "Enter") handleLoad(loadName);
               }}
@@ -288,6 +298,7 @@ export default function HoodieTemplateMapperPage() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+        <DeleteLayerConfirmDialog />
       </div>
     </AdminLayout>
   );

@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useToast } from "@/hooks/use-toast";
 import {
   ChevronUp,
@@ -20,6 +21,7 @@ import {
   Loader2,
   FlipHorizontal,
   FlipVertical,
+  Crop,
 } from "lucide-react";
 import {
   MAX_MESH_COLS,
@@ -27,6 +29,12 @@ import {
   PANEL_DISPLAY_LABEL,
   panelsEligibleForView,
   PULOVER_HOODIE_BLUEPRINT_ID,
+  BODY_PILLOW_WRAP_BLUEPRINT_ID,
+  isPillowWrapBlueprint,
+  isPillowWrapTemplate,
+  resolvePlacerEditor,
+  resolvePrintFileLayout,
+  resolveGarmentLayout,
   mockupDrawRect,
   type HoodiePanelKey,
   type MaskLayer,
@@ -37,6 +45,12 @@ import { resolvePublicTemplateName } from "@shared/aopTemplateNaming";
 import { useHoodieMapperStore } from "./store";
 import { svgPathToAnchors } from "./lib/svgPath";
 import { readImageDimensions, uploadReferenceOverlay, uploadSourcePanel } from "./api";
+import { loadMapperAssetImage } from "./lib/mapperAssetImage";
+import { MapperAssetThumbnail } from "./lib/useMapperAssetImage";
+import SourceArtworkCropPicker from "./SourceArtworkCropPicker";
+import { detectMockupContentBounds } from "./lib/mockupCrop";
+import { applyMockupCropUpload } from "./lib/mockupCropApply";
+import MockupCropControls from "./MockupCropControls";
 
 /**
  * Right sidebar: template metadata + tool-aware controls + per-layer
@@ -207,13 +221,17 @@ export default function RightSidebar() {
             </p>
           )}
           <p className="mt-2 text-[10px] leading-snug text-slate-500">
-            <span className="text-slate-400">blueprintId</span> = Printify catalog number (450 pullover, 451 zip).{" "}
+            <span className="text-slate-400">blueprintId</span> = Printify catalog number from the product URL
+            (e.g. <span className="font-mono text-slate-400">…/products/2758/…</span> → 2758). Pillows: 220 square,
+            223 faux suede, 2758 body. Hoodies: 450 pullover, 451 zip. Wrong id → wrong Part/View controls on the
+            storefront.{" "}
             <span className="text-slate-400">productTypeId</span> = optional note only — merchants are routed by{" "}
             <span className="text-slate-300">panelMappingTemplate</span> on the platform catalog row (set in{" "}
             <span className="text-slate-300">Platform Catalog → Publish for merchants</span>). Use the{" "}
             <span className="font-mono text-emerald-300">{resolvePublicTemplateName(template.name)}</span> name
             there after Save — no code change needed for new products.
           </p>
+          <PlacerSettingsSection template={template} />
         </Section>
 
         <MockupTransformSection view={view} />
@@ -356,10 +374,12 @@ export default function RightSidebar() {
 function SelectedLayerSection({ layer }: { layer: MaskLayer }) {
   const view = useHoodieMapperStore((s) => s.view);
   const blueprintId = useHoodieMapperStore((s) => s.template.blueprintId);
+  const placerEditor = useHoodieMapperStore((s) => resolvePlacerEditor(s.template));
+  const garmentLayout = useHoodieMapperStore((s) => resolveGarmentLayout(s.template));
   const layers = useHoodieMapperStore((s) => s.template.views[s.view].layers);
   const actions = useHoodieMapperStore((s) => s.actions);
 
-  const eligible = panelsEligibleForView(view, blueprintId);
+  const eligible = panelsEligibleForView(view, blueprintId, placerEditor, garmentLayout);
   const anchors = useMemo(() => svgPathToAnchors(layer.maskPath), [layer.maskPath]);
   const sortedZ = useMemo(() => [...layers].sort((a, b) => a.zIndex - b.zIndex), [layers]);
   const indexInZ = sortedZ.findIndex((l) => l.id === layer.id);
@@ -413,7 +433,7 @@ function SelectedLayerSection({ layer }: { layer: MaskLayer }) {
         label="Exclusion mask (zipper / hood interior / etc.)"
         checked={layer.isExclusion}
         onChange={(c) =>
-          actions.patchLayer(layer.id, { isExclusion: c, kind: c ? "exclusion" : "panel" })
+          actions.patchLayer(layer.id, { isExclusion: c, kind: c ? "exclusion" : "panel" }, { recordUndo: true })
         }
       />
       <div className="flex flex-wrap gap-2">
@@ -448,7 +468,7 @@ function SelectedLayerSection({ layer }: { layer: MaskLayer }) {
           size="sm"
           variant="ghost"
           className="h-8 text-[11px] text-red-300 hover:text-red-200"
-          onClick={() => actions.removeLayer(layer.id)}
+          onClick={() => actions.requestRemoveLayer(layer.id, layer.name)}
         >
           <Trash2 className="mr-1 h-3.5 w-3.5" /> Delete
         </Button>
@@ -491,16 +511,144 @@ function SelectedLayerSection({ layer }: { layer: MaskLayer }) {
         </div>
       </div>
 
+      {anchors.length >= 3 && (
+        <PanelTransformControls layer={layer} mesh={layer.mesh} showRotate={!!layer.mesh} />
+      )}
+
       <SourceArtworkSection layer={layer} />
       <MeshWarpSection layer={layer} />
     </Section>
   );
 }
 
+function PlacerSettingsSection({ template }: { template: ReturnType<typeof useHoodieMapperStore.getState>["template"] }) {
+  const actions = useHoodieMapperStore((s) => s.actions);
+  const placerEditor = resolvePlacerEditor(template);
+  const garmentLayout = resolveGarmentLayout(template);
+  const printFileLayout = resolvePrintFileLayout(template);
+  const editorMismatch =
+    placerEditor === "hoodie" && printFileLayout === "wrap-single";
+  const printMismatch =
+    placerEditor === "front-back-face" &&
+    printFileLayout === "split-front-back" &&
+    isPillowWrapBlueprint(template.blueprintId) &&
+    template.blueprintId !== BODY_PILLOW_WRAP_BLUEPRINT_ID;
+
+  return (
+    <div className="mt-3 space-y-3 border-t border-slate-800 pt-3">
+      <Field label="Storefront editor">
+        <ToggleGroup
+          type="single"
+          value={placerEditor}
+          onValueChange={(v) => {
+            if (v === "hoodie" || v === "front-back-face") {
+              actions.setTemplateMeta({ placerEditor: v });
+            }
+          }}
+          className="grid w-full grid-cols-2 gap-1"
+        >
+          <ToggleGroupItem value="hoodie" className="h-7 px-1 text-[10px]" aria-label="Hoodie editor">
+            Hoodie
+          </ToggleGroupItem>
+          <ToggleGroupItem
+            value="front-back-face"
+            className="h-7 px-1 text-[10px]"
+            aria-label="Front back face editor"
+          >
+            Front / Back
+          </ToggleGroupItem>
+        </ToggleGroup>
+      </Field>
+      {placerEditor === "hoodie" && (
+        <Field label="Garment preset">
+          <ToggleGroup
+            type="single"
+            value={garmentLayout}
+            onValueChange={(v) => {
+              if (v === "hoodie" || v === "jumper-no-hood") {
+                actions.setTemplateMeta({ garmentLayout: v });
+              }
+            }}
+            className="grid w-full grid-cols-2 gap-1"
+          >
+            <ToggleGroupItem value="hoodie" className="h-7 px-1 text-[10px]" aria-label="Full hoodie garment">
+              Hoodie
+            </ToggleGroupItem>
+            <ToggleGroupItem
+              value="jumper-no-hood"
+              className="h-7 px-1 text-[10px]"
+              aria-label="Jumper no hood garment"
+            >
+              Jumper (no hood)
+            </ToggleGroupItem>
+          </ToggleGroup>
+        </Field>
+      )}
+      <Field label="Print file layout">
+        <ToggleGroup
+          type="single"
+          value={printFileLayout}
+          onValueChange={(v) => {
+            if (v === "wrap-single" || v === "split-front-back") {
+              actions.setTemplateMeta({ printFileLayout: v });
+            }
+          }}
+          className="grid w-full grid-cols-2 gap-1"
+        >
+          <ToggleGroupItem value="wrap-single" className="h-7 px-1 text-[10px]" aria-label="Wrap single canvas">
+            Wrap
+          </ToggleGroupItem>
+          <ToggleGroupItem
+            value="split-front-back"
+            className="h-7 px-1 text-[10px]"
+            aria-label="Split front and back files"
+          >
+            Split
+          </ToggleGroupItem>
+        </ToggleGroup>
+      </Field>
+      <p className="text-[10px] leading-snug text-slate-500">
+        Saved into the published template JSON.{" "}
+        <span className="text-slate-400">Front / Back</span> shows pillow-style Part/View controls on
+        the storefront (any blueprint id).{" "}
+        <span className="text-slate-400">Wrap</span> = one side-by-side Printify canvas;{" "}
+        <span className="text-slate-400">Split</span> = separate front + back print files (body pillow).
+        <span className="text-slate-400">Jumper (no hood)</span> = Front/Back/Sleeves on the storefront, no Hood or Pockets.
+      </p>
+      {editorMismatch && (
+        <p className="text-[10px] leading-snug text-amber-400/90">
+          Hoodie editor + wrap print file is unusual — wrap is normally for front/back face products.
+        </p>
+      )}
+      {printMismatch && (
+        <p className="text-[10px] leading-snug text-amber-400/90">
+          Square/lumbar pillows (538) and body pillow (2758) use split print files.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function MockupTransformSection({ view }: { view: HoodieView }) {
   const template = useHoodieMapperStore((s) => s.template);
+  const mockupCrop = useHoodieMapperStore((s) => s.mockupCrop);
+  const busy = useHoodieMapperStore((s) => s.busy);
   const actions = useHoodieMapperStore((s) => s.actions);
+  const { toast } = useToast();
   const mockup = template.views[view].mockup;
+  const frontLayers = template.views.front.layers;
+  const backLayers = template.views.back.layers;
+  const frontMockup = template.views.front.mockup;
+  const backMockup = template.views.back.mockup;
+  const [applyCropToBoth, setApplyCropToBoth] = useState(true);
+  const [cropBusy, setCropBusy] = useState(false);
+  const isPillow = isPillowWrapTemplate(template);
+  const sameSizeMockups =
+    frontMockup &&
+    backMockup &&
+    frontMockup.width === backMockup.width &&
+    frontMockup.height === backMockup.height;
+
   if (!mockup) {
     return (
       <Section title={`Base mockup (${view})`}>
@@ -515,11 +663,100 @@ function MockupTransformSection({ view }: { view: HoodieView }) {
   const rect = mockupDrawRect(mockup);
   const locked = mockup.transformLocked === true;
 
+  async function handleStartCrop(autoTrim: boolean) {
+    if (cropBusy || busy) return;
+    setCropBusy(true);
+    try {
+      const img = await loadMapperAssetImage(mockup!.src);
+      const initial = autoTrim
+        ? detectMockupContentBounds(img)
+        : { x: 0, y: 0, width: mockup!.width, height: mockup!.height };
+      actions.startMockupCrop(initial);
+      toast({
+        title: autoTrim ? "Auto-trim crop ready" : "Crop mode",
+        description: "Adjust the box on canvas, then Apply crop.",
+      });
+    } catch (err: unknown) {
+      toast({
+        title: "Could not start crop",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+    } finally {
+      setCropBusy(false);
+    }
+  }
+
+  async function handleApplyCrop() {
+    if (!mockupCrop.rect || cropBusy || busy) return;
+    setCropBusy(true);
+    actions.setBusy(true);
+    try {
+      const cropped = await applyMockupCropUpload({
+        templateName: template.name,
+        view,
+        mockup,
+        rect: mockupCrop.rect,
+      });
+      actions.setMockup(view, cropped);
+
+      if (applyCropToBoth && sameSizeMockups) {
+        const otherView: HoodieView = view === "front" ? "back" : "front";
+        const otherMockup = template.views[otherView].mockup;
+        if (otherMockup) {
+          const otherCropped = await applyMockupCropUpload({
+            templateName: template.name,
+            view: otherView,
+            mockup: otherMockup,
+            rect: mockupCrop.rect,
+          });
+          actions.setMockup(otherView, otherCropped);
+        }
+      }
+
+      actions.cancelMockupCrop();
+      toast({
+        title: "Mockup cropped",
+        description:
+          applyCropToBoth && sameSizeMockups
+            ? `${view} + ${view === "front" ? "back" : "front"} saved at ${cropped.width}×${cropped.height}px`
+            : `${view} saved at ${cropped.width}×${cropped.height}px`,
+      });
+    } catch (err: unknown) {
+      toast({
+        title: "Crop failed",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+    } finally {
+      setCropBusy(false);
+      actions.setBusy(false);
+    }
+  }
+
+  function handleCopyFromFront() {
+    const count = actions.copyLayersFromView("front", "back", {
+      panelKeyMap: isPillow ? { front: "back" } : {},
+      replaceExisting: backLayers.length > 0,
+    });
+    if (count === 0) {
+      toast({
+        title: "Nothing to copy",
+        description: "Draw and mesh the front face first.",
+        variant: "destructive",
+      });
+      return;
+    }
+    toast({
+      title: "Copied from front view",
+      description: `${count} layer(s) on back${isPillow ? " — panel assignment set to Back" : ""}. Save when done.`,
+    });
+  }
+
   return (
     <Section title={`Base mockup (${view})`}>
       <div className="text-[11px] text-slate-400">
-        Move/scale the garment blank on the canvas. Panel masks stay fixed — use this to line up a
-        new photo with zip-hoodie traces. Saved into the template and used in Preview AOP.
+        Crop whitespace before masking, or move/scale the blank to align with reused hoodie traces.
       </div>
       <div className="mt-2 space-y-2 rounded border border-slate-800 bg-slate-950 p-2 text-[11px]">
         <div className="text-slate-300">
@@ -528,8 +765,96 @@ function MockupTransformSection({ view }: { view: HoodieView }) {
         </div>
         <div className="text-[10px] text-slate-500">
           pos ({Math.round(rect.x)},{Math.round(rect.y)}) · scale {(rect.scale * 100).toFixed(0)}%
-          {!locked && <span className="ml-1 text-sky-300">— drag &amp; resize on canvas</span>}
+          {!locked && !mockupCrop.active && (
+            <span className="ml-1 text-sky-300">— drag &amp; resize on canvas</span>
+          )}
         </div>
+
+        {!mockupCrop.active ? (
+          <div className="flex flex-wrap gap-2 pt-1">
+            <Button
+              size="sm"
+              variant="secondary"
+              className="h-7 text-[11px]"
+              disabled={cropBusy || busy}
+              onClick={() => handleStartCrop(true)}
+              data-testid="mockup-crop-auto-trim"
+            >
+              {cropBusy ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Crop className="mr-1 h-3 w-3" />}
+              Auto-trim &amp; crop
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-[11px]"
+              disabled={cropBusy || busy}
+              onClick={() => handleStartCrop(false)}
+            >
+              Manual crop box
+            </Button>
+          </div>
+        ) : (
+          <div className="space-y-2 border-t border-slate-800 pt-2">
+            {mockupCrop.rect && (
+              <MockupCropControls
+                rect={mockupCrop.rect}
+                maxW={mockup.width}
+                maxH={mockup.height}
+                onChange={(next) => actions.setMockupCropRect(next)}
+              />
+            )}
+            {sameSizeMockups && (
+              <ToggleRow
+                label="Apply same crop to front + back"
+                checked={applyCropToBoth}
+                onChange={setApplyCropToBoth}
+              />
+            )}
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                variant="default"
+                className="h-7 flex-1 text-[11px]"
+                disabled={cropBusy || busy || !mockupCrop.rect}
+                onClick={handleApplyCrop}
+                data-testid="mockup-crop-apply"
+              >
+                {cropBusy ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
+                Apply crop
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 text-[11px]"
+                disabled={cropBusy || busy}
+                onClick={() => actions.cancelMockupCrop()}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {view === "back" && frontLayers.length > 0 && (
+          <div className="border-t border-slate-800 pt-2">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 w-full text-[11px]"
+              onClick={handleCopyFromFront}
+              data-testid="copy-masks-from-front"
+            >
+              <Copy className="mr-1 h-3 w-3" />
+              Copy masks + mesh from front
+            </Button>
+            <p className="mt-1 text-[10px] text-slate-500">
+              {isPillow
+                ? "For identical pillow faces — copies polygon, mesh, and artwork; assigns Back panel."
+                : "Copies geometry as-is — review panel assignments on back."}
+            </p>
+          </div>
+        )}
+
         <ToggleRow
           label="Lock position (prevent accidental drags)"
           checked={locked}
@@ -648,10 +973,13 @@ function ReferenceOverlayUpload({
  */
 function SourceArtworkSection({ layer }: { layer: MaskLayer }) {
   const templateName = useHoodieMapperStore((s) => s.template.name);
+  const meshEdit = useHoodieMapperStore((s) => s.meshEdit);
   const actions = useHoodieMapperStore((s) => s.actions);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [busy, setBusy] = useState(false);
   const { toast } = useToast();
+  const mesh = layer.mesh;
+  const cropActive = meshEdit.cropEditing;
 
   async function handleUpload(file: File) {
     setBusy(true);
@@ -682,14 +1010,47 @@ function SourceArtworkSection({ layer }: { layer: MaskLayer }) {
       </div>
       {layer.productionPanelSrc ? (
         <div className="mt-2 space-y-2">
-          <div className="overflow-hidden rounded border border-slate-800 bg-slate-950">
-            <img
-              src={layer.productionPanelSrc}
-              alt={`Source for ${layer.name}`}
-              className="block max-h-32 w-full object-contain bg-slate-900"
-            />
-          </div>
+          {mesh ? (
+            <>
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[10px] text-slate-500">
+                  Drag the box to pick which part of the sheet the mesh samples.
+                </div>
+                <Button
+                  size="sm"
+                  variant={cropActive ? "default" : "outline"}
+                  className="h-7 shrink-0 px-2 text-[10px]"
+                  onClick={() => actions.setMeshEdit({ cropEditing: !cropActive })}
+                >
+                  <Crop className="mr-1 h-3 w-3" />
+                  {cropActive ? "Editing slice" : "Edit slice"}
+                </Button>
+              </div>
+              <SourceArtworkCropPicker
+                src={layer.productionPanelSrc}
+                alt={`Source for ${layer.name}`}
+                sourceRect={mesh.sourceRect}
+                active={cropActive}
+                onChange={(rect, opts) =>
+                  actions.setLayerMeshSourceRect(layer.id, rect, opts)
+                }
+              />
+            </>
+          ) : (
+            <div className="overflow-hidden rounded border border-slate-800 bg-slate-950">
+              <MapperAssetThumbnail
+                src={layer.productionPanelSrc}
+                alt={`Source for ${layer.name}`}
+                className="block max-h-32 w-full object-contain bg-slate-900"
+              />
+            </div>
+          )}
           <div className="break-all text-[10px] text-slate-500">{layer.productionPanelSrc}</div>
+          {!mesh && (
+            <div className="text-[10px] text-amber-300/90">
+              Initialise a mesh on this layer to enable the sheet slice picker.
+            </div>
+          )}
           <div className="flex gap-2">
             <Button
               size="sm"
@@ -807,12 +1168,17 @@ function MeshWarpSection({ layer }: { layer: MaskLayer }) {
             checked={meshEdit.showFullArtwork}
             onChange={(c) => actions.setMeshEdit({ showFullArtwork: c })}
           />
+          <ToggleRow
+            label="Edit source sheet slice"
+            checked={meshEdit.cropEditing}
+            onChange={(c) => actions.setMeshEdit({ cropEditing: c })}
+          />
           <div className="text-[10px] text-slate-500">
             Toggle on to see the artwork beyond the polygon — useful for picking which slice of a
-            sleeve sheet matches the front vs back view. Toggle off and the mask hides everything
-            outside the panel.
+            sleeve sheet matches the front vs back view. Use{" "}
+            <span className="text-fuchsia-300">Edit source sheet slice</span> to drag the crop box
+            on the uploaded panel image in the Source artwork section.
           </div>
-          <PanelTransformControls layer={layer} mesh={mesh} />
           <SourceTransformControls layer={layer} mesh={mesh} />
           <div className="flex gap-2">
             <Button
@@ -827,7 +1193,7 @@ function MeshWarpSection({ layer }: { layer: MaskLayer }) {
               size="sm"
               variant="ghost"
               className="h-8 text-[11px] text-red-300 hover:text-red-200"
-              onClick={() => actions.patchLayer(layer.id, { mesh: null })}
+              onClick={() => actions.patchLayer(layer.id, { mesh: null }, { recordUndo: true })}
             >
               Remove
             </Button>
@@ -844,33 +1210,42 @@ function MeshWarpSection({ layer }: { layer: MaskLayer }) {
 }
 
 /**
- * Rigid-body transform controls for the entire mesh (rotation +
- * translation). Bakes the transform into target points so the artwork
- * + mesh rotate/move together as a unit — matches the user's mental
- * model of "rotate the whole panel" / "move the whole panel". Per-
- * vertex deformation work is preserved.
- *
- * Primary UX is the on-canvas yellow centroid puck (drag = move) and
- * purple rotate puck (drag = rotate); this sidebar block adds quick
- * steppers for precise arithmetic adjustments.
+ * Rigid-body transform controls for the whole panel (mask polygon +
+ * mesh + artwork). Move and scale always apply to mask and mesh together.
+ * Rotation (when shown) still affects mesh/artwork only.
  */
-function PanelTransformControls({ layer, mesh }: { layer: MaskLayer; mesh: MeshGrid }) {
+function PanelTransformControls({
+  layer,
+  mesh,
+  showRotate = false,
+}: {
+  layer: MaskLayer;
+  mesh: MeshGrid | null;
+  showRotate?: boolean;
+}) {
   const actions = useHoodieMapperStore((s) => s.actions);
+  const maskAnchors = useMemo(() => svgPathToAnchors(layer.maskPath), [layer.maskPath]);
 
-  // Centroid of the mesh's target points — used as the rotation anchor
-  // for the sidebar steppers, mirroring the on-canvas puck behaviour.
+  // Centroid of mask + mesh — stable pivot when both exist but drifted.
   const anchor = useMemo(() => {
-    if (mesh.targetPoints.length === 0) return { x: 0, y: 0 };
+    const points = [...maskAnchors];
+    if (mesh?.targetPoints.length) {
+      points.push(...mesh.targetPoints);
+    }
+    if (points.length === 0) return { x: 0, y: 0 };
     let sx = 0;
     let sy = 0;
-    for (const p of mesh.targetPoints) {
+    for (const p of points) {
       sx += p.x;
       sy += p.y;
     }
-    return { x: sx / mesh.targetPoints.length, y: sy / mesh.targetPoints.length };
-  }, [mesh.targetPoints]);
+    return { x: sx / points.length, y: sy / points.length };
+  }, [maskAnchors, mesh?.targetPoints]);
 
-  const rotate = (deg: number) => actions.rotateLayerMesh(layer.id, deg, anchor);
+  const rotate = (deg: number) => {
+    if (!mesh) return;
+    actions.rotateLayerMesh(layer.id, deg, anchor);
+  };
   const translate = (dx: number, dy: number) => actions.translateLayerMesh(layer.id, dx, dy);
   const scale = (factor: number) => actions.scaleLayerMesh(layer.id, factor, anchor);
 
@@ -893,11 +1268,12 @@ function PanelTransformControls({ layer, mesh }: { layer: MaskLayer; mesh: MeshG
   return (
     <div className="space-y-2 rounded border border-yellow-700/30 bg-yellow-950/15 p-2">
       <div className="text-[10px] uppercase tracking-wide text-yellow-300">
-        Panel transform (whole mesh)
+        Panel transform (mask + mesh)
       </div>
 
+      {showRotate && mesh && (
       <div className="space-y-1">
-        <Label className="text-[10px] text-slate-400">Rotate</Label>
+        <Label className="text-[10px] text-slate-400">Rotate (mesh only)</Label>
         <div className="grid grid-cols-4 gap-1">
           <Button
             size="sm"
@@ -968,10 +1344,11 @@ function PanelTransformControls({ layer, mesh }: { layer: MaskLayer; mesh: MeshG
           </Button>
         </div>
       </div>
+      )}
 
       <div className="space-y-1">
         <div className="flex items-center justify-between">
-          <Label className="text-[10px] text-slate-400">Size (uniform — preserves ratio)</Label>
+          <Label className="text-[10px] text-slate-400">Size (mask + mesh)</Label>
           <span className="text-[10px] text-yellow-300">×{sessionScale.toFixed(2)}</span>
         </div>
         <Slider
@@ -1125,19 +1502,17 @@ function PanelTransformControls({ layer, mesh }: { layer: MaskLayer; mesh: MeshG
       </div>
 
       <div className="space-y-1 text-[10px] text-slate-500">
+        {mesh ? (
+          <div>
+            On canvas (<span className="text-purple-200">Mesh Warp W</span>): drag the{" "}
+            <span className="text-yellow-300">yellow</span> puck to move,{" "}
+            <span className="text-emerald-300">green</span> puck to resize — mask and mesh
+            move/scale together.
+          </div>
+        ) : null}
         <div>
-          On canvas: drag the <span className="text-yellow-300">yellow</span>{" "}
-          puck (centroid) to move,{" "}
-          <span className="text-purple-300">purple</span> puck (above) to
-          rotate, and <span className="text-emerald-300">green</span> puck
-          (bottom-right) to resize uniformly. Hold{" "}
-          <kbd className="rounded bg-slate-800 px-1">Shift</kbd> while
-          rotating to snap to 15°.
-        </div>
-        <div className="text-slate-400">
-          Moves the <span className="text-amber-300">mesh + artwork only</span>.
-          The polygon mask stays where you traced it — to slide the polygon
-          itself, switch to Move and drag the panel body on canvas.
+          With <span className="text-slate-300">Move (V)</span>, drag the panel body to reposition
+          mask and mesh together.
         </div>
       </div>
     </div>

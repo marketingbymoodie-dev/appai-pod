@@ -33,6 +33,7 @@ import ShippingLocationBadges from "@/components/catalog/ShippingLocationBadges"
 import { usePrintifyCatalogFilters } from "@/hooks/usePrintifyCatalogFilters";
 import { PLATFORM_CATALOG_CATEGORIES, platformCatalogCategoryLabel } from "@shared/platformCatalogCategories";
 import { PRINTIFY_SHIPPING_REGIONS } from "@shared/printifyShippingRegions";
+import { resolveFabricWeaveTexture } from "@shared/fabricWeave";
 
 interface VariantOption {
   id: string;
@@ -139,7 +140,6 @@ export default function AdminProducts() {
   const [aopTemplateMutatingId, setAopTemplateMutatingId] = useState<number | null>(null);
   const [layoutPolicyMutatingId, setLayoutPolicyMutatingId] = useState<number | null>(null);
   const [testOrderMutatingId, setTestOrderMutatingId] = useState<number | null>(null);
-  const [calibrateMutatingId, setCalibrateMutatingId] = useState<number | null>(null);
   const [resyncPricesTarget, setResyncPricesTarget] = useState<ProductType | null>(null);
 
   const { data: merchant } = useQuery<Merchant>({
@@ -423,6 +423,22 @@ export default function AdminProducts() {
     },
   });
 
+  const toggleFabricWeaveMutation = useMutation({
+    mutationFn: async (data: { id: number; fabricWeaveTexture: boolean }) => {
+      const response = await apiRequest("PATCH", `/api/admin/product-types/${data.id}`, {
+        fabricWeaveTexture: data.fabricWeaveTexture,
+      });
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
+      toast({ title: "Woven texture setting updated" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to update woven texture", description: error.message, variant: "destructive" });
+    },
+  });
+
   const updateAopTemplateMutation = useMutation({
     mutationFn: async (data: { id: number; aopTemplateId: string | null }) => {
       setAopTemplateMutatingId(data.id);
@@ -491,30 +507,6 @@ export default function AdminProducts() {
       toast({ title: "Test order failed", description: error.message, variant: "destructive" });
     },
     onSettled: () => setTestOrderMutatingId(null),
-  });
-
-  // (Re)run on-the-fly flat/mesh calibration for an existing product. Only
-  // surfaced for products that have never been calibrated (legacy imports) or
-  // whose last run failed — new imports auto-calibrate, so this never lingers.
-  const calibrateFlatMutation = useMutation({
-    mutationFn: async (id: number) => {
-      setCalibrateMutatingId(id);
-      const response = await apiRequest("POST", `/api/admin/product-types/${id}/calibrate-flat`);
-      return response.json();
-    },
-    onSuccess: () => {
-      toast({
-        title: "Calibration started",
-        description:
-          "Harvesting masks and blank photos via Printify (up to 8 colours, not all variants). " +
-          "Apparel with front + back usually takes 3–8 min. This page auto-refreshes status.",
-      });
-      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
-    },
-    onError: (error: Error) => {
-      toast({ title: "Couldn't start calibration", description: error.message, variant: "destructive" });
-    },
-    onSettled: () => setCalibrateMutatingId(null),
   });
 
   // Fetch connected Shopify shops
@@ -833,20 +825,46 @@ export default function AdminProducts() {
                       <div>Sizes: {JSON.parse(pt.sizes || "[]").length}</div>
                       <div>Colors: {JSON.parse(pt.frameColors || "[]").length}</div>
                     </div>
-                    <div className="flex items-center gap-2 mt-3">
-                      <Switch
-                        id={`aop-toggle-${pt.id}`}
-                        checked={!!pt.isAllOverPrint}
-                        onCheckedChange={(checked) =>
-                          toggleAopMutation.mutate({ id: pt.id, isAllOverPrint: checked })
-                        }
-                        data-testid={`switch-aop-${pt.id}`}
-                      />
-                      <Label htmlFor={`aop-toggle-${pt.id}`} className="text-sm cursor-pointer">
-                        All-Over Print (AOP)
-                      </Label>
-                    </div>
-                    {(pt.isAllOverPrint || productUsesToteFolded(pt)) && (
+                    {/* Platform-operator controls — merchants never configure these. */}
+                    {showOperatorCalibrationTools && (
+                      <div className="flex items-center gap-2 mt-3">
+                        <Switch
+                          id={`aop-toggle-${pt.id}`}
+                          checked={!!pt.isAllOverPrint}
+                          onCheckedChange={(checked) =>
+                            toggleAopMutation.mutate({ id: pt.id, isAllOverPrint: checked })
+                          }
+                          data-testid={`switch-aop-${pt.id}`}
+                        />
+                        <Label htmlFor={`aop-toggle-${pt.id}`} className="text-sm cursor-pointer">
+                          All-Over Print (AOP)
+                        </Label>
+                      </div>
+                    )}
+                    {showOperatorCalibrationTools &&
+                      (pt.onTheFlyTier === "flat" || pt.onTheFlyTier === "mesh") && (
+                      <div className="flex items-center gap-2 mt-3">
+                        <Switch
+                          id={`weave-toggle-${pt.id}`}
+                          checked={resolveFabricWeaveTexture({
+                            fabricWeaveTexture: (pt as ProductType & { fabricWeaveTexture?: boolean | null })
+                              .fabricWeaveTexture,
+                            printifyBlueprintId: pt.printifyBlueprintId,
+                          })}
+                          onCheckedChange={(checked) =>
+                            toggleFabricWeaveMutation.mutate({
+                              id: pt.id,
+                              fabricWeaveTexture: checked,
+                            })
+                          }
+                          data-testid={`switch-weave-${pt.id}`}
+                        />
+                        <Label htmlFor={`weave-toggle-${pt.id}`} className="text-sm cursor-pointer">
+                          Woven fabric texture (mockup)
+                        </Label>
+                      </div>
+                    )}
+                    {showOperatorCalibrationTools && (pt.isAllOverPrint || productUsesToteFolded(pt)) && (
                       <div className="mt-3 space-y-2 rounded-md border p-3">
                         <p className="text-xs font-medium text-muted-foreground">Layout overrides</p>
                         <div className="space-y-1">
@@ -918,30 +936,56 @@ export default function AdminProducts() {
                         )}
                       </div>
                     )}
-                    {pt.isAllOverPrint && (
-                      <div className="mt-3 space-y-1">
-                        <Label className="text-xs text-muted-foreground">AOP layout template</Label>
-                        <Select
-                          value={pt.aopTemplateId || AOP_TEMPLATE_SELECT_AUTO}
-                          onValueChange={(v) =>
-                            updateAopTemplateMutation.mutate({
-                              id: pt.id,
-                              aopTemplateId: v === AOP_TEMPLATE_SELECT_AUTO ? null : v,
-                            })
-                          }
-                          disabled={aopTemplateMutatingId === pt.id}
-                        >
-                          <SelectTrigger className="h-8 text-xs" data-testid={`select-aop-template-${pt.id}`}>
-                            <SelectValue placeholder="Template" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {AOP_TEMPLATE_ADMIN_OPTIONS.map((opt) => (
-                              <SelectItem key={opt.value} value={opt.value}>
-                                {opt.label}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                    {showOperatorCalibrationTools && pt.isAllOverPrint && (
+                      <div className="mt-3 space-y-3 rounded-md border p-3">
+                        <div className="space-y-1">
+                          <Label className="text-xs text-muted-foreground">
+                            Mesh panel map (storefront customizer)
+                          </Label>
+                          {(pt as { panelMappingTemplate?: string | null }).panelMappingTemplate ? (
+                            <p
+                              className="font-mono text-xs text-foreground"
+                              data-testid={`panel-mapping-template-${pt.id}`}
+                            >
+                              {(pt as { panelMappingTemplate?: string | null }).panelMappingTemplate}
+                            </p>
+                          ) : (
+                            <p className="text-xs text-amber-700 dark:text-amber-400">
+                              Not linked — publish the template in Platform Catalog, then reload this
+                              product or re-import from catalog.
+                            </p>
+                          )}
+                          <p className="text-[10px] text-muted-foreground">
+                            Set on the Platform Catalog row (AOP mapper template name). Powers the
+                            mesh-warp placer — not the legacy dropdown below.
+                          </p>
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs text-muted-foreground">
+                            Legacy pattern layout (PatternCustomizer only)
+                          </Label>
+                          <Select
+                            value={pt.aopTemplateId || AOP_TEMPLATE_SELECT_AUTO}
+                            onValueChange={(v) =>
+                              updateAopTemplateMutation.mutate({
+                                id: pt.id,
+                                aopTemplateId: v === AOP_TEMPLATE_SELECT_AUTO ? null : v,
+                              })
+                            }
+                            disabled={aopTemplateMutatingId === pt.id}
+                          >
+                            <SelectTrigger className="h-8 text-xs" data-testid={`select-aop-template-${pt.id}`}>
+                              <SelectValue placeholder="Template" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {AOP_TEMPLATE_ADMIN_OPTIONS.map((opt) => (
+                                <SelectItem key={opt.value} value={opt.value}>
+                                  {opt.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
                       </div>
                     )}
                     <div className="flex gap-2 mt-4 flex-wrap">
@@ -986,25 +1030,29 @@ export default function AdminProducts() {
                           Refresh Colors
                         </Button>
                       )}
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleUpdateShopifyProduct(pt)}
-                        disabled={shopifyMutatingProductId === pt.id}
-                        data-testid={`button-refresh-shopify-${pt.id}`}
-                      >
-                        {pt.shopifyProductId ? (
-                          <>
-                            <RefreshCw className={`h-3 w-3 mr-1 ${shopifyMutatingProductId === pt.id ? 'animate-spin' : ''}`} />
-                            Refresh Shopify
-                          </>
-                        ) : (
-                          <>
-                            <Upload className={`h-3 w-3 mr-1 ${shopifyMutatingProductId === pt.id ? 'animate-spin' : ''}`} />
-                            Send to Shopify
-                          </>
-                        )}
-                      </Button>
+                      {pt.shopifyProductId ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleUpdateShopifyProduct(pt)}
+                          disabled={shopifyMutatingProductId === pt.id}
+                          data-testid={`button-refresh-shopify-${pt.id}`}
+                        >
+                          <RefreshCw className={`h-3 w-3 mr-1 ${shopifyMutatingProductId === pt.id ? 'animate-spin' : ''}`} />
+                          Refresh Shopify
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => navigate(`/admin/customizer-pages?createForProductType=${pt.id}`)}
+                          title="Set up a storefront customizer page for this product — the Shopify product is created automatically as part of that flow."
+                          data-testid={`button-create-customizer-page-${pt.id}`}
+                        >
+                          <Upload className="h-3 w-3 mr-1" />
+                          Create Customizer Page
+                        </Button>
+                      )}
                       {pt.shopifyProductId && (
                         <Button
                           variant="outline"
@@ -1016,75 +1064,7 @@ export default function AdminProducts() {
                           Resync Prices
                         </Button>
                       )}
-                      {/* On-the-fly calibration tools — platform operator only */}
-                      {showOperatorCalibrationTools && !pt.isAllOverPrint && !pt.onTheFlyTier && pt.flatCalibrationStatus !== "unsupported" && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => calibrateFlatMutation.mutate(pt.id)}
-                          disabled={calibrateMutatingId === pt.id}
-                          title="Probe this product's print area and harvest masks/blanks so it can use on-the-fly mockups (flat/mesh) instead of Printify. Runs in the background (~1–2 min). Click again to restart if it stalls."
-                          data-testid={`button-calibrate-flat-${pt.id}`}
-                        >
-                          {(calibrateMutatingId === pt.id || pt.flatCalibrationStatus === "pending" || pt.flatCalibrationStatus === "running") ? (
-                            <>
-                              <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                              Calibrating… (click to restart)
-                            </>
-                          ) : pt.flatCalibrationStatus === "failed" ? (
-                            <>
-                              <FlaskConical className="h-3 w-3 mr-1" />
-                              Retry calibration
-                            </>
-                          ) : (
-                            <>
-                              <FlaskConical className="h-3 w-3 mr-1" />
-                              Calibrate for on-the-fly
-                            </>
-                          )}
-                        </Button>
-                      )}
-                      {showOperatorCalibrationTools && pt.onTheFlyTier && (
-                        <Badge
-                          variant={pt.onTheFlyTier === "reject" ? "secondary" : "default"}
-                          className="self-center"
-                          title={
-                            pt.onTheFlyTier === "reject"
-                              ? "Curved/3D surface — stays on Printify mockups."
-                              : "Eligible for on-the-fly local mockups."
-                          }
-                        >
-                          {pt.onTheFlyTier === "flat" ? "On-the-fly: flat" : pt.onTheFlyTier === "mesh" ? "On-the-fly: mesh" : "On-the-fly: n/a"}
-                        </Badge>
-                      )}
-                      {/* Re-run calibration for products that already have a tier
-                          (e.g. after a code fix, or when a prior run left masks
-                          but missing blank photos). */}
-                      {showOperatorCalibrationTools &&
-                        !pt.isAllOverPrint &&
-                        (pt.onTheFlyTier === "flat" || pt.onTheFlyTier === "mesh") &&
-                        pt.flatCalibrationStatus !== "unsupported" && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => calibrateFlatMutation.mutate(pt.id)}
-                          disabled={calibrateMutatingId === pt.id}
-                          title="Re-harvest masks, shading, and up to 8 blank garment photos (not one per variant). Apparel front+back: typically 3–8 min."
-                          data-testid={`button-recalibrate-flat-${pt.id}`}
-                        >
-                          {(calibrateMutatingId === pt.id || pt.flatCalibrationStatus === "pending" || pt.flatCalibrationStatus === "running") ? (
-                            <>
-                              <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                              Recalibrating…
-                            </>
-                          ) : (
-                            <>
-                              <FlaskConical className="h-3 w-3 mr-1" />
-                              Recalibrate
-                            </>
-                          )}
-                        </Button>
-                      )}
+                      {/* Calibration lives in Platform Catalog (Flat calibrator) — not shown here. */}
                       {showOperatorCalibrationTools && productSupportsTestPrintifyOrder(pt) && (
                         <Button
                           variant="outline"

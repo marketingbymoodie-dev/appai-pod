@@ -7,6 +7,7 @@ import {
   cleanupFlatGraphicAlpha,
   removeChromaKeyBackground,
   resolveApparelStylePrefix,
+  resolveGraphicsStylePrefix,
   resolveIsApparelGeneration,
   sanitizeApparelStylePrefix,
 } from "./apparel-matting";
@@ -47,7 +48,7 @@ async function bufferCenter(buffer: Buffer): Promise<{ w: number; h: number; cx:
 }
 
 describe("resolveIsApparelGeneration", () => {
-  it("treats all-over-print designerType as apparel for matting", () => {
+  it("treats all-over-print designerType as chroma for non-decor styles", () => {
     expect(
       resolveIsApparelGeneration(
         { designerType: "all-over-print", isAllOverPrint: true },
@@ -56,14 +57,33 @@ describe("resolveIsApparelGeneration", () => {
     ).toBe(true);
   });
 
-  it("treats isAllOverPrint flag as apparel even without designerType", () => {
-    expect(resolveIsApparelGeneration({ designerType: "generic", isAllOverPrint: true }, "all")).toBe(
-      true,
+  it("does not chroma-key decor styles on AOP pillows", () => {
+    expect(
+      resolveIsApparelGeneration({ designerType: "pillow", isAllOverPrint: true }, "decor"),
+    ).toBe(false);
+  });
+
+  it("does not chroma-key decor styles on generic isAllOverPrint products", () => {
+    expect(resolveIsApparelGeneration({ designerType: "generic", isAllOverPrint: true }, "decor")).toBe(
+      false,
     );
+  });
+
+  it("uses chroma for apparel styles on AOP pillows", () => {
+    expect(
+      resolveIsApparelGeneration({ designerType: "pillow", isAllOverPrint: true }, "apparel"),
+    ).toBe(true);
   });
 
   it("falls back to style category apparel", () => {
     expect(resolveIsApparelGeneration({ designerType: "generic" }, "apparel")).toBe(true);
+  });
+
+  it("uses chroma matting for graphics styles", () => {
+    expect(resolveIsApparelGeneration({ designerType: "pillow" }, "graphics")).toBe(true);
+    expect(resolveIsApparelGeneration({ designerType: "generic", isAllOverPrint: true }, "graphics")).toBe(
+      true,
+    );
   });
 });
 
@@ -72,6 +92,18 @@ describe("sanitizeApparelStylePrefix", () => {
     const out = sanitizeApparelStylePrefix("Centered graphic on white background, bold colors");
     expect(out.toLowerCase()).toContain("#ff00ff");
     expect(out.toLowerCase()).not.toContain("white background");
+  });
+});
+
+describe("resolveGraphicsStylePrefix", () => {
+  it("uses canonical graphics prefix by preset id", () => {
+    const out = resolveGraphicsStylePrefix(
+      "Centered Graphic (Graphics)",
+      "graphics-centered-graphic",
+      "",
+    );
+    expect(out.toLowerCase()).toContain("#ff00ff");
+    expect(out.toLowerCase()).not.toContain("t-shirt");
   });
 });
 

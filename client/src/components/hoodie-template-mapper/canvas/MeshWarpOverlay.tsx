@@ -2,8 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Circle, Group, Line, Shape, Text } from "react-konva";
 import Konva from "konva";
 import type { MaskLayer, Pt } from "@shared/hoodieTemplate";
-import { svgPathToAnchors } from "../lib/svgPath";
+import { svgPathToSubpaths, clipCanvasToMaskSubpaths, flattenSubpathPoints } from "../lib/svgPath";
 import { drawMeshWarp } from "../lib/meshWarp";
+import { useMapperAssetImage } from "../lib/useMapperAssetImage";
 
 /**
  * Mesh-warp editor overlay.
@@ -54,49 +55,6 @@ type Props = {
   onScaleMesh: (factor: number, anchor: Pt) => void;
 };
 
-function isCrossOrigin(src: string): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    const url = new URL(src, window.location.href);
-    return url.origin !== window.location.origin;
-  } catch {
-    return false;
-  }
-}
-
-function useSourceImage(src: string | null | undefined): {
-  img: HTMLImageElement | null;
-  loading: boolean;
-  error: string | null;
-} {
-  const [state, setState] = useState<{
-    img: HTMLImageElement | null;
-    loading: boolean;
-    error: string | null;
-  }>({ img: null, loading: false, error: null });
-  useEffect(() => {
-    if (!src) {
-      setState({ img: null, loading: false, error: null });
-      return;
-    }
-    let cancelled = false;
-    setState({ img: null, loading: true, error: null });
-    const img = new Image();
-    if (isCrossOrigin(src)) img.crossOrigin = "anonymous";
-    img.onload = () => {
-      if (!cancelled) setState({ img, loading: false, error: null });
-    };
-    img.onerror = () => {
-      if (!cancelled) setState({ img: null, loading: false, error: `Failed to load ${src}` });
-    };
-    img.src = src;
-    return () => {
-      cancelled = true;
-    };
-  }, [src]);
-  return state;
-}
-
 const HANDLE_RADIUS_PX = 5;
 const HANDLE_HIT_RADIUS_PX = 11;
 const GRID_LINE_COLOR = "rgba(192, 132, 252, 0.55)";
@@ -135,9 +93,9 @@ export default function MeshWarpOverlay({
   onTranslateMesh,
   onScaleMesh,
 }: Props) {
-  const { img, loading, error } = useSourceImage(layer.productionPanelSrc);
+  const { img, loading, error } = useMapperAssetImage(layer.productionPanelSrc);
   const mesh = layer.mesh;
-  const polygon = useMemo(() => svgPathToAnchors(layer.maskPath), [layer.maskPath]);
+  const subpaths = useMemo(() => svgPathToSubpaths(layer.maskPath), [layer.maskPath]);
   const [rotateHover, setRotateHover] = useState(false);
   const [moveHover, setMoveHover] = useState(false);
   const [scaleHover, setScaleHover] = useState(false);
@@ -154,11 +112,10 @@ export default function MeshWarpOverlay({
    * drag. Used to derive an incremental scale factor each frame. */
   const lastScaleDistanceRef = useRef<number | null>(null);
 
-  const polyPoints = useMemo(() => {
-    const flat: number[] = [];
-    for (const p of polygon) flat.push(p.x, p.y);
-    return flat;
-  }, [polygon]);
+  const polyRings = useMemo(
+    () => subpaths.filter((ring) => ring.length >= 3).map((ring) => flattenSubpathPoints(ring)),
+    [subpaths],
+  );
 
   // Centroid + AABB of the mesh in mockup coords. Computed unconditionally
   // so this hook isn't skipped when mesh is null (rules of hooks).
@@ -257,12 +214,8 @@ export default function MeshWarpOverlay({
     const c2d = (ctx as unknown as { _context?: CanvasRenderingContext2D })._context;
     if (!c2d || !img) return;
     c2d.save();
-    if (!showFullArtwork && polygon.length >= 3) {
-      c2d.beginPath();
-      c2d.moveTo(polygon[0].x, polygon[0].y);
-      for (let i = 1; i < polygon.length; i += 1) c2d.lineTo(polygon[i].x, polygon[i].y);
-      c2d.closePath();
-      c2d.clip();
+    if (!showFullArtwork) {
+      clipCanvasToMaskSubpaths(c2d, subpaths);
     }
     try {
       drawMeshWarp(c2d, img, img.naturalWidth, img.naturalHeight, mesh, {
@@ -290,16 +243,17 @@ export default function MeshWarpOverlay({
 
       {/* Polygon outline ghost — keeps the mask boundary visible even
           when "Show full artwork" is on. */}
-      {polygon.length >= 3 && (
+      {polyRings.map((points, idx) => (
         <Line
-          points={polyPoints}
+          key={`mesh-poly-${idx}`}
+          points={points}
           closed
           stroke={showFullArtwork ? "rgba(56, 189, 248, 0.9)" : "rgba(56, 189, 248, 0.25)"}
           strokeWidth={Math.max(1, 1.5 / zoom)}
           dash={showFullArtwork ? [6 / zoom, 4 / zoom] : undefined}
           listening={false}
         />
-      )}
+      ))}
 
       {/* Mesh grid lines. */}
       <Group listening={false}>

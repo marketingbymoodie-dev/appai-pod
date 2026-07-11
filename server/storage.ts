@@ -181,6 +181,7 @@ export interface IStorage {
 
   // Customizer Pages
   listCustomizerPages(shop: string): Promise<CustomizerPage[]>;
+  listCustomizerPagesByProductTypeId(productTypeId: number): Promise<CustomizerPage[]>;
   getCustomizerPage(id: string): Promise<CustomizerPage | undefined>;
   getCustomizerPageForShop(id: string, shop: string): Promise<CustomizerPage | undefined>;
   getCustomizerPageByHandle(shop: string, handle: string): Promise<CustomizerPage | undefined>;
@@ -1333,6 +1334,14 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
       .select()
       .from(customizerPages)
       .where(eq(customizerPages.shop, shop))
+      .orderBy(customizerPages.createdAt);
+  }
+
+  async listCustomizerPagesByProductTypeId(productTypeId: number): Promise<CustomizerPage[]> {
+    return db
+      .select()
+      .from(customizerPages)
+      .where(eq(customizerPages.productTypeId, productTypeId))
       .orderBy(customizerPages.createdAt);
   }
 

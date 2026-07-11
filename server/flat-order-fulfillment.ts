@@ -200,6 +200,34 @@ async function findPublishedProductByVariant(
 }
 
 /**
+ * Look up a permanent "design product" (My Designs → List as product) by its purchasable
+ * Shopify variant id. Unlike published_products (ephemeral shadow SKUs, one variant per
+ * design), a design product has a real size/color variant set mapped in `variant_map`
+ * ({ [shopifyVariantId]: { sizeId, colorId } }) — the resolved sizeId/colorId here MUST
+ * override job.size/job.frameColor (the size the artwork was originally generated at),
+ * since the customer may buy a different size/color variant of the same listing.
+ */
+async function findDesignProductByVariant(
+  shop: string,
+  variantId: string,
+): Promise<{ jobId: string; sizeId: string | null; colorId: string | null } | null> {
+  const numeric = variantId.replace("gid://shopify/ProductVariant/", "");
+  const result = await pool.query<{ job_id: string; variant_map: any }>(
+    `SELECT job_id, variant_map
+       FROM design_products
+      WHERE shop = $1 AND variant_map::jsonb ? $2
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    [shop, numeric],
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  const map = parseJson<Record<string, { sizeId?: string; colorId?: string }>>(row.variant_map, {});
+  const entry = map[numeric];
+  return { jobId: row.job_id, sizeId: entry?.sizeId ?? null, colorId: entry?.colorId ?? null };
+}
+
+/**
  * Resolve the design + Printify context for one order line. Returns:
  *   { ok:true }       — eligible flat/mesh on-the-fly line, ready to bake/submit
  *   { ok:false, skip:true }  — cleanly skip (mixed cart / normal product / AOP / no design)
@@ -209,14 +237,22 @@ export async function resolveDesignForOrderLine(
   line: NormalizedOrderLine,
   shop: string,
 ): Promise<ResolveResult> {
-  // 1) variant_id → published_products → designId (fallback to line properties)
+  // 1) variant_id → published_products (shadow SKU) OR design_products (permanent listing)
+  //    → designId (fallback to line properties for older/legacy carts)
   let designId: string | null = null;
   let resolvedShop = shop;
+  let designProductOverride: { sizeId: string | null; colorId: string | null } | null = null;
   if (line.variantId) {
     const pp = await findPublishedProductByVariant(shop, line.variantId);
     if (pp) {
       designId = pp.designId;
       resolvedShop = pp.shop || shop;
+    } else {
+      const dp = await findDesignProductByVariant(shop, line.variantId);
+      if (dp) {
+        designId = dp.jobId;
+        designProductOverride = { sizeId: dp.sizeId, colorId: dp.colorId };
+      }
     }
   }
   if (!designId) {
@@ -281,8 +317,8 @@ export async function resolveDesignForOrderLine(
       offsetX: (dsX - 50) / 50,
       offsetY: (dsY - 50) / 50,
     };
-    const sizeId = String(line.properties["Size"] || job.size || "default");
-    const colorId = String(line.properties["Color"] || job.frameColor || "default");
+    const sizeId = String(designProductOverride?.sizeId || line.properties["Size"] || job.size || "default");
+    const colorId = String(designProductOverride?.colorId || line.properties["Color"] || job.frameColor || "default");
 
     return {
       ok: true,
@@ -332,8 +368,8 @@ export async function resolveDesignForOrderLine(
     }
   }
 
-  const sizeId = String(line.properties["Size"] || job.size || "default");
-  const colorId = String(line.properties["Color"] || job.frameColor || "default");
+  const sizeId = String(designProductOverride?.sizeId || line.properties["Size"] || job.size || "default");
+  const colorId = String(designProductOverride?.colorId || line.properties["Color"] || job.frameColor || "default");
 
   return {
     ok: true,

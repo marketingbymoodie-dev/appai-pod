@@ -37,8 +37,31 @@ export const ZIP_HOODIE_BLUEPRINT_ID = 451;
 export const SWEATSHIRT_BLUEPRINT_ID = 449;
 /** Printify blueprint 220 (spun polyester pillow wrap AOP) — two faces, wide print canvas. */
 export const PILLOW_WRAP_BLUEPRINT_ID = 220;
+/** Printify blueprint 223 (faux suede square pillow AOP) — same two-face wrap layout as bp 220. */
+export const FAUX_SUEDE_PILLOW_WRAP_BLUEPRINT_ID = 223;
+/** Printify blueprint 2758 (body pillow AOP) — long wrap, front + back faces only. */
+export const BODY_PILLOW_WRAP_BLUEPRINT_ID = 2758;
+/** Printify blueprint 538 (lumbar pillow AOP) — separate front/back print files. */
+export const LUMBAR_PILLOW_WRAP_BLUEPRINT_ID = 538;
+
+/** All Printify blueprint ids that share the pillow wrap editor (front/back faces, no hood/sleeves). */
+export const PILLOW_WRAP_BLUEPRINT_IDS: readonly number[] = [
+  PILLOW_WRAP_BLUEPRINT_ID,
+  FAUX_SUEDE_PILLOW_WRAP_BLUEPRINT_ID,
+  LUMBAR_PILLOW_WRAP_BLUEPRINT_ID,
+  BODY_PILLOW_WRAP_BLUEPRINT_ID,
+];
 
 export type WrapBackMode = "duplicate" | "solid-color";
+
+/** Storefront placer UI — hoodie garment parts vs front/back pillow faces. */
+export type PlacerEditor = "hoodie" | "front-back-face";
+
+/** Order-time Printify print_areas — one wide canvas vs separate front/back files. */
+export type PrintFileLayout = "wrap-single" | "split-front-back";
+
+/** Garment part layout when placerEditor is hoodie — full hoodie vs sleeves-only jumper. */
+export type GarmentLayout = "hoodie" | "jumper-no-hood";
 
 export type HoodiePanelKey =
   | "front"
@@ -457,6 +480,12 @@ export type HoodieTemplate = {
    * customer placer state overrides at runtime.
    */
   wrapBackMode?: WrapBackMode;
+  /** Storefront editor controls — hoodie parts vs front/back faces only. */
+  placerEditor?: PlacerEditor;
+  /** Order fulfillment hint — side-by-side wrap canvas vs split front/back PNGs. */
+  printFileLayout?: PrintFileLayout;
+  /** Hoodie editor only — full garment (hood/pockets) vs front/back/sleeves without hood. */
+  garmentLayout?: GarmentLayout;
 };
 
 export const EMPTY_HOODIE_VIEW: HoodieViewState = {
@@ -746,7 +775,118 @@ export function isSweatshirtBlueprint(blueprintId: number | null | undefined): b
 }
 
 export function isPillowWrapBlueprint(blueprintId: number | null | undefined): boolean {
-  return blueprintId === PILLOW_WRAP_BLUEPRINT_ID;
+  if (blueprintId == null) return false;
+  return PILLOW_WRAP_BLUEPRINT_IDS.includes(blueprintId);
+}
+
+type PlacerEditorTemplateLike = Pick<
+  HoodieTemplate,
+  "placerEditor" | "blueprintId" | "hoodieType" | "designGroups"
+>;
+
+export function defaultPlacerEditorForBlueprint(
+  blueprintId: number | null | undefined,
+): PlacerEditor {
+  return isPillowWrapBlueprint(blueprintId) ? "front-back-face" : "hoodie";
+}
+
+export function defaultPrintFileLayoutForBlueprint(
+  blueprintId: number | null | undefined,
+): PrintFileLayout {
+  if (
+    blueprintId === BODY_PILLOW_WRAP_BLUEPRINT_ID ||
+    blueprintId === LUMBAR_PILLOW_WRAP_BLUEPRINT_ID
+  ) {
+    return "split-front-back";
+  }
+  if (isPillowWrapBlueprint(blueprintId)) return "wrap-single";
+  return "split-front-back";
+}
+
+/** Resolve explicit or legacy template signals into a placer editor mode. */
+export function resolvePlacerEditor(
+  template: PlacerEditorTemplateLike | null | undefined,
+): PlacerEditor {
+  if (!template) return "hoodie";
+  if (template.placerEditor === "hoodie" || template.placerEditor === "front-back-face") {
+    return template.placerEditor;
+  }
+  if (isPillowWrapBlueprint(template.blueprintId)) return "front-back-face";
+  if (template.hoodieType === "pillow-wrap-aop") return "front-back-face";
+  const groups = template.designGroups;
+  if (groups?.length) {
+    const ids = new Set(groups.map((g) => g.id));
+    if (
+      ids.has("front-face") &&
+      ids.has("back-face") &&
+      !ids.has("front-body") &&
+      !ids.has("hood")
+    ) {
+      return "front-back-face";
+    }
+  }
+  return "hoodie";
+}
+
+export function resolvePrintFileLayout(
+  template: Pick<HoodieTemplate, "printFileLayout" | "blueprintId" | "placerEditor"> | null | undefined,
+): PrintFileLayout {
+  if (!template) return "split-front-back";
+  if (template.printFileLayout === "wrap-single" || template.printFileLayout === "split-front-back") {
+    return template.printFileLayout;
+  }
+  return defaultPrintFileLayoutForBlueprint(template.blueprintId);
+}
+
+/** Storefront/editor front-back-face detection — explicit placerEditor or legacy signals. */
+export function isPillowWrapTemplate(template: PlacerEditorTemplateLike | null | undefined): boolean {
+  return resolvePlacerEditor(template) === "front-back-face";
+}
+
+type GarmentLayoutTemplateLike = Pick<
+  HoodieTemplate,
+  "garmentLayout" | "blueprintId" | "placerEditor"
+>;
+
+export function resolveGarmentLayout(
+  template: GarmentLayoutTemplateLike | null | undefined,
+): GarmentLayout {
+  if (!template) return "hoodie";
+  if (template.garmentLayout === "hoodie" || template.garmentLayout === "jumper-no-hood") {
+    return template.garmentLayout;
+  }
+  if (resolvePlacerEditor(template) !== "hoodie") return "hoodie";
+  if (isSweatshirtBlueprint(template.blueprintId)) return "jumper-no-hood";
+  return "hoodie";
+}
+
+/** Storefront jumper UI — front/back/sleeves, no hood/pockets (any blueprint when flagged). */
+export function usesJumperNoHoodGarmentUi(
+  template: GarmentLayoutTemplateLike | null | undefined,
+): boolean {
+  if (!template) return false;
+  if (resolvePlacerEditor(template) !== "hoodie") return false;
+  return resolveGarmentLayout(template) === "jumper-no-hood";
+}
+
+/** Front/back/sleeves/trim groups — same structure as bp 449 sweatshirt. */
+export function defaultJumperNoHoodDesignGroups(): DesignGroup[] {
+  return defaultSweatshirtDesignGroups();
+}
+
+export function designGroupsForPlacerEditor(
+  placerEditor: PlacerEditor,
+  blueprintId: number | null | undefined,
+  garmentLayout?: GarmentLayout | null,
+): DesignGroup[] {
+  if (placerEditor === "front-back-face") return defaultPillowWrapDesignGroups();
+  return designGroupsForBlueprint(blueprintId, garmentLayout);
+}
+
+function designGroupsLookLikeHoodie(groups: DesignGroup[] | undefined): boolean {
+  if (!groups?.length) return false;
+  const ids = new Set(groups.map((g) => g.id));
+  return ids.has("front-body") || ids.has("hood") || ids.has("left-sleeve");
 }
 
 /** Hoodie-only keys hidden for pillow wrap templates. */
@@ -815,10 +955,17 @@ const SWEATSHIRT_EXCLUDED_PANEL_KEYS: readonly HoodiePanelKey[] = [
   "right_hood",
 ];
 
-export function designGroupsForBlueprint(blueprintId: number | null | undefined): DesignGroup[] {
+export function designGroupsForBlueprint(
+  blueprintId: number | null | undefined,
+  garmentLayout?: GarmentLayout | null,
+): DesignGroup[] {
   if (isPillowWrapBlueprint(blueprintId)) return defaultPillowWrapDesignGroups();
-  if (isSweatshirtBlueprint(blueprintId)) return defaultSweatshirtDesignGroups();
+  const layout =
+    garmentLayout ??
+    (isSweatshirtBlueprint(blueprintId) ? "jumper-no-hood" : "hoodie");
+  if (layout === "jumper-no-hood") return defaultJumperNoHoodDesignGroups();
   if (isPulloverHoodieBlueprint(blueprintId)) return defaultPulloverDesignGroups();
+  if (isZipHoodieBlueprint(blueprintId)) return defaultDesignGroups();
   return defaultDesignGroups();
 }
 
@@ -829,8 +976,9 @@ export function designGroupsForBlueprint(blueprintId: number | null | undefined)
 export function mergeDesignGroupsForBlueprintSwitch(
   blueprintId: number,
   existing: DesignGroup[] | undefined,
+  garmentLayout?: GarmentLayout | null,
 ): DesignGroup[] {
-  const defaults = designGroupsForBlueprint(blueprintId);
+  const defaults = designGroupsForBlueprint(blueprintId, garmentLayout);
   if (!existing?.length) return defaults;
   return defaults.map((def) => {
     const prev = existing.find((g) => g.id === def.id);
@@ -852,12 +1000,19 @@ export function mergeDesignGroupsForBlueprintSwitch(
 export function panelsEligibleForView(
   view: HoodieView,
   blueprintId: number | null | undefined,
+  placerEditor?: PlacerEditor | null,
+  garmentLayout?: GarmentLayout | null,
 ): readonly HoodiePanelKey[] {
   const all = PANELS_PER_VIEW[view];
-  if (isPillowWrapBlueprint(blueprintId)) {
+  const frontBackFace =
+    placerEditor === "front-back-face" ||
+    (placerEditor == null && isPillowWrapBlueprint(blueprintId));
+  if (frontBackFace) {
     return all.filter((k) => !PILLOW_EXCLUDED_PANEL_KEYS.includes(k));
   }
-  if (isSweatshirtBlueprint(blueprintId)) {
+  const jumperPanels =
+    garmentLayout === "jumper-no-hood" || isSweatshirtBlueprint(blueprintId);
+  if (jumperPanels) {
     return all.filter((k) => !SWEATSHIRT_EXCLUDED_PANEL_KEYS.includes(k));
   }
   if (view !== "front") return all;
@@ -949,11 +1104,35 @@ export function normalizeHoodieTemplate(template: HoodieTemplate): HoodieTemplat
       ];
     }
   }
-  if (isSweatshirtBlueprint(template.blueprintId)) {
+  const placerEditor = resolvePlacerEditor({ ...template, designGroups });
+  const garmentLayout = resolveGarmentLayout({ ...template, designGroups, placerEditor });
+  if (usesJumperNoHoodGarmentUi({ ...template, designGroups, placerEditor, garmentLayout })) {
+    designGroups = migrateSweatshirtDesignGroups(designGroups);
+  } else if (isSweatshirtBlueprint(template.blueprintId)) {
     designGroups = migrateSweatshirtDesignGroups(designGroups);
   }
+  if (placerEditor === "front-back-face") {
+    const bp = template.blueprintId ?? PILLOW_WRAP_BLUEPRINT_ID;
+    if (designGroupsLookLikeHoodie(designGroups) || !designGroups?.some((g) => g.id === "front-face")) {
+      designGroups = mergeDesignGroupsForBlueprintSwitch(bp, designGroups);
+    }
+  } else if (
+    garmentLayout === "jumper-no-hood" &&
+    (designGroupsLookLikeHoodie(designGroups) || designGroups?.some((g) => g.id === "hood"))
+  ) {
+    const bp = template.blueprintId ?? SWEATSHIRT_BLUEPRINT_ID;
+    designGroups = mergeDesignGroupsForBlueprintSwitch(bp, designGroups, "jumper-no-hood");
+    designGroups = migrateSweatshirtDesignGroups(designGroups);
+  }
+  const printFileLayout = resolvePrintFileLayout({
+    ...template,
+    placerEditor,
+  });
   return {
     ...template,
+    placerEditor,
+    printFileLayout,
+    garmentLayout: placerEditor === "front-back-face" ? undefined : garmentLayout,
     designGroups,
     tileSettings: template.tileSettings ?? { ...DEFAULT_TILE_SETTINGS },
     realWorldCalibration:
@@ -966,6 +1145,11 @@ export const AOP_TEMPLATE_SLUG_RE = /^[a-zA-Z0-9_\-]{1,64}$/;
 
 export function isValidAopTemplateSlug(name: string): boolean {
   return AOP_TEMPLATE_SLUG_RE.test(name);
+}
+
+/** Normalize free-text (labels, pasted names) into a mapper slug. */
+export function normalizeAopTemplateSlugInput(raw: string): string {
+  return raw.trim().replace(/[^a-zA-Z0-9_\-]/g, "_").slice(0, 64);
 }
 
 export function defaultHoodieTypeForBlueprint(blueprintId: number): string {
@@ -983,9 +1167,20 @@ export function createFreshAopTemplate(args: {
   productTypeId?: number | null;
   hoodieType?: string;
   size?: string | null;
+  placerEditor?: PlacerEditor;
+  printFileLayout?: PrintFileLayout;
+  garmentLayout?: GarmentLayout;
 }): HoodieTemplate {
   const now = new Date().toISOString();
   const blueprintId = args.blueprintId;
+  const placerEditor = args.placerEditor ?? defaultPlacerEditorForBlueprint(blueprintId);
+  const printFileLayout =
+    args.printFileLayout ?? defaultPrintFileLayoutForBlueprint(blueprintId);
+  const garmentLayout =
+    placerEditor === "front-back-face"
+      ? undefined
+      : args.garmentLayout ??
+        (isSweatshirtBlueprint(blueprintId) ? "jumper-no-hood" : "hoodie");
   return normalizeHoodieTemplate({
     version: HOODIE_TEMPLATE_VERSION,
     name: args.name,
@@ -994,13 +1189,16 @@ export function createFreshAopTemplate(args: {
     productTypeId: args.productTypeId ?? null,
     blueprintId,
     size: args.size ?? "L",
+    placerEditor,
+    printFileLayout,
+    garmentLayout,
     meta: { createdAt: now, updatedAt: now },
     views: {
       front: { ...EMPTY_HOODIE_VIEW },
       back: { ...EMPTY_HOODIE_VIEW },
     },
     globalExclusions: [],
-    designGroups: designGroupsForBlueprint(blueprintId),
+    designGroups: designGroupsForPlacerEditor(placerEditor, blueprintId, garmentLayout),
     tileSettings: { ...DEFAULT_TILE_SETTINGS },
     realWorldCalibration: { ...DEFAULT_REAL_WORLD_CALIBRATION },
   });

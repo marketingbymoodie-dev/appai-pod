@@ -1,7 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import {
+  Undo2,
+  Redo2,
   MousePointer2,
   PenLine,
   Magnet,
@@ -27,14 +36,24 @@ import {
   saveTemplate,
   uploadMockup,
   downloadPrintifyBlankMockups,
+  appendCacheBust,
   type SaveTemplatePublishResult,
 } from "./api";
 import AopPreviewModal from "./AopPreviewModal";
 import FreshStartDialog from "./FreshStartDialog";
 import { clearAutosave } from "./lib/autosave";
 
+function formatError(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (err && typeof err === "object" && "message" in err && typeof (err as { message?: unknown }).message === "string") {
+    return (err as { message: string }).message;
+  }
+  return String(err);
+}
+
 type Props = {
   onOpenLoadDialog: () => void;
+  onLoadTemplate: (slug: string) => void;
 };
 
 const TOOL_BUTTONS: Array<{
@@ -96,13 +115,15 @@ function publishToastLines(
   };
 }
 
-export default function Toolbar({ onOpenLoadDialog }: Props) {
+export default function Toolbar({ onOpenLoadDialog, onLoadTemplate }: Props) {
   const { toast } = useToast();
   const tool = useHoodieMapperStore((s) => s.tool);
   const view = useHoodieMapperStore((s) => s.view);
   const template = useHoodieMapperStore((s) => s.template);
   const dirty = useHoodieMapperStore((s) => s.dirty);
   const busy = useHoodieMapperStore((s) => s.busy);
+  const canUndo = useHoodieMapperStore((s) => s.undoStack.length > 0);
+  const canRedo = useHoodieMapperStore((s) => s.redoStack.length > 0);
   const actions = useHoodieMapperStore((s) => s.actions);
 
   const frontInputRef = useRef<HTMLInputElement | null>(null);
@@ -121,13 +142,20 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
   );
   const previewReady = totalLayers > 0 && hasMockup;
 
-  // Keyboard shortcuts: V (Move), P (Polygon Pen), M (Magnetic Pen).
+  // Keyboard shortcuts: V (Move), P (Polygon Pen), M (Magnetic Pen), Ctrl+Z / Ctrl+Shift+Z.
   // Skipped while typing in form fields so we don't hijack input.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null;
       if (target && /input|textarea|select/i.test(target.tagName)) return;
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (e.shiftKey) actions.redo();
+        else actions.undo();
+        return;
+      }
+      if (mod || e.altKey) return;
       const key = e.key.toLowerCase();
       const match = TOOL_BUTTONS.find((t) => t.shortcut === key);
       if (!match) return;
@@ -153,16 +181,6 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
     }
   }
 
-  function loadImageDimensionsFromUrl(url: string): Promise<{ width: number; height: number }> {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () =>
-        resolve({ width: img.naturalWidth, height: img.naturalHeight });
-      img.onerror = reject;
-      img.src = url;
-    });
-  }
-
   async function handleDownloadPrintifyBlanks() {
     if (!template.blueprintId) {
       toast({
@@ -177,17 +195,20 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
       await saveTemplate(template.name, template);
       const result = await downloadPrintifyBlankMockups(template.name);
       for (const d of result.downloaded) {
-        const dims = await loadImageDimensionsFromUrl(d.url);
-        actions.setMockup(d.view, { src: d.url, width: dims.width, height: dims.height });
+        actions.setMockup(d.view, {
+          src: appendCacheBust(d.url, Date.now()),
+          width: d.width,
+          height: d.height,
+        });
       }
       toast({
         title: "Blank mockups downloaded",
         description: `Printify bp ${result.blueprintId}: ${result.downloaded.map((d) => d.view).join(", ")}`,
       });
-    } catch (err: any) {
+    } catch (err: unknown) {
       toast({
         title: "Printify download failed",
-        description: err?.message || String(err),
+        description: formatError(err),
         variant: "destructive",
       });
     } finally {
@@ -283,23 +304,52 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
         })}
       </div>
 
+      <Button
+        size="sm"
+        variant="ghost"
+        className="h-8 w-8 p-0"
+        onClick={() => actions.undo()}
+        disabled={!canUndo || busy}
+        title="Undo (Ctrl+Z)"
+        data-testid="hoodie-undo"
+      >
+        <Undo2 className="h-4 w-4" />
+      </Button>
+      <Button
+        size="sm"
+        variant="ghost"
+        className="h-8 w-8 p-0"
+        onClick={() => actions.redo()}
+        disabled={!canRedo || busy}
+        title="Redo (Ctrl+Shift+Z)"
+        data-testid="hoodie-redo"
+      >
+        <Redo2 className="h-4 w-4" />
+      </Button>
+
       <div className="mx-2 h-6 w-px bg-slate-700" />
 
-      {/* View switcher */}
-      <div className="flex overflow-hidden rounded-md border border-slate-700">
-        {(["front", "back"] as HoodieView[]).map((v) => (
-          <Button
-            key={v}
-            size="sm"
-            variant={view === v ? "default" : "ghost"}
-            onClick={() => actions.setView(v)}
-            data-testid={`hoodie-view-${v}`}
-            className="h-8 rounded-none border-0 px-3 text-xs uppercase tracking-wide"
-          >
-            {v}
-          </Button>
-        ))}
-      </div>
+      {/* View switcher — compact dropdown so FRONT/BACK stays usable in narrow Shopify admin iframes */}
+      <Select
+        value={view}
+        onValueChange={(v) => actions.setView(v as HoodieView)}
+      >
+        <SelectTrigger
+          className="h-8 w-[5.5rem] shrink-0 border-slate-700 bg-slate-950 px-2 text-xs uppercase tracking-wide"
+          aria-label="Mockup view"
+          data-testid="hoodie-view-select"
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="front" className="text-xs uppercase" data-testid="hoodie-view-front">
+            Front
+          </SelectItem>
+          <SelectItem value="back" className="text-xs uppercase" data-testid="hoodie-view-back">
+            Back
+          </SelectItem>
+        </SelectContent>
+      </Select>
 
       <div className="mx-2 h-6 w-px bg-slate-700" />
 
@@ -468,6 +518,7 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
       <FreshStartDialog
         open={freshStartOpen}
         onOpenChange={setFreshStartOpen}
+        onLoadExisting={onLoadTemplate}
         onConfirm={(template) => {
           actions.loadTemplate(template);
           clearAutosave();

@@ -49,9 +49,10 @@ import {
   drawMockupImageInCanvas,
   findGroupForPanel,
   layerRenderPriority,
+  mockupDrawRect,
   SEAM_PAIR_PANELS,
 } from "@shared/hoodieTemplate";
-import { svgPathToAnchors } from "./svgPath";
+import { svgPathToAnchors, svgPathToSubpaths, clipCanvasToMaskSubpaths, appendMaskSubpathsToPath, boundingBoxOfSubpaths } from "./svgPath";
 import { drawMeshWarp } from "./meshWarp";
 
 /**
@@ -594,6 +595,73 @@ function aabbOf(anchors: Pt[]): Aabb | null {
   return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
 }
 
+export type AopPreviewCanvasBounds = {
+  width: number;
+  height: number;
+  offsetX: number;
+  offsetY: number;
+};
+
+/**
+ * Canvas size for the AOP preview — large enough for a scaled/repositioned
+ * mockup blank and traced masks. Origin shift keeps negative mockup coords
+ * visible instead of clipping at the canvas edge.
+ */
+export function resolveAopPreviewCanvasBounds(
+  template: HoodieTemplate,
+  view: HoodieView,
+  mockup: HTMLImageElement,
+): AopPreviewCanvasBounds {
+  const viewState = template.views[view];
+  const mockupAsset = viewState?.mockup ?? null;
+  const baseW = mockup.naturalWidth || mockup.width || 1;
+  const baseH = mockup.naturalHeight || mockup.height || 1;
+  let minX = 0;
+  let minY = 0;
+  let maxX = baseW;
+  let maxY = baseH;
+
+  if (mockupAsset) {
+    const dr = mockupDrawRect(mockupAsset);
+    minX = Math.min(minX, dr.x);
+    minY = Math.min(minY, dr.y);
+    maxX = Math.max(maxX, dr.x + dr.renderWidth);
+    maxY = Math.max(maxY, dr.y + dr.renderHeight);
+  }
+
+  for (const layer of viewState?.layers ?? []) {
+    if (!layer.visible) continue;
+    const anchors = svgPathToAnchors(layer.maskPath);
+    const bb = aabbOf(anchors);
+    if (bb) {
+      minX = Math.min(minX, bb.x);
+      minY = Math.min(minY, bb.y);
+      maxX = Math.max(maxX, bb.x + bb.width);
+      maxY = Math.max(maxY, bb.y + bb.height);
+    }
+    if (layer.mesh) {
+      for (const p of layer.mesh.targetPoints) {
+        minX = Math.min(minX, p.x);
+        minY = Math.min(minY, p.y);
+        maxX = Math.max(maxX, p.x);
+        maxY = Math.max(maxY, p.y);
+      }
+    }
+  }
+
+  const pad = 4;
+  minX -= pad;
+  minY -= pad;
+  maxX += pad;
+  maxY += pad;
+  return {
+    offsetX: minX,
+    offsetY: minY,
+    width: Math.max(1, Math.ceil(maxX - minX)),
+    height: Math.max(1, Math.ceil(maxY - minY)),
+  };
+}
+
 function unionAabb(a: Aabb, b: Aabb): Aabb {
   const x0 = Math.min(a.x, b.x);
   const y0 = Math.min(a.y, b.y);
@@ -614,10 +682,15 @@ function totalPrintAabb(layers: MaskLayer[], filter?: (l: MaskLayer) => boolean)
     if (layer.isExclusion) continue;
     if (!layer.visible) continue;
     if (filter && !filter(layer)) continue;
-    const anchors = svgPathToAnchors(layer.maskPath);
-    if (anchors.length < 3) continue;
-    const bb = aabbOf(anchors);
-    if (!bb) continue;
+    const subpaths = svgPathToSubpaths(layer.maskPath);
+    const bbFlat = boundingBoxOfSubpaths(subpaths);
+    if (!bbFlat) continue;
+    const bb = {
+      x: bbFlat.minX,
+      y: bbFlat.minY,
+      width: bbFlat.maxX - bbFlat.minX,
+      height: bbFlat.maxY - bbFlat.minY,
+    };
     total = total ? unionAabb(total, bb) : bb;
   }
   return total;
@@ -1183,17 +1256,23 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     backgroundColor = null,
   } = params;
 
-  const W = params.width ?? mockup.naturalWidth ?? mockup.width;
-  const H = params.height ?? mockup.naturalHeight ?? mockup.height;
+  const canvasBounds = resolveAopPreviewCanvasBounds(template, view, mockup);
+  const W = params.width ?? canvasBounds.width;
+  const H = params.height ?? canvasBounds.height;
   if (ctx.canvas.width !== W) ctx.canvas.width = W;
   if (ctx.canvas.height !== H) ctx.canvas.height = H;
 
   const viewState = template.views[view];
+  const contentOffsetX = params.width != null ? 0 : canvasBounds.offsetX;
+  const contentOffsetY = params.width != null ? 0 : canvasBounds.offsetY;
 
   // Step 1: Mockup base (optional x/y/scale alignment).
   ctx.clearRect(0, 0, W, H);
   const viewMockupAsset = viewState?.mockup ?? null;
+  ctx.save();
+  ctx.translate(-contentOffsetX, -contentOffsetY);
   drawMockupImageInCanvas(ctx, mockup, viewMockupAsset, W, H);
+  ctx.restore();
 
   if (!viewState) return;
 
@@ -1221,6 +1300,8 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
   printCanvas.height = H;
   const pctx = printCanvas.getContext("2d");
   if (!pctx) return;
+  pctx.save();
+  pctx.translate(-contentOffsetX, -contentOffsetY);
 
   // `useColors` controls whether each panel paints the debug colour fill
   // instead of artwork. Solid-colors mode is the explicit "show me the
@@ -1297,12 +1378,14 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     1024 / 24;
 
   for (const layer of printLayers) {
-    const anchors = svgPathToAnchors(layer.maskPath);
-    if (anchors.length < 3) continue;
+    const subpaths = svgPathToSubpaths(layer.maskPath);
+    const layerBb = aabbOf(subpaths.flat());
 
     pctx.save();
-    pathPolygon(pctx, anchors);
-    pctx.clip();
+    if (!clipCanvasToMaskSubpaths(pctx, subpaths)) {
+      pctx.restore();
+      continue;
+    }
     pctx.globalAlpha = layer.opacity;
 
     // Whether this panel actually receives artwork. When false, the
@@ -1472,7 +1555,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
       // Fallback (no mesh): the legacy mockup-coord tile draw —
       // anchored at canvas center to keep the zip / hood-opening
       // symmetric.
-      const bb = aabbOf(anchors);
+      const bb = layerBb;
       let drewTile = false;
       if (layer.mesh) {
         const flatTile = renderTiledFlatPanel(
@@ -1524,7 +1607,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
         layerRect.effective.width > 0 &&
         layerRect.effective.height > 0
       ) {
-        const bb = aabbOf(anchors);
+        const bb = layerBb;
         if (bb) {
           synthSrc = synthesiseSeamAwareSourceRect(
             bb,
@@ -1544,12 +1627,12 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     } else if (artwork) {
       // No mesh on this layer — fall back to a flat stretched draw.
       if (mode === "tile" && tileSettings) {
-        drawTileFlat(pctx, artwork, aabbOf(anchors), tileSettings, ppi);
+        drawTileFlat(pctx, artwork, layerBb, tileSettings, ppi);
       } else if (mode === "single-sheet" && layerRect) {
         // Apply seam allowance via UV inset by computing the slice
         // of the artwork the panel reads, then drawing that slice
         // stretched into the panel's bbox.
-        const bb = aabbOf(anchors);
+        const bb = layerBb;
         if (bb) {
           const aw = artwork.naturalWidth || artwork.width;
           const ah = artwork.naturalHeight || artwork.height;
@@ -1573,7 +1656,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
           );
         }
       } else {
-        const bb = aabbOf(anchors);
+        const bb = layerBb;
         if (bb) pctx.drawImage(artwork, bb.x, bb.y, bb.width, bb.height);
       }
     } else if (layer.mesh && layerSrc) {
@@ -1607,18 +1690,22 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     pctx.globalCompositeOperation = "destination-out";
     pctx.fillStyle = "#000"; // colour irrelevant under destination-out, only alpha matters
     for (const layer of exclusionLayers) {
-      const anchors = svgPathToAnchors(layer.maskPath);
-      if (anchors.length < 3) continue;
-      pathPolygon(pctx, anchors);
+      const subpaths = svgPathToSubpaths(layer.maskPath);
+      pctx.beginPath();
+      if (!appendMaskSubpathsToPath(pctx, subpaths)) continue;
       pctx.fill();
     }
     pctx.restore();
   }
 
+  pctx.restore();
+
   // Step 4: Composite print onto mockup.
   ctx.drawImage(printCanvas, 0, 0);
 
   // Step 5: Optional outlines + labels for debugging.
+  ctx.save();
+  ctx.translate(-contentOffsetX, -contentOffsetY);
   if (showOutlines) drawOutlines(ctx, visible);
   if (showLabels) drawLabels(ctx, visible);
   // Step 6: Design-rect overlays — one dashed outline per group, the
@@ -1631,6 +1718,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
       drawDesignRect(ctx, info, isActive);
     }
   }
+  ctx.restore();
 }
 
 function drawDesignRect(
@@ -1666,9 +1754,10 @@ function drawOutlines(ctx: CanvasRenderingContext2D, layers: MaskLayer[]): void 
   ctx.save();
   ctx.lineWidth = 2;
   for (const layer of layers) {
-    const anchors = svgPathToAnchors(layer.maskPath);
-    if (anchors.length < 3) continue;
-    pathPolygon(ctx, anchors);
+    const subpaths = svgPathToSubpaths(layer.maskPath).filter((ring) => ring.length >= 3);
+    if (subpaths.length === 0) continue;
+    ctx.beginPath();
+    appendMaskSubpathsToPath(ctx, subpaths);
     ctx.strokeStyle = layer.isExclusion ? EXCLUSION_OUTLINE : PRINT_OUTLINE;
     if (layer.isExclusion) ctx.setLineDash([8, 6]);
     else ctx.setLineDash([]);
@@ -1685,9 +1774,9 @@ function drawLabels(ctx: CanvasRenderingContext2D, layers: MaskLayer[]): void {
   ctx.lineWidth = 3;
   ctx.strokeStyle = "rgba(0,0,0,0.65)";
   for (const layer of layers) {
-    const anchors = svgPathToAnchors(layer.maskPath);
-    if (anchors.length < 3) continue;
-    const c = centroid(anchors);
+    const flat = svgPathToSubpaths(layer.maskPath).flat();
+    if (flat.length < 3) continue;
+    const c = centroid(flat);
     const text = layer.panelKey
       ? layer.panelKey.replace(/_/g, " ")
       : layer.isExclusion
@@ -1706,8 +1795,13 @@ function drawLabels(ctx: CanvasRenderingContext2D, layers: MaskLayer[]): void {
  * preview canvas back out of React.
  */
 export function renderAopPreviewToCanvas(params: AopPreviewParams): HTMLCanvasElement {
-  const W = params.width ?? params.mockup.naturalWidth ?? params.mockup.width;
-  const H = params.height ?? params.mockup.naturalHeight ?? params.mockup.height;
+  const bounds = resolveAopPreviewCanvasBounds(
+    params.template,
+    params.view,
+    params.mockup,
+  );
+  const W = params.width ?? bounds.width;
+  const H = params.height ?? bounds.height;
   const canvas = document.createElement("canvas");
   canvas.width = W;
   canvas.height = H;

@@ -30,6 +30,10 @@ import {
 } from "lucide-react";
 import { CreditDisplay } from "@/components/credit-display";
 import type { Customer, Design, PrintSize, FrameColor, StylePreset, ProductType } from "@shared/schema";
+import {
+  selectableCategoriesForDesignerType,
+  styleMatchesSelectableCategories,
+} from "@shared/customizerPageStyles";
 import { getColorTier, type ColorTier } from "@shared/colorUtils";
 import {
   AlertDialog,
@@ -913,15 +917,20 @@ export default function DesignPage() {
     setShowTweak(false);
   };
 
-  const getStyleCategory = (): "decor" | "apparel" => {
-    const designerType = designerConfig?.designerType || "";
-    if (designerType === "apparel" || designerType.includes("shirt") || designerType.includes("hoodie")) return "apparel";
-    return "decor";
-  };
-
-  const styleCategory = getStyleCategory();
+  const selectableStyleCategories = selectableCategoriesForDesignerType(designerConfig?.designerType);
   const filteredStyles =
-    config?.stylePresets.filter((style) => (style as any).category === "all" || (style as any).category === styleCategory) || [];
+    config?.stylePresets.filter((style) =>
+      styleMatchesSelectableCategories(style as { category?: string | null }, selectableStyleCategories),
+    ) || [];
+
+  const styleCategoryLabel =
+    selectableStyleCategories === "all"
+      ? "All Artwork"
+      : selectableStyleCategories.includes("apparel") && selectableStyleCategories.length === 1
+        ? "Apparel Artwork"
+        : selectableStyleCategories.includes("graphics")
+          ? "Decor & Graphics"
+          : "Decor Artwork";
 
   const sizeSelector = (
     <div className="space-y-2">
@@ -983,7 +992,7 @@ export default function DesignPage() {
     <div className="space-y-2">
       <Label className="text-sm font-medium">
         Art Style{" "}
-        <span className="text-xs text-muted-foreground ml-1">({styleCategory === "apparel" ? "Apparel Artwork" : "Decor Artwork"})</span>
+        <span className="text-xs text-muted-foreground ml-1">({styleCategoryLabel})</span>
       </Label>
       <Select value={selectedStyle} onValueChange={setSelectedStyle}>
         <SelectTrigger data-testid="select-style" className="h-9">

@@ -283,12 +283,24 @@
       '}',
       '@media(min-width:400px){#appai-drawer-grid{grid-template-columns:repeat(3,1fr);}}',
       '.appai-design-card{',
-        'border-radius:10px;overflow:hidden;border:1.5px solid #e5e7eb;',
+        'position:relative;border-radius:10px;overflow:hidden;border:1.5px solid #e5e7eb;',
         'cursor:pointer;transition:border-color 150ms,box-shadow 150ms,transform 150ms;',
         'background:#f9fafb;',
       '}',
       '.appai-design-card:hover{border-color:#6366f1;box-shadow:0 4px 16px rgba(99,102,241,0.18);transform:translateY(-1px);}',
       '.appai-design-card:active{transform:translateY(0);}',
+      '.appai-design-card-delete{',
+        'position:absolute;top:6px;right:6px;z-index:3;',
+        'width:22px;height:22px;border-radius:999px;border:none;',
+        'background:rgba(0,0,0,0.62);color:#fff;cursor:pointer;',
+        'display:flex;align-items:center;justify-content:center;',
+        'opacity:0;transition:opacity 150ms ease,background 150ms ease;',
+        'padding:0;line-height:1;',
+      '}',
+      '.appai-design-card:hover .appai-design-card-delete,',
+      '.appai-design-card-delete:focus{opacity:1;}',
+      '.appai-design-card-delete:hover{background:#dc2626;}',
+      '@media(max-width:640px){.appai-design-card-delete{opacity:1;}}',
       '.appai-design-card-img{aspect-ratio:1;overflow:hidden;background:#f3f4f6;}',
       '.appai-design-card-img img{width:100%;height:100%;object-fit:cover;display:block;}',
       '.appai-design-card-img-placeholder{width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:#d1d5db;}',
@@ -388,6 +400,40 @@
     refreshDrawerIfChanged();
   }
 
+  function deleteDesign(designId) {
+    if (!designId || !_customerId || !_shop) return Promise.resolve(false);
+    if (!window.confirm('Delete this saved design?')) return Promise.resolve(false);
+
+    var params =
+      'shop=' + encodeURIComponent(_shop) +
+      '&customerId=' + encodeURIComponent(_customerId);
+
+    return fetch(
+      PROXY + '/api/storefront/customizer/my-designs/' + encodeURIComponent(designId) + '?' + params,
+      {
+        method: 'DELETE',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+      },
+    ).then(function (r) {
+      if (!r.ok) return false;
+      var list = (window.__APPAI_SAVED_DESIGNS__ || []).filter(function (d) {
+        return String(d.id) !== String(designId);
+      });
+      window.__APPAI_SAVED_DESIGNS__ = list;
+      var badge = document.getElementById('appai-saved-count');
+      if (badge) badge.textContent = String(list.length);
+      renderDrawer(list);
+      try {
+        window.dispatchEvent(new Event('appai:saved-designs-changed'));
+      } catch (_) {}
+      return true;
+    }).catch(function (e) {
+      console.warn('[AppAI Nav] Failed to delete design:', e);
+      return false;
+    });
+  }
+
   // Render (or re-render) the drawer grid from a designs array. Does NOT
   // touch open/close state, so it's safe to call to refresh in place.
   function renderDrawer(designs) {
@@ -442,6 +488,23 @@
         card.addEventListener('keydown', function (e) {
           if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); }
         });
+
+        var deleteBtn = document.createElement('button');
+        deleteBtn.type = 'button';
+        deleteBtn.className = 'appai-design-card-delete';
+        deleteBtn.setAttribute('aria-label', 'Delete saved design');
+        deleteBtn.title = 'Delete design';
+        deleteBtn.innerHTML =
+          '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" ' +
+          'fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">' +
+          '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+        deleteBtn.addEventListener('click', function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          void deleteDesign(design.id);
+        });
+
+        card.appendChild(deleteBtn);
         grid.appendChild(card);
       });
     }

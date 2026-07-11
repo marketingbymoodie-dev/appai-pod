@@ -51,8 +51,8 @@ import type {
  * single design onto a calibrated blank (no panel template, no AOP tiling).
  *
  * Invariants enforced here:
- *   - Front + back are INDEPENDENT placements; switching views never resets
- *     the other view.
+ *   - Front + back placements are independent unless `linkSides` is on.
+ *     When linked, scale matches and offsetX is mirrored (offsetY shared).
  *   - Back defaults OFF, and the Back toggle only appears when the manifest
  *     (and the selected colour's blank) actually has a back view.
  *   - Placement scale is capped at 1.0 (Printify clamps placement scale), so
@@ -64,10 +64,15 @@ type ViewName = FlatViewName;
 export type FlatProductPlacerState = {
   /** Currently visible view. */
   view: ViewName;
-  /** Per-view placement (normalized to the print rect). Independent per view. */
+  /** Per-view placement (normalized to the print rect). Independent per view unless linked. */
   placements: Record<ViewName, ArtworkPlacement>;
   /** Per-view enabled flag. Back defaults false. */
   enabled: Record<ViewName, boolean>;
+  /**
+   * When true (and both views exist), edits to scale/position on either side
+   * update the other: same scale + offsetY, mirrored offsetX.
+   */
+  linkSides: boolean;
   /** The artwork (the customer's generated/uploaded design). */
   artworkUrl: string | null;
 };
@@ -111,6 +116,12 @@ export type FlatProductPlacerProps = {
   edgeWrapMode?: boolean;
   /** Framed posters / decor — mat-based placement, zoom past 100%. */
   decorMode?: boolean;
+  /** Woven fabric procedural texture (tapestry; admin-toggleable). */
+  fabricWeave?: boolean;
+  /** When size orientation is landscape but manifest was harvested portrait-only. */
+  landscapeOrientation?: boolean;
+  /** Fallback blank photo when manifest lacks per-orientation blanks (tapestry). */
+  blankUrlOverride?: string | null;
 };
 
 type LoadedAssets = {
@@ -126,13 +137,41 @@ function outputSignature(s: FlatProductPlacerState): string {
     artworkUrl: s.artworkUrl,
     placements: s.placements,
     enabled: s.enabled,
+    linkSides: s.linkSides,
   });
+}
+
+/** Mirror horizontal offset so left/right stay visually consistent across faces. */
+function mirrorLinkedPlacement(source: ArtworkPlacement): ArtworkPlacement {
+  return {
+    scale: source.scale,
+    offsetX: -source.offsetX,
+    offsetY: source.offsetY,
+  };
+}
+
+function otherView(view: ViewName): ViewName {
+  return view === "front" ? "back" : "front";
+}
+
+function applyPlacementToState(
+  prev: FlatProductPlacerState,
+  view: ViewName,
+  next: ArtworkPlacement,
+  availableViews: ViewName[],
+): FlatProductPlacerState {
+  const placements = { ...prev.placements, [view]: next };
+  if (prev.linkSides && availableViews.includes(otherView(view))) {
+    placements[otherView(view)] = mirrorLinkedPlacement(next);
+  }
+  return { ...prev, placements };
 }
 
 function buildInitialState(
   availableViews: ViewName[],
   saved?: Partial<FlatProductPlacerState> | null,
 ): FlatProductPlacerState {
+  const canLink = availableViews.includes("front") && availableViews.includes("back");
   const base: FlatProductPlacerState = {
     view: "front",
     placements: {
@@ -143,14 +182,30 @@ function buildInitialState(
       front: availableViews.includes("front"),
       back: false,
     },
+    // Double-sided products default to linked so front/back stay matched.
+    linkSides: canLink,
     artworkUrl: saved?.artworkUrl ?? null,
   };
   if (!saved) return base;
+  const linkSides =
+    typeof saved.linkSides === "boolean" ? saved.linkSides : base.linkSides;
+  let placements = { ...base.placements, ...(saved.placements ?? {}) };
+  if (linkSides && canLink) {
+    const sourceView: ViewName =
+      saved.view === "back" && placements.back ? "back" : "front";
+    const source = placements[sourceView] ?? DEFAULT_ARTWORK_PLACEMENT;
+    placements = {
+      ...placements,
+      [sourceView]: { ...source },
+      [otherView(sourceView)]: mirrorLinkedPlacement(source),
+    };
+  }
   return {
     ...base,
     ...saved,
-    placements: { ...base.placements, ...(saved.placements ?? {}) },
+    placements,
     enabled: { ...base.enabled, ...(saved.enabled ?? {}) },
+    linkSides,
   };
 }
 
@@ -169,10 +224,17 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       skipInitialAutoApply = false,
       edgeWrapMode = false,
       decorMode = false,
+      fabricWeave = false,
+      landscapeOrientation = false,
+      blankUrlOverride = null,
     },
     ref,
   ) {
   const geometryKey = placementGeometryKey ?? colorId;
+  const calibOpts = useMemo(
+    () => ({ landscapeOrientation }),
+    [landscapeOrientation],
+  );
   const blank = useMemo(() => resolveFlatBlank(manifest, colorId), [manifest, colorId]);
 
   const availableViews = useMemo<ViewName[]>(() => {
@@ -202,8 +264,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         back: EMPTY_ASSETS,
       };
       for (const v of availableViews) {
-        const calib = resolveFlatViewCalibration(manifest, geometryKey, v);
-        const blankUrl = blank[v];
+        const calib = resolveFlatViewCalibration(manifest, geometryKey, v, calibOpts);
+        const blankUrl =
+          v === "front" && blankUrlOverride ? blankUrlOverride : blank[v];
         if (!calib || !blankUrl) continue;
         const [b, m, s] = await Promise.all([
           loadFlatImage(blankUrl),
@@ -229,7 +292,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       cancelled = true;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- keep prior assets visible during colour swap
-  }, [availableViews, manifest, blank, colorId, edgeWrapMode, onAssetsFailed]);
+  }, [availableViews, manifest, blank, colorId, edgeWrapMode, onAssetsFailed, geometryKey, calibOpts, blankUrlOverride]);
 
   useEffect(() => {
     if (!assetsLoading && availableViews.length === 0) {
@@ -347,7 +410,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     (canvas: HTMLCanvasElement, v: ViewName, forApply: boolean): boolean => {
       if (!state) return false;
       const a = assets[v];
-      const calib = resolveFlatViewCalibration(manifest, geometryKey, v);
+      const calib = resolveFlatViewCalibration(manifest, geometryKey, v, calibOpts);
       if (!a?.blank || !calib) return false;
       const enabled = !!state.enabled[v];
       try {
@@ -364,6 +427,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           forceShadingMap: edgeWrapMode,
           edgeWrapMode,
           decorMode,
+          fabricWeave,
           cropToBackFace: false,
           sizeId: colorId,
           layerAdjust: resolveCalibratorLayerAdjust(manifest, geometryKey, v),
@@ -375,7 +439,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         return false;
       }
     },
-    [state, assets, manifest, geometryKey, artworkImg, artworkCorsClean, edgeWrapMode, decorMode],
+    [state, assets, manifest, geometryKey, artworkImg, artworkCorsClean, edgeWrapMode, decorMode, fabricWeave],
   );
 
   // ---------- Live canvas ----------
@@ -459,15 +523,30 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     );
   }, []);
 
+  const setLinkSides = useCallback(
+    (on: boolean) => {
+      setState((prev) => {
+        if (!prev) return prev;
+        if (!on) return { ...prev, linkSides: false };
+        const source = prev.placements[prev.view] ?? DEFAULT_ARTWORK_PLACEMENT;
+        const placements = {
+          ...prev.placements,
+          [prev.view]: { ...source },
+          [otherView(prev.view)]: mirrorLinkedPlacement(source),
+        };
+        return { ...prev, linkSides: true, placements };
+      });
+    },
+    [],
+  );
+
   const updatePlacement = useCallback(
     (view: ViewName, next: ArtworkPlacement) => {
       setState((prev) =>
-        prev
-          ? { ...prev, placements: { ...prev.placements, [view]: next } }
-          : prev,
+        prev ? applyPlacementToState(prev, view, next, availableViews) : prev,
       );
     },
-    [],
+    [availableViews],
   );
 
   const setScale = useCallback(
@@ -475,34 +554,37 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       setState((prev) => {
         if (!prev) return prev;
         const cur = prev.placements[view] ?? DEFAULT_ARTWORK_PLACEMENT;
-        return {
-          ...prev,
-          placements: { ...prev.placements, [view]: { ...cur, scale } },
-        };
+        return applyPlacementToState(
+          prev,
+          view,
+          { ...cur, scale },
+          availableViews,
+        );
       });
     },
-    [],
+    [availableViews],
   );
 
-  const resetView = useCallback((view: ViewName) => {
-    setState((prev) =>
-      prev
-        ? {
-            ...prev,
-            placements: {
-              ...prev.placements,
-              [view]: { ...DEFAULT_ARTWORK_PLACEMENT },
-            },
-          }
-        : prev,
-    );
-  }, []);
+  const resetView = useCallback(
+    (view: ViewName) => {
+      setState((prev) => {
+        if (!prev) return prev;
+        return applyPlacementToState(
+          prev,
+          view,
+          { ...DEFAULT_ARTWORK_PLACEMENT },
+          availableViews,
+        );
+      });
+    },
+    [availableViews],
+  );
 
   const nudgePlacement = useCallback(
     (view: ViewName, axis: "x" | "y", direction: 1 | -1) => {
       setState((prev) => {
         if (!prev) return prev;
-        const cal = resolveFlatViewCalibration(manifest, geometryKey, view);
+        const cal = resolveFlatViewCalibration(manifest, geometryKey, view, calibOpts);
         const va = assets[view];
         const canvas = canvasRef.current;
         if (!cal || !va.blank || !canvas) return prev;
@@ -537,10 +619,10 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           offsetY:
             axis === "y" ? clamp(cur.offsetY + dOff) : cur.offsetY,
         };
-        return { ...prev, placements: { ...prev.placements, [view]: next } };
+        return applyPlacementToState(prev, view, next, availableViews);
       });
     },
-    [manifest, colorId, assets, edgeWrapMode, decorMode],
+    [manifest, geometryKey, assets, edgeWrapMode, decorMode, availableViews],
   );
 
   const hasDisplayableAssets = availableViews.some((v) => assets[v].blank);
@@ -564,7 +646,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     );
   }
 
-  const calib = resolveFlatViewCalibration(manifest, geometryKey, state.view);
+  const calib = resolveFlatViewCalibration(manifest, geometryKey, state.view, calibOpts);
   const viewAssets = assets[state.view];
   const placement = state.placements[state.view] ?? DEFAULT_ARTWORK_PLACEMENT;
   const viewEnabled = !!state.enabled[state.view];
@@ -745,6 +827,21 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                       <EyeOff className="h-3.5 w-3.5" />
                     )}
                   </button>
+                )}
+                {availableViews.length > 1 && (
+                  <label
+                    className="flex cursor-pointer items-center gap-1.5 normal-case tracking-normal text-muted-foreground"
+                    title="Keep front and back scale matched, with mirrored left/right placement"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={!!state.linkSides}
+                      onChange={(e) => setLinkSides(e.target.checked)}
+                      className="h-3.5 w-3.5 rounded border-border accent-[hsl(var(--primary))]"
+                      aria-label="Link sides"
+                    />
+                    <span className="text-[11px] font-medium">Link sides</span>
+                  </label>
                 )}
               </span>
               <span className="text-muted-foreground/80">

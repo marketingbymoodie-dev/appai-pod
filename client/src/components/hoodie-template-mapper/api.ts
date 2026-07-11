@@ -8,6 +8,24 @@ const BASE = "/api/platform/aop-mapper";
 
 const fetchOpts: RequestInit = { credentials: "include" };
 
+/** Append a cache-bust query param so overwrites (crop/upload) reload in the browser. */
+export function appendCacheBust(url: string, token?: string | number): string {
+  const base = url.split("?")[0];
+  const t = token ?? Date.now();
+  return `${base}?v=${encodeURIComponent(String(t))}`;
+}
+
+/** Compare mapper mockup URLs ignoring cache-bust query string. */
+export function mockupUrlsMatch(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  try {
+    const origin = typeof window !== "undefined" ? window.location.origin : "http://local";
+    return new URL(a, origin).pathname === new URL(b, origin).pathname;
+  } catch {
+    return a.split("?")[0] === b.split("?")[0];
+  }
+}
+
 export type TemplateListEntry = {
   name: string;
   file: string;
@@ -71,6 +89,9 @@ export async function saveTemplate(name: string, template: HoodieTemplate): Prom
     });
     if (!r.ok) {
       const err = await r.text().catch(() => "");
+      if (r.status === 401) {
+        throw new Error("Session expired — refresh the Shopify admin page and try Save again.");
+      }
       if (r.status === 403) {
         throw new Error("Platform operator access required to save templates.");
       }
@@ -142,7 +163,8 @@ export async function uploadMockup(
     const err = await r.text().catch(() => "");
     throw new Error(`Failed to upload mockup: ${err.slice(0, 200) || r.status}`);
   }
-  return (await r.json()) as { filename: string; url: string };
+  const data = (await r.json()) as { filename: string; url: string; updatedAt?: string };
+  return { filename: data.filename, url: appendCacheBust(data.url, data.updatedAt ?? Date.now()) };
 }
 
 export type SourcePanelEntry = {
@@ -178,7 +200,8 @@ export async function uploadSourcePanel(
     const err = await r.text().catch(() => "");
     throw new Error(`Failed to upload source panel: ${err.slice(0, 200) || r.status}`);
   }
-  return (await r.json()) as { filename: string; url: string };
+  const data = (await r.json()) as { filename: string; url: string; updatedAt?: string };
+  return { filename: data.filename, url: appendCacheBust(data.url, data.updatedAt ?? Date.now()) };
 }
 
 export async function uploadReferenceOverlay(
@@ -199,13 +222,14 @@ export async function uploadReferenceOverlay(
     const err = await r.text().catch(() => "");
     throw new Error(`Failed to upload reference overlay: ${err.slice(0, 200) || r.status}`);
   }
-  return (await r.json()) as { filename: string; url: string };
+  const data = (await r.json()) as { filename: string; url: string; updatedAt?: string };
+  return { filename: data.filename, url: appendCacheBust(data.url, data.updatedAt ?? Date.now()) };
 }
 
 export type FetchPrintifyBlanksResult = {
   ok: true;
   blueprintId: number;
-  downloaded: Array<{ view: "front" | "back"; filename: string; url: string; bytes: number }>;
+  downloaded: Array<{ view: "front" | "back"; filename: string; url: string; bytes: number; width: number; height: number }>;
 };
 
 /** Pull blank garment mockups from Printify into mapper storage (uses multiply shading source photos). */

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/dialog";
 import { Slider } from "@/components/ui/slider";
 import { useToast } from "@/hooks/use-toast";
-import { Download, Image as ImageIcon, RotateCcw, Sparkles, Upload } from "lucide-react";
+import { Download, Image as ImageIcon, Maximize2, RotateCcw, Sparkles, Upload, ZoomIn, ZoomOut } from "lucide-react";
 import type {
   DesignGroup,
   HoodieTemplate,
@@ -22,12 +22,15 @@ import {
   renderAopPreview,
   renderAopPreviewToCanvas,
   renderHoodFlatPanel,
+  resolveAopPreviewCanvasBounds,
   type AopPreviewMode,
   type ArtworkPlacement,
   type DesignRectInfo,
   DEFAULT_ARTWORK_PLACEMENT,
 } from "./lib/aopPreview";
 import DesignRectHandlesOverlay from "./DesignRectHandlesOverlay";
+import { loadMapperAssetImage } from "./lib/mapperAssetImage";
+import { loadMapperAssetImageMap } from "./lib/useMapperAssetImage";
 
 /**
  * Live AOP preview modal — drops the customer's artwork onto the hoodie
@@ -77,6 +80,11 @@ const TILE_PATTERN_OPTIONS: Array<{
   { id: "brick", label: "Brick offset" },
   { id: "half-drop", label: "Half-drop" },
 ];
+
+const PREVIEW_ZOOM_MIN = 0.05;
+const PREVIEW_ZOOM_MAX = 8;
+const PREVIEW_ZOOM_STEP = 1.12;
+const PREVIEW_VIEWPORT_PAD = 32;
 
 export default function AopPreviewModal({ open, onOpenChange }: Props) {
   const template = useHoodieMapperStore((s) => s.template);
@@ -329,12 +337,130 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
   const mockupSrc = template.views[view]?.mockup?.src ?? null;
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const [canvasPixelSize, setCanvasPixelSize] = useState({ w: 0, h: 0 });
+  const [fitScale, setFitScale] = useState(1);
+  /** User zoom multiplier on top of auto fit-to-view (1 = fit whole item). */
+  const [previewZoom, setPreviewZoom] = useState(1);
+  const [previewPan, setPreviewPan] = useState({ x: 0, y: 0 });
+  const [isPreviewPanning, setIsPreviewPanning] = useState(false);
+  const previewPanStartRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(
+    null,
+  );
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const estimatedCanvasSize = useMemo(() => {
+    if (!mockupImg) return { w: 0, h: 0 };
+    const bounds = resolveAopPreviewCanvasBounds(template, view, mockupImg);
+    return { w: bounds.width, h: bounds.height };
+  }, [template, view, mockupImg]);
+
+  const displayCanvasW = canvasPixelSize.w || estimatedCanvasSize.w;
+  const displayCanvasH = canvasPixelSize.h || estimatedCanvasSize.h;
 
   // Keep modal view in sync if the user changes the toolbar view while it's open.
   useEffect(() => {
     if (open) setView(activeView);
   }, [open, activeView]);
+
+  const resetPreviewViewport = useCallback(() => {
+    setPreviewZoom(1);
+    setPreviewPan({ x: 0, y: 0 });
+  }, []);
+
+  useEffect(() => {
+    if (open) resetPreviewViewport();
+  }, [open, view, mockupSrc, resetPreviewViewport]);
+
+  const updateFitScale = useCallback(() => {
+    const viewport = viewportRef.current;
+    const cw = canvasPixelSize.w || estimatedCanvasSize.w;
+    const ch = canvasPixelSize.h || estimatedCanvasSize.h;
+    if (!viewport || cw <= 0 || ch <= 0) return;
+    const sx = (viewport.clientWidth - PREVIEW_VIEWPORT_PAD) / cw;
+    const sy = (viewport.clientHeight - PREVIEW_VIEWPORT_PAD) / ch;
+    setFitScale(Math.max(PREVIEW_ZOOM_MIN, Math.min(sx, sy)));
+  }, [canvasPixelSize.w, canvasPixelSize.h, estimatedCanvasSize.w, estimatedCanvasSize.h]);
+
+  useEffect(() => {
+    if (!open) return;
+    updateFitScale();
+    const viewport = viewportRef.current;
+    if (!viewport || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => updateFitScale());
+    ro.observe(viewport);
+    return () => ro.disconnect();
+  }, [open, updateFitScale]);
+
+  const displayScale = fitScale * previewZoom;
+
+  const onPreviewWheel = useCallback(
+    (e: React.WheelEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      const direction = e.deltaY > 0 ? -1 : 1;
+      setPreviewZoom((z) =>
+        Math.max(
+          PREVIEW_ZOOM_MIN / Math.max(fitScale, 0.0001),
+          Math.min(
+            PREVIEW_ZOOM_MAX / Math.max(fitScale, 0.0001),
+            z * (direction > 0 ? PREVIEW_ZOOM_STEP : 1 / PREVIEW_ZOOM_STEP),
+          ),
+        ),
+      );
+    },
+    [fitScale],
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.code !== "Space") return;
+      const target = e.target as HTMLElement | null;
+      if (target && /input|textarea|select/i.test(target.tagName)) return;
+      e.preventDefault();
+      setIsPreviewPanning(true);
+    }
+    function onKeyUp(e: KeyboardEvent) {
+      if (e.code === "Space") setIsPreviewPanning(false);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+    };
+  }, [open]);
+
+  const onPreviewPointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (!isPreviewPanning && e.button !== 1) return;
+      e.preventDefault();
+      e.currentTarget.setPointerCapture(e.pointerId);
+      previewPanStartRef.current = {
+        x: e.clientX,
+        y: e.clientY,
+        panX: previewPan.x,
+        panY: previewPan.y,
+      };
+    },
+    [isPreviewPanning, previewPan.x, previewPan.y],
+  );
+
+  const onPreviewPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const start = previewPanStartRef.current;
+    if (!start) return;
+    setPreviewPan({
+      x: start.panX + (e.clientX - start.x),
+      y: start.panY + (e.clientY - start.y),
+    });
+  }, []);
+
+  const onPreviewPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (previewPanStartRef.current) {
+      previewPanStartRef.current = null;
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+  }, []);
 
   // Load mockup image whenever the relevant view changes.
   useEffect(() => {
@@ -343,22 +469,20 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
       return;
     }
     let cancelled = false;
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => {
-      if (!cancelled) setMockupImg(img);
-    };
-    img.onerror = () => {
-      if (!cancelled) {
-        setMockupImg(null);
-        toast({
-          title: "Couldn't load mockup",
-          description: `Failed to load ${mockupSrc}`,
-          variant: "destructive",
-        });
-      }
-    };
-    img.src = mockupSrc;
+    loadMapperAssetImage(mockupSrc)
+      .then((img) => {
+        if (!cancelled) setMockupImg(img);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setMockupImg(null);
+          toast({
+            title: "Couldn't load mockup",
+            description: `Failed to load ${mockupSrc}`,
+            variant: "destructive",
+          });
+        }
+      });
     return () => {
       cancelled = true;
     };
@@ -418,21 +542,8 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
       return;
     }
     let cancelled = false;
-    const next = new Map<string, HTMLImageElement>();
-    let remaining = layerSrcUrls.length;
-    layerSrcUrls.forEach((url) => {
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-      img.onload = () => {
-        next.set(url, img);
-        remaining -= 1;
-        if (remaining === 0 && !cancelled) setLayerSources(new Map(next));
-      };
-      img.onerror = () => {
-        remaining -= 1;
-        if (remaining === 0 && !cancelled) setLayerSources(new Map(next));
-      };
-      img.src = url;
+    loadMapperAssetImageMap(layerSrcUrls).then((next) => {
+      if (!cancelled) setLayerSources(next);
     });
     return () => {
       cancelled = true;
@@ -467,6 +578,7 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
       showDesignRect,
       backgroundColor,
     });
+    setCanvasPixelSize({ w: canvas.width, h: canvas.height });
   }, [
     open,
     template,
@@ -893,62 +1005,135 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
           </div>
 
           {/* Right: preview surface */}
-          <div className="relative flex flex-1 items-center justify-center overflow-auto bg-slate-950 p-4">
-            <div className="relative flex max-h-full max-w-full items-center justify-center">
-              <canvas
-                ref={canvasRef}
-                className="max-h-[78vh] max-w-full rounded border border-slate-800 bg-black object-contain shadow-xl"
-                data-testid="hoodie-aop-preview-canvas"
-              />
-              {mockupImg &&
-                mode === "single-sheet" &&
-                artworkImg &&
-                activeGroupId &&
-                // Hood placement on the back view is inherited from
-                // the front view — render no drag handles so the
-                // admin can't accidentally edit it from here.
-                !(view === "back" && activeGroupId === "hood") && (
-                <DesignRectHandlesOverlay
-                  canvasRef={canvasRef}
-                  template={template}
-                  view={view}
-                  mockup={mockupImg}
-                  artwork={artworkImg}
-                  groupId={activeGroupId}
-                  placement={getPlacement(activeGroupId, view)}
-                  enabledOverrides={enabledOverrides}
-                  seamOverrides={seamOverrides}
-                  placementOverrides={groupPlacementOverrides}
-                  lockedScaleAroundAnchor={
-                    linkedCount >= 2 && !!linkedGroupIds[activeGroupId]
+          <div
+            ref={viewportRef}
+            className={`relative flex min-h-0 flex-1 flex-col overflow-hidden bg-slate-950 ${
+              isPreviewPanning ? "cursor-grab active:cursor-grabbing" : ""
+            }`}
+            onWheel={onPreviewWheel}
+            onPointerDown={onPreviewPointerDown}
+            onPointerMove={onPreviewPointerMove}
+            onPointerUp={onPreviewPointerUp}
+            onPointerCancel={onPreviewPointerUp}
+            data-testid="hoodie-aop-preview-viewport"
+          >
+            <div className="relative flex min-h-0 flex-1 items-center justify-center p-4">
+              <div
+                className="relative shrink-0"
+                style={{
+                  width: displayCanvasW || undefined,
+                  height: displayCanvasH || undefined,
+                  transform:
+                    displayCanvasW > 0
+                      ? `translate(${previewPan.x}px, ${previewPan.y}px) scale(${displayScale})`
+                      : undefined,
+                  transformOrigin: "center center",
+                  visibility: displayCanvasW > 0 ? "visible" : "hidden",
+                }}
+              >
+                <canvas
+                  ref={canvasRef}
+                  className="block rounded border border-slate-800 bg-black shadow-xl"
+                  style={
+                    displayCanvasW > 0
+                      ? { width: displayCanvasW, height: displayCanvasH }
+                      : undefined
                   }
-                  onChange={(next) =>
-                    setGroupPlacement(activeGroupId, view, next)
-                  }
+                  data-testid="hoodie-aop-preview-canvas"
                 />
-              )}
-              {/* Read-only hint when the active group is the hood
-                  on the back view — its placement mirrors the front
-                  view, so we surface that intent inline instead of
-                  letting the admin drag handles that wouldn't stick. */}
-              {mockupImg &&
-                mode === "single-sheet" &&
-                view === "back" &&
-                activeGroupId === "hood" && (
-                  <div className="pointer-events-none absolute inset-x-4 top-4 flex justify-center">
-                    <div className="rounded-md border border-fuchsia-500/40 bg-fuchsia-900/60 px-3 py-1.5 text-[11px] text-fuchsia-100 shadow">
-                      Back-of-hood is warped from the front-view flat print
-                      panel — what's visible here is exactly what Printify
-                      receives. Switch to FRONT to adjust the artwork.
-                    </div>
-                  </div>
-                )}
-            </div>
-            {!mockupImg && (
-              <div className="absolute inset-0 flex items-center justify-center bg-black/60 text-sm text-slate-300">
-                Loading mockup…
+                  {mockupImg &&
+                    mode === "single-sheet" &&
+                    artworkImg &&
+                    activeGroupId &&
+                    !(view === "back" && activeGroupId === "hood") && (
+                      <DesignRectHandlesOverlay
+                        canvasRef={canvasRef}
+                        template={template}
+                        view={view}
+                        mockup={mockupImg}
+                        artwork={artworkImg}
+                        groupId={activeGroupId}
+                        placement={getPlacement(activeGroupId, view)}
+                        enabledOverrides={enabledOverrides}
+                        seamOverrides={seamOverrides}
+                        placementOverrides={groupPlacementOverrides}
+                        lockedScaleAroundAnchor={
+                          linkedCount >= 2 && !!linkedGroupIds[activeGroupId]
+                        }
+                        onChange={(next) =>
+                          setGroupPlacement(activeGroupId, view, next)
+                        }
+                      />
+                    )}
+                  {mockupImg &&
+                    mode === "single-sheet" &&
+                    view === "back" &&
+                    activeGroupId === "hood" && (
+                      <div className="pointer-events-none absolute inset-x-4 top-4 flex justify-center">
+                        <div className="rounded-md border border-fuchsia-500/40 bg-fuchsia-900/60 px-3 py-1.5 text-[11px] text-fuchsia-100 shadow">
+                          Back-of-hood is warped from the front-view flat print panel — what's
+                          visible here is exactly what Printify receives. Switch to FRONT to
+                          adjust the artwork.
+                        </div>
+                      </div>
+                    )}
               </div>
-            )}
+              {!mockupImg && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/60 text-sm text-slate-300">
+                  Loading mockup…
+                </div>
+              )}
+            </div>
+            <div className="flex shrink-0 items-center justify-between gap-2 border-t border-slate-800/80 px-3 py-2 text-[11px] text-slate-400">
+              <span>Scroll to zoom · hold Space and drag to pan</span>
+              <div className="flex items-center gap-1">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 w-7 p-0"
+                  title="Zoom out"
+                  onClick={() =>
+                    setPreviewZoom((z) =>
+                      Math.max(PREVIEW_ZOOM_MIN / Math.max(fitScale, 0.0001), z / PREVIEW_ZOOM_STEP),
+                    )
+                  }
+                  data-testid="hoodie-preview-zoom-out"
+                >
+                  <ZoomOut className="h-3.5 w-3.5" />
+                </Button>
+                <span className="min-w-[3.5rem] text-center font-mono text-slate-300">
+                  {Math.round(displayScale * 100)}%
+                </span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 w-7 p-0"
+                  title="Zoom in"
+                  onClick={() =>
+                    setPreviewZoom((z) =>
+                      Math.min(PREVIEW_ZOOM_MAX / Math.max(fitScale, 0.0001), z * PREVIEW_ZOOM_STEP),
+                    )
+                  }
+                  data-testid="hoodie-preview-zoom-in"
+                >
+                  <ZoomIn className="h-3.5 w-3.5" />
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-[11px]"
+                  title="Fit whole mockup in view"
+                  onClick={resetPreviewViewport}
+                  data-testid="hoodie-preview-fit"
+                >
+                  <Maximize2 className="mr-1 h-3.5 w-3.5" />
+                  Fit view
+                </Button>
+              </div>
+            </div>
           </div>
         </div>
 

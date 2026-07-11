@@ -20,6 +20,10 @@
  */
 import sharp from "sharp";
 import { normalizeApparelSizeId, resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
+import {
+  extractDimensionalKey,
+  frameColorsRedundantWithSizes,
+} from "@shared/productVariantOptions";
 import { normalizePrintifyColorKey, slugPrintifyColorId } from "@shared/printifyColorSlug";
 import {
   uploadToFlatCalibrationBucket,
@@ -1526,11 +1530,61 @@ export function buildHarvestColorsFromProductType(productType: {
     return colors;
   }
 
+  const designerType = (productType.designerType || "").toLowerCase();
+  const apparelProduct = isApparelHarvestProduct(productType.designerType, sizes);
+
+  // Tapestry / orientation products: harvest one blank per size (26×36 vs 36×26).
+  const orientationAsSize =
+    !apparelProduct &&
+    sizes.length > 1 &&
+    frameColors.length > 0 &&
+    sizes.every(
+      (s: any) =>
+        !!extractDimensionalKey(String(s.id)) || !!extractDimensionalKey(String(s.name || "")),
+    ) &&
+    frameColorsRedundantWithSizes(
+      sizes.map((s: any) => ({
+        id: String(s.id),
+        name: String(s.name || s.id),
+        width: s.width,
+        height: s.height,
+      })),
+      frameColors.map((fc: any) => ({ id: String(fc.id), name: String(fc.name || fc.id) })),
+      "Option",
+    );
+
+  if (orientationAsSize) {
+    for (const size of sizes) {
+      const sizeId = String(size.id);
+      const matchedFc =
+        frameColors.find((fc: any) => String(fc.id) === sizeId) ||
+        frameColors.find(
+          (fc: any) =>
+            extractDimensionalKey(String(fc.id)) === extractDimensionalKey(sizeId) ||
+            extractDimensionalKey(String(fc.name)) === extractDimensionalKey(String(size.name || sizeId)),
+        );
+      const colorId = matchedFc ? String(matchedFc.id) : sizeId;
+      const variantId =
+        resolveVariantIdForHarvest(variantMap, sizeId, colorId, {
+          allowSizeFallbackForColor: true,
+        }) ??
+        resolveVariantIdForHarvest(variantMap, sizeId, sizeId, {
+          allowSizeFallbackForColor: true,
+        });
+      if (variantId == null) continue;
+      pushColor({
+        id: sizeId,
+        name: size.name || sizeId,
+        hex: matchedFc?.hex,
+        variantId,
+      });
+    }
+    if (colors.length > 0) return colors;
+  }
+
   // Framed / pillow decor only: harvest one blank + geometry per size × frame colour.
   // Apparel (S/M/L/XL sweaters, etc.) uses the colour-only path below — garment
   // colour is size-independent and size×colour harvest hits the 64-blank cap.
-  const designerType = (productType.designerType || "").toLowerCase();
-  const apparelProduct = isApparelHarvestProduct(productType.designerType, sizes);
   const decorBySizeAndColor =
     !apparelProduct &&
     (designerType === "framed-print" || designerType === "pillow") &&
@@ -1858,6 +1912,7 @@ async function harvestPerBlankGeometry(args: {
 function needsPerBlankGeometry(color: ColorEntry, edgeWrapProduct: boolean, decorPerSize: boolean): boolean {
   if (edgeWrapProduct && looksLikePhoneModelName(color.name || color.id)) return true;
   if (decorPerSize && color.id.includes(":")) return true;
+  if (extractDimensionalKey(color.id) || extractDimensionalKey(color.name || "")) return true;
   return false;
 }
 

@@ -31,10 +31,18 @@ export const ADJUSTABLE_TOTE_BLUEPRINT_ID = 1300;
 
 export type LayoutPolicySource = {
   isAllOverPrint?: boolean | null;
+  /** Mesh-warp AOP panel mapper template — enables HoodieAopPlacer when set. */
+  panelMappingTemplate?: string | null;
   storefrontMockupMode?: string | null;
   fulfillmentLayout?: string | null;
   printifyBlueprintId?: number | null;
   forceFlatHarvest?: boolean | null;
+  /**
+   * On-the-fly mockup tier from flat calibration harvest.
+   * When `flat` or `mesh` with a ready calibration, storefront uses FlatProductPlacer
+   * instead of the legacy AOP PatternCustomizer — even if the product title is `(AOP)`.
+   */
+  onTheFlyTier?: string | null;
 };
 
 function normMode(raw: string | null | undefined): StorefrontMockupMode | null {
@@ -56,6 +64,14 @@ function normFulfillment(raw: string | null | undefined): FulfillmentLayout | nu
   return null;
 }
 
+function hasOnTheFlyFlatOrMesh(
+  product: LayoutPolicySource,
+  catalog?: LayoutPolicySource | null,
+): boolean {
+  const tier = product.onTheFlyTier ?? catalog?.onTheFlyTier ?? null;
+  return tier === "flat" || tier === "mesh";
+}
+
 export function resolveStorefrontMockupMode(
   product: LayoutPolicySource,
   catalog?: LayoutPolicySource | null,
@@ -63,11 +79,20 @@ export function resolveStorefrontMockupMode(
   const explicit = normMode(product.storefrontMockupMode) ?? normMode(catalog?.storefrontMockupMode);
   if (explicit) return explicit;
 
+  // Mesh AOP panel mapper always wins when published.
+  if (product.panelMappingTemplate || catalog?.panelMappingTemplate) return "aop";
+
+  // Harvested flat/mesh calibration → FlatProductPlacer, not PatternCustomizer.
+  // Products titled "(AOP)" can still be flat-panel (e.g. shoulder tote) once calibrated.
+  if (hasOnTheFlyFlatOrMesh(product, catalog)) return "flat";
+
   const fulfillment =
     resolveFulfillmentLayout(product, catalog);
   if (fulfillment === TOTE_FOLDED_V1_TEMPLATE) return "flat";
 
-  if (product.isAllOverPrint || catalog?.isAllOverPrint) return "aop";
+  if (product.isAllOverPrint || catalog?.isAllOverPrint) {
+    return "aop";
+  }
   return "printify";
 }
 
@@ -86,11 +111,20 @@ export function resolveFulfillmentLayout(
   return "standard";
 }
 
-/** PatternCustomizer / HoodieAopPlacer vs flat Printify mockups. */
+/** PatternCustomizer / HoodieAopPlacer vs flat Printify mockups / FlatProductPlacer. */
 export function usesAopStorefrontCustomizer(
   product: LayoutPolicySource,
   catalog?: LayoutPolicySource | null,
 ): boolean {
+  // Published mesh panel-mapping template → HoodieAopPlacer.
+  if (product.panelMappingTemplate || catalog?.panelMappingTemplate) return true;
+  // Explicit operator override wins over harvest heuristics.
+  const explicit =
+    normMode(product.storefrontMockupMode) ?? normMode(catalog?.storefrontMockupMode);
+  if (explicit === "aop") return true;
+  if (explicit === "flat" || explicit === "printify") return false;
+  // Flat/mesh on-the-fly harvest → FlatProductPlacer only (never both editors).
+  if (hasOnTheFlyFlatOrMesh(product, catalog)) return false;
   const mode = resolveStorefrontMockupMode(product, catalog);
   if (mode === "aop") return true;
   if (mode === "flat" || mode === "printify") return false;

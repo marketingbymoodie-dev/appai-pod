@@ -116,6 +116,8 @@ export type FlatRenderInput = {
   edgeWrapMode?: boolean;
   /** Framed / decor — placement uses visible mat opening; scale may exceed 1. */
   decorMode?: boolean;
+  /** Woven fabric procedural texture (tapestry only unless admin-enabled). */
+  fabricWeave?: boolean;
   sizeId?: string;
   /** Crop to back face when the mockup has a side-profile strip (iPhone 14/15). */
   cropToBackFace?: boolean;
@@ -989,6 +991,10 @@ function applyPhoneCaseMapShading(
 /**
  * Multiply a normalized shading layer over the artwork layer, restricted to
  * the artwork's own alpha so transparent (garment) pixels stay untouched.
+ *
+ * When `fabricWeave` is set (tapestry / woven decor), skip blank luminance
+ * multiply (photo noise → sand-grain "speckle") and apply a procedural
+ * warp/weft pattern instead.
  */
 function applyShading(
   artCanvas: HTMLCanvasElement,
@@ -999,8 +1005,14 @@ function applyShading(
   w: number,
   h: number,
   artworkCorsClean: boolean,
-  opts?: { phoneCaseMap?: boolean },
+  opts?: { phoneCaseMap?: boolean; fabricWeave?: boolean },
 ): void {
+  if (opts?.fabricWeave) {
+    // Blank AO is the speckly grain on tapestry photos — do not multiply it.
+    applyProceduralFabricWeave(artCanvas, artCtx, w, h);
+    return;
+  }
+
   if (mode === "map" && shading && opts?.phoneCaseMap) {
     applyPhoneCaseMapShading(artCanvas, artCtx, shading, w, h);
     return;
@@ -1048,6 +1060,274 @@ function applyShading(
     artCtx.globalAlpha = 0.6;
     artCtx.drawImage(shade, 0, 0);
   }
+  artCtx.restore();
+}
+
+/** Solidified clip masks, cached per mask image + output size (render-time cost ~0). */
+const solidMaskCache = new WeakMap<HTMLImageElement, { key: string; canvas: HTMLCanvasElement }>();
+
+/**
+ * Close pinhole noise in a harvested print mask before destination-in clipping.
+ * Dilates by unioning offset draws (fills holes ≤ ~4px), then re-stamps the
+ * result to saturate semi-transparent alpha. Pure draw calls — no getImageData.
+ */
+function solidifyMaskForClip(
+  mask: HTMLImageElement,
+  w: number,
+  h: number,
+): HTMLCanvasElement {
+  const key = `${w}x${h}`;
+  const cached = solidMaskCache.get(mask);
+  if (cached && cached.key === key) return cached.canvas;
+
+  const union = document.createElement("canvas");
+  union.width = w;
+  union.height = h;
+  const uctx = union.getContext("2d");
+  if (!uctx) return union;
+  // Union of offset stamps — closes gaps smaller than the offset radius.
+  const r = 2;
+  for (let dy = -r; dy <= r; dy += r) {
+    for (let dx = -r; dx <= r; dx += r) {
+      uctx.drawImage(mask, dx, dy, w, h);
+    }
+  }
+
+  const solid = document.createElement("canvas");
+  solid.width = w;
+  solid.height = h;
+  const sctx = solid.getContext("2d");
+  if (!sctx) return union;
+  // Re-stamping saturates alpha: a' = 1-(1-a)^4 → speckly 0.5 alpha becomes ~0.94.
+  for (let i = 0; i < 4; i++) sctx.drawImage(union, 0, 0);
+
+  solidMaskCache.set(mask, { key, canvas: solid });
+  return solid;
+}
+
+// ---------------------------------------------------------------------------
+// Fabric weave texture — tunable config
+// ---------------------------------------------------------------------------
+
+export type WeaveConfig = {
+  /** Horizontal (weft) yarn thickness range, px in the tile. */
+  weftMin: number;
+  weftMax: number;
+  /** Vertical (warp) yarn thickness range, px in the tile. */
+  warpMin: number;
+  warpMax: number;
+  /** Pattern scale multiplier on the rendered mockup (bigger = coarser). */
+  scale: number;
+  /** Per-yarn brightness variation (slub / thread irregularity), 0–60. */
+  slub: number;
+  /** Extra per-cell brightness wobble, 0–40. */
+  cellNoise: number;
+  /** Groove tone 0–128 — lower = darker crosshatch lines. */
+  grooveTone: number;
+  /** Thread highlight tone 128–255 — higher = shinier ridges. */
+  ridgeTone: number;
+  /** Overlay pass strength 0–1 (texture contrast). */
+  overlayAlpha: number;
+  /** Multiply pass strength 0–1 (overall darkening). */
+  multiplyAlpha: number;
+};
+
+// Defaults hand-tuned in the admin weave panel against Printify's tapestry render (2026-07).
+export const DEFAULT_WEAVE_CONFIG: WeaveConfig = {
+  weftMin: 2,
+  weftMax: 5,
+  warpMin: 7,
+  warpMax: 8,
+  scale: 0.35,
+  slub: 54,
+  cellNoise: 13,
+  grooveTone: 90, // groove darkness 38
+  ridgeTone: 172, // ridge brightness 44
+  overlayAlpha: 0.4,
+  multiplyAlpha: 0.45,
+};
+
+const WEAVE_STORAGE_KEY = "appai:weaveConfig";
+
+let activeWeaveConfig: WeaveConfig | null = null;
+
+function loadStoredWeaveConfig(): WeaveConfig {
+  try {
+    const raw = window.localStorage.getItem(WEAVE_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        return { ...DEFAULT_WEAVE_CONFIG, ...parsed };
+      }
+    }
+  } catch {
+    // Storage unavailable (partitioned iframe / privacy mode) — use defaults.
+  }
+  return { ...DEFAULT_WEAVE_CONFIG };
+}
+
+export function getWeaveConfig(): WeaveConfig {
+  if (!activeWeaveConfig) activeWeaveConfig = loadStoredWeaveConfig();
+  return activeWeaveConfig;
+}
+
+/** Update weave settings (admin tuning panel). Persists per-browser and
+ *  invalidates the cached tile so the next render uses the new values. */
+export function setWeaveConfig(patch: Partial<WeaveConfig>): WeaveConfig {
+  activeWeaveConfig = { ...getWeaveConfig(), ...patch };
+  fabricWeaveTile = null;
+  try {
+    window.localStorage.setItem(WEAVE_STORAGE_KEY, JSON.stringify(activeWeaveConfig));
+  } catch {
+    // Persistence is best-effort; in-memory config still applies this session.
+  }
+  return activeWeaveConfig;
+}
+
+export function resetWeaveConfig(): WeaveConfig {
+  activeWeaveConfig = { ...DEFAULT_WEAVE_CONFIG };
+  fabricWeaveTile = null;
+  try {
+    window.localStorage.removeItem(WEAVE_STORAGE_KEY);
+  } catch {
+    // Ignore storage errors.
+  }
+  return activeWeaveConfig;
+}
+
+/** Cached weave tile — regenerated when the config changes. */
+let fabricWeaveTile: HTMLCanvasElement | null = null;
+
+/** Deterministic PRNG so the weave looks identical on every render/session. */
+function makeLcg(seed: number): () => number {
+  let s = seed >>> 0;
+  return () => {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
+
+/**
+ * Irregular plain-weave tile centred on neutral gray for overlay blending:
+ * values above 128 lift thread tops (visible in dark art), values below 128
+ * cut grooves (visible in light art). Yarn thickness and brightness vary per
+ * thread (linen-style slubs) so it reads as woven fabric, not a printed grid.
+ */
+function getFabricWeaveTile(cfg: WeaveConfig): HTMLCanvasElement {
+  if (fabricWeaveTile) return fabricWeaveTile;
+  const size = 160;
+  const tile = document.createElement("canvas");
+  tile.width = size;
+  tile.height = size;
+  const ctx = tile.getContext("2d");
+  if (!ctx) return tile;
+
+  const rand = makeLcg(0x5eed);
+
+  // Irregular yarn bands; last band absorbs the remainder so the tile wraps.
+  const makeBands = (minW: number, maxW: number) => {
+    const lo = Math.max(2, Math.round(Math.min(minW, maxW)));
+    const hi = Math.max(lo, Math.round(Math.max(minW, maxW)));
+    const bands: { start: number; width: number; tone: number }[] = [];
+    let pos = 0;
+    while (pos < size) {
+      let w = lo + Math.floor(rand() * (hi - lo + 1));
+      if (size - pos < lo || pos + w > size) w = size - pos;
+      // Per-yarn brightness wobble — slub/thickness variation along the cloth.
+      bands.push({ start: pos, width: w, tone: (rand() - 0.5) * cfg.slub });
+      pos += w;
+    }
+    return bands;
+  };
+  const rows = makeBands(cfg.weftMin, cfg.weftMax); // horizontal yarns
+  const cols = makeBands(cfg.warpMin, cfg.warpMax); // vertical yarns
+
+  const gray = (v: number) => {
+    const c = Math.max(0, Math.min(255, Math.round(v)));
+    return `rgb(${c},${c},${c})`;
+  };
+
+  for (let ri = 0; ri < rows.length; ri++) {
+    for (let ci = 0; ci < cols.length; ci++) {
+      const row = rows[ri];
+      const col = cols[ci];
+      const x = col.start;
+      const y = row.start;
+      const warpOnTop = (ri + ci) % 2 === 0;
+      const slub = (row.tone + col.tone) / 2 + (rand() - 0.5) * cfg.cellNoise;
+
+      // Yarn body: raised yarn catches light, recessed yarn sits lower.
+      ctx.fillStyle = gray((warpOnTop ? 146 : 118) + slub);
+      ctx.fillRect(x, y, col.width, row.width);
+
+      // Bright ridge along the raised yarn — jittered so ridges don't align.
+      ctx.fillStyle = gray(cfg.ridgeTone + slub);
+      if (warpOnTop) {
+        const ry = y + 1 + Math.floor(rand() * Math.max(1, row.width - 2));
+        ctx.fillRect(x + 1, ry, Math.max(1, col.width - 2), 1);
+      } else {
+        const rx = x + 1 + Math.floor(rand() * Math.max(1, col.width - 2));
+        ctx.fillRect(rx, y + 1, 1, Math.max(1, row.width - 2));
+      }
+
+      // Deep grooves between yarns — darkness varies per cell.
+      ctx.fillStyle = gray(cfg.grooveTone + (rand() - 0.5) * 24);
+      if (warpOnTop) {
+        ctx.fillRect(x, y, 1, row.width);
+        ctx.fillRect(x + col.width - 1, y, 1, row.width);
+      } else {
+        ctx.fillRect(x, y, col.width, 1);
+        ctx.fillRect(x, y + row.width - 1, col.width, 1);
+      }
+    }
+  }
+
+  fabricWeaveTile = tile;
+  return tile;
+}
+
+/**
+ * Emboss art with a tiled warp/weft pattern. Two passes:
+ * overlay (texture contrast — highlights in shadow, grooves in light) then
+ * multiply (overall fabric darkening to match Printify renders).
+ * Instant: one cached tile, no network, no getImageData.
+ */
+function applyProceduralFabricWeave(
+  artCanvas: HTMLCanvasElement,
+  artCtx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+): void {
+  const cfg = getWeaveConfig();
+  const tile = getFabricWeaveTile(cfg);
+  const weave = document.createElement("canvas");
+  weave.width = w;
+  weave.height = h;
+  const wctx = weave.getContext("2d");
+  if (!wctx) return;
+
+  const scale = Math.max(0.25, cfg.scale);
+  const pattern = wctx.createPattern(tile, "repeat");
+  if (!pattern) return;
+  wctx.save();
+  wctx.scale(scale, scale);
+  wctx.fillStyle = pattern;
+  wctx.fillRect(0, 0, w / scale + 1, h / scale + 1);
+  wctx.restore();
+
+  wctx.globalCompositeOperation = "destination-in";
+  wctx.drawImage(artCanvas, 0, 0);
+  wctx.globalCompositeOperation = "source-over";
+
+  artCtx.save();
+  // Pass 1: overlay — strong weave contrast without flattening the art.
+  artCtx.globalCompositeOperation = "overlay";
+  artCtx.globalAlpha = Math.max(0, Math.min(1, cfg.overlayAlpha));
+  artCtx.drawImage(weave, 0, 0);
+  // Pass 2: multiply — fabric absorbs light, matching Printify's darker render.
+  artCtx.globalCompositeOperation = "multiply";
+  artCtx.globalAlpha = Math.max(0, Math.min(1, cfg.multiplyAlpha));
+  artCtx.drawImage(weave, 0, 0);
   artCtx.restore();
 }
 
@@ -1255,6 +1535,7 @@ export function renderFlatView(input: FlatRenderInput): void {
     forceShadingMap = false,
     edgeWrapMode = false,
     decorMode = false,
+    fabricWeave = false,
     layerAdjust,
     previewLayers,
   } = input;
@@ -1462,7 +1743,10 @@ export function renderFlatView(input: FlatRenderInput): void {
         outW,
         outH,
         artworkCorsClean,
-        { phoneCaseMap: shadeMode === "map" && !!shadeMapImg },
+        {
+          phoneCaseMap: shadeMode === "map" && !!shadeMapImg,
+          fabricWeave: fabricWeave && !edgeWrapMode,
+        },
       );
     }
 
@@ -1520,7 +1804,14 @@ export function renderFlatView(input: FlatRenderInput): void {
 
   if (mask) {
     actx.globalCompositeOperation = "destination-in";
-    actx.drawImage(mask, 0, 0, W, H);
+    if (fabricWeave && !edgeWrapMode) {
+      // Woven-fabric harvests produce masks with pinhole noise (magenta
+      // detection stumbles on thread grooves). Clipping with the raw mask
+      // lets the light blank show through as white speckle — solidify first.
+      actx.drawImage(solidifyMaskForClip(mask, W, H), 0, 0);
+    } else {
+      actx.drawImage(mask, 0, 0, W, H);
+    }
     actx.globalCompositeOperation = "source-over";
   }
 
@@ -1535,6 +1826,10 @@ export function renderFlatView(input: FlatRenderInput): void {
     W,
     H,
     artworkCorsClean,
+    {
+      phoneCaseMap: shadeMode === "map" && !!shading && !!edgeWrapMode,
+      fabricWeave: fabricWeave && !edgeWrapMode,
+    },
   );
 
   ctx.drawImage(art, 0, 0);

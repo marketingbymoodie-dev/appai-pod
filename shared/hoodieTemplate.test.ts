@@ -3,6 +3,9 @@ import {
   PULOVER_HOODIE_BLUEPRINT_ID,
   SWEATSHIRT_BLUEPRINT_ID,
   ZIP_HOODIE_BLUEPRINT_ID,
+  PILLOW_WRAP_BLUEPRINT_ID,
+  FAUX_SUEDE_PILLOW_WRAP_BLUEPRINT_ID,
+  BODY_PILLOW_WRAP_BLUEPRINT_ID,
   createFreshAopTemplate,
   createDefaultMesh,
   defaultHoodieTypeForBlueprint,
@@ -12,7 +15,16 @@ import {
   drawMockupImageInCanvas,
   hoodiePanelKeyToPrintifyPosition,
   isValidAopTemplateSlug,
+  normalizeAopTemplateSlugInput,
   MAX_MESH_COLS,
+  defaultPlacerEditorForBlueprint,
+  defaultPrintFileLayoutForBlueprint,
+  resolvePlacerEditor,
+  resolvePrintFileLayout,
+  resolveGarmentLayout,
+  usesJumperNoHoodGarmentUi,
+  isPillowWrapBlueprint,
+  isPillowWrapTemplate,
   migrateSweatshirtDesignGroups,
   mockupDrawRect,
   normalizeHoodieTemplate,
@@ -55,6 +67,106 @@ describe("isValidAopTemplateSlug", () => {
   it("accepts admin slugs", () => {
     expect(isValidAopTemplateSlug("pullover-hoodie-aop-L")).toBe(true);
     expect(isValidAopTemplateSlug("bad slug")).toBe(false);
+  });
+});
+
+describe("normalizeAopTemplateSlugInput", () => {
+  it("converts labels with spaces into admin slugs", () => {
+    expect(normalizeAopTemplateSlugInput("Spun Polyester Square Pillow")).toBe(
+      "Spun_Polyester_Square_Pillow",
+    );
+  });
+});
+
+describe("pillow wrap blueprints", () => {
+  it("recognises spun polyester (220) and faux suede (223)", () => {
+    expect(isPillowWrapBlueprint(PILLOW_WRAP_BLUEPRINT_ID)).toBe(true);
+    expect(isPillowWrapBlueprint(FAUX_SUEDE_PILLOW_WRAP_BLUEPRINT_ID)).toBe(true);
+    expect(isPillowWrapBlueprint(BODY_PILLOW_WRAP_BLUEPRINT_ID)).toBe(true);
+    expect(isPillowWrapBlueprint(451)).toBe(false);
+  });
+
+  it("uses pillow design groups for bp 2758 body pillow", () => {
+    const groups = designGroupsForBlueprint(BODY_PILLOW_WRAP_BLUEPRINT_ID);
+    expect(groups.find((g) => g.id === "front-face")?.panelKeys).toEqual(["front"]);
+    expect(groups.find((g) => g.id === "back-face")?.panelKeys).toEqual(["back"]);
+    expect(groups.find((g) => g.id === "front-body")).toBeUndefined();
+  });
+
+  it("defaultHoodieTypeForBlueprint maps pillow blueprints", () => {
+    expect(defaultHoodieTypeForBlueprint(PILLOW_WRAP_BLUEPRINT_ID)).toBe("pillow-wrap-aop");
+    expect(defaultHoodieTypeForBlueprint(FAUX_SUEDE_PILLOW_WRAP_BLUEPRINT_ID)).toBe(
+      "pillow-wrap-aop",
+    );
+  });
+
+  it("normalizeHoodieTemplate replaces hoodie groups on faux suede templates", () => {
+    const raw = createFreshAopTemplate({
+      name: "faux-suede-square-pillow",
+      blueprintId: FAUX_SUEDE_PILLOW_WRAP_BLUEPRINT_ID,
+    });
+    raw.designGroups = designGroupsForBlueprint(ZIP_HOODIE_BLUEPRINT_ID);
+    const normalized = normalizeHoodieTemplate(raw);
+    expect(isPillowWrapTemplate(normalized)).toBe(true);
+    expect(normalized.placerEditor).toBe("front-back-face");
+    expect(normalized.printFileLayout).toBe("wrap-single");
+    expect(normalized.designGroups?.find((g) => g.id === "front-face")).toBeDefined();
+    expect(normalized.designGroups?.find((g) => g.id === "front-body")).toBeUndefined();
+  });
+
+  it("explicit placerEditor front-back-face works for unlisted blueprint ids", () => {
+    const t = normalizeHoodieTemplate(
+      createFreshAopTemplate({
+        name: "custom-pillow",
+        blueprintId: 996,
+        placerEditor: "front-back-face",
+        printFileLayout: "wrap-single",
+        hoodieType: "pillow-wrap-aop",
+      }),
+    );
+    expect(isPillowWrapTemplate(t)).toBe(true);
+    expect(resolvePlacerEditor(t)).toBe("front-back-face");
+    expect(t.designGroups?.find((g) => g.id === "front-face")).toBeDefined();
+    expect(panelsEligibleForView("front", 996, "front-back-face")).toContain("front");
+    expect(panelsEligibleForView("front", 996, "front-back-face")).not.toContain("front_left");
+  });
+
+  it("defaultPrintFileLayoutForBlueprint maps body pillow to split", () => {
+    expect(defaultPrintFileLayoutForBlueprint(BODY_PILLOW_WRAP_BLUEPRINT_ID)).toBe("split-front-back");
+    expect(defaultPrintFileLayoutForBlueprint(PILLOW_WRAP_BLUEPRINT_ID)).toBe("wrap-single");
+    expect(defaultPrintFileLayoutForBlueprint(450)).toBe("split-front-back");
+  });
+
+  it("defaultPrintFileLayoutForBlueprint maps lumbar pillow 538 to split", () => {
+    expect(defaultPrintFileLayoutForBlueprint(538)).toBe("split-front-back");
+  });
+});
+
+describe("jumper no hood garment layout", () => {
+  it("seeds sweatshirt-style groups for any blueprint", () => {
+    const t = createFreshAopTemplate({
+      name: "aop-jacket-L",
+      blueprintId: 1604,
+      garmentLayout: "jumper-no-hood",
+    });
+    expect(t.garmentLayout).toBe("jumper-no-hood");
+    expect(t.placerEditor).toBe("hoodie");
+    expect(t.designGroups?.find((g) => g.id === "hood")).toBeUndefined();
+    expect(t.designGroups?.find((g) => g.id === "front-body")?.panelKeys).toEqual(["front"]);
+    expect(t.designGroups?.find((g) => g.id === "left-sleeve")).toBeDefined();
+    expect(usesJumperNoHoodGarmentUi(t)).toBe(true);
+  });
+
+  it("resolveGarmentLayout infers jumper for bp 449", () => {
+    const t = createFreshAopTemplate({ name: "sweatshirt-aop-L", blueprintId: 449 });
+    expect(resolveGarmentLayout(t)).toBe("jumper-no-hood");
+  });
+
+  it("panelsEligibleForView hides hood panels for jumper layout", () => {
+    const front = panelsEligibleForView("front", 1604, "hoodie", "jumper-no-hood");
+    expect(front).toContain("front");
+    expect(front).not.toContain("left_hood");
+    expect(front).not.toContain("front_left");
   });
 });
 

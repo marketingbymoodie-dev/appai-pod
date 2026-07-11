@@ -35,6 +35,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "style_presets",         column: "prompt_prefix_dark",          type: "TEXT" },
   { table: "generation_jobs",       column: "billing_mode",                type: "TEXT" },
   { table: "customizer_pages",      column: "base_product_handle",         type: "TEXT" },
+  { table: "customizer_pages",      column: "style_config",                type: "JSONB" },
   { table: "generation_jobs",       column: "session_id",                  type: "TEXT" },
   { table: "generation_jobs",       column: "customer_id",                 type: "TEXT" },
   { table: "product_types",         column: "printify_costs",              type: "TEXT DEFAULT '{}'" },
@@ -64,6 +65,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "product_types",         column: "flat_calibration",            type: "TEXT DEFAULT '{}'" },
   { table: "product_types",         column: "storefront_mockup_mode",      type: "TEXT" },
   { table: "product_types",         column: "fulfillment_layout",        type: "TEXT" },
+  { table: "product_types",         column: "fabric_weave_texture",      type: "BOOLEAN" },
   { table: "platform_catalog_blueprints", column: "storefront_mockup_mode", type: "TEXT" },
   { table: "platform_catalog_blueprints", column: "fulfillment_layout",       type: "TEXT" },
   { table: "platform_catalog_blueprints", column: "force_flat_harvest",       type: "BOOLEAN NOT NULL DEFAULT FALSE" },
@@ -93,6 +95,10 @@ const DATA_MIGRATIONS: string[] = [
   `UPDATE product_types SET panel_mapping_template = 'unisex-zip-hoodie-aop-L'
    WHERE id = 20
      AND (panel_mapping_template IS NULL OR panel_mapping_template = '')`,
+  // Woven wall tapestry: enable procedural fabric weave on flat mockups.
+  `UPDATE product_types SET fabric_weave_texture = true
+   WHERE printify_blueprint_id = 1649
+     AND fabric_weave_texture IS NULL`,
   // Backfill materialized balances from the legacy customer columns.
   `INSERT INTO credit_balances (
       customer_id,
@@ -499,6 +505,41 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
     `,
   },
   {
+    name: "design_products",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "design_products" (
+        "id"                  VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        "merchant_id"         VARCHAR NOT NULL,
+        "shop"                TEXT NOT NULL,
+        "job_id"              VARCHAR NOT NULL,
+        "product_type_id"     INTEGER,
+        "shopify_product_id"  TEXT,
+        "handle"              TEXT,
+        "title"               TEXT NOT NULL,
+        "status"              TEXT NOT NULL DEFAULT 'active',
+        "variant_map"         JSON,
+        "mockup_urls"         JSON,
+        "created_at"          TIMESTAMP DEFAULT NOW() NOT NULL,
+        "updated_at"          TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "design_product_events",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "design_product_events" (
+        "id"                  VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        "design_product_id"   VARCHAR NOT NULL,
+        "event_type"          TEXT NOT NULL,
+        "quantity"            INTEGER NOT NULL DEFAULT 1,
+        "amount_cents"        INTEGER,
+        "shopify_order_id"    TEXT,
+        "cart_token"          TEXT,
+        "created_at"          TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
     name: "platform_catalog_blueprints",
     sql: `
       CREATE TABLE IF NOT EXISTS "platform_catalog_blueprints" (
@@ -602,6 +643,40 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     name: "founder_alerts_shop_idx",
     sql: `CREATE INDEX IF NOT EXISTS "founder_alerts_shop_idx"
       ON "founder_alerts" ("shop_domain", "created_at")`,
+  },
+  {
+    name: "design_products_merchant_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "design_products_merchant_idx"
+      ON "design_products" ("merchant_id", "status")`,
+  },
+  {
+    name: "design_products_shop_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "design_products_shop_idx"
+      ON "design_products" ("shop")`,
+  },
+  {
+    name: "design_products_job_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "design_products_job_idx"
+      ON "design_products" ("job_id")`,
+  },
+  {
+    name: "design_product_events_product_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "design_product_events_product_idx"
+      ON "design_product_events" ("design_product_id", "event_type", "created_at")`,
+  },
+  {
+    name: "design_product_events_cart_token_idx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "design_product_events_cart_token_idx"
+      ON "design_product_events" ("design_product_id", "cart_token")
+      WHERE "event_type" = 'atc' AND "cart_token" IS NOT NULL`,
+  },
+  {
+    // "cart_token" is reused for sale events as a per-line dedupe key (shopify line_item id)
+    // so replayed orders/paid webhooks never double-count revenue for the same order line.
+    name: "design_product_events_sale_dedupe_idx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "design_product_events_sale_dedupe_idx"
+      ON "design_product_events" ("design_product_id", "shopify_order_id", "cart_token")
+      WHERE "event_type" = 'sale' AND "shopify_order_id" IS NOT NULL AND "cart_token" IS NOT NULL`,
   },
 ];
 

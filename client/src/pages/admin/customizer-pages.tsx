@@ -34,6 +34,13 @@ import AdminLayout from "@/components/admin-layout";
 import ResyncPricesDialog from "@/components/admin/ResyncPricesDialog";
 import PlanPicker from "./plan-picker";
 import GenerationQuotaUsage from "@/components/admin/GenerationQuotaUsage";
+import CustomizerPageStyleSelector from "@/components/admin/CustomizerPageStyleSelector";
+import {
+  defaultStyleConfigForDesignerType,
+  parseCustomizerPageStyleConfig,
+  validateCustomizerPageStyleConfig,
+  type CustomizerPageStyleConfig,
+} from "@shared/customizerPageStyles";
 
 interface CustomizerPage {
   id: string;
@@ -47,6 +54,7 @@ interface CustomizerPage {
   baseVariantTitle: string | null;
   baseProductPrice: string | null;
   status: "active" | "disabled";
+  styleConfig?: CustomizerPageStyleConfig | null;
   createdAt: string;
 }
 
@@ -74,6 +82,8 @@ interface Blank {
   title: string;
   imageUrl: string | null;
   needsShopifySync?: boolean;
+  designerType?: string | null;
+  isAllOverPrint?: boolean;
   printifyBlueprintId?: number | null;
   printifyProviderId?: number | null;
   printifyVariantLabels?: Record<string, string>;
@@ -125,6 +135,21 @@ async function uploadPlaceholderFile(file: File): Promise<string> {
 
 const MAX_GALLERY_PLACEHOLDERS = 4;
 
+function buildCuratedPlaceholderPayload(
+  primary: string,
+  gallery: Set<string>,
+  existingCustom: string[] | undefined,
+  newCustomUrl: string,
+): { primary: string; gallery: string[]; custom: string[] } {
+  const galleryArr = Array.from(gallery);
+  const selected = new Set([primary, ...galleryArr].filter(Boolean));
+  const custom = [...(existingCustom || []), newCustomUrl.trim()]
+    .filter(Boolean)
+    .filter((url) => selected.has(url))
+    .slice(0, MAX_GALLERY_PLACEHOLDERS);
+  return { primary, gallery: galleryArr, custom };
+}
+
 type PlaceholderImageOption = { url: string; label: string; position?: string; source?: string };
 
 function buildAvailablePlaceholderImages(
@@ -153,11 +178,41 @@ const PLAN_DISPLAY: Record<string, string> = {
   pro_plus: "Pro Plus",
 };
 
+const STYLE_CATEGORY_LABELS: Record<string, string> = {
+  decor: "All Decor styles",
+  apparel: "All Apparel styles",
+  graphics: "All Graphics styles",
+  all: "All styles",
+};
+
+function formatStyleConfigSummary(
+  config: CustomizerPageStyleConfig | null | undefined,
+  styles: Array<{ id: number | string; name: string }>,
+): string {
+  if (!config) return "No styles configured";
+  if (config.mode === "category") {
+    return STYLE_CATEGORY_LABELS[config.category] ?? config.category;
+  }
+  const names = config.presetIds
+    .map((id) => styles.find((s) => String(s.id) === id)?.name ?? null)
+    .filter(Boolean) as string[];
+  if (names.length === 0) return `${config.presetIds.length} selected style(s)`;
+  if (names.length <= 2) return names.join(", ");
+  return `${names.slice(0, 2).join(", ")} +${names.length - 2} more`;
+}
+
 export default function AdminCustomizerPages() {
   const { toast } = useToast();
   const [, navigate] = useLocation();
 
   const [createOpen, setCreateOpen] = useState(false);
+  // Deep-link from Products page ("Create Customizer Page" button):
+  // ?createForProductType={productTypeId} opens the wizard pre-selecting that product.
+  const [pendingCreateProductTypeId, setPendingCreateProductTypeId] = useState<number | null>(() => {
+    const raw = new URLSearchParams(window.location.search).get("createForProductType");
+    const parsed = raw ? parseInt(raw, 10) : NaN;
+    return Number.isFinite(parsed) ? parsed : null;
+  });
   const [deleteTarget, setDeleteTarget] = useState<CustomizerPage | null>(null);
   const [syncPricesTarget, setSyncPricesTarget] = useState<CustomizerPage | null>(null);
   const [editTarget, setEditTarget] = useState<CustomizerPage | null>(null);
@@ -178,6 +233,8 @@ export default function AdminCustomizerPages() {
   const [formPrimaryPlaceholder, setFormPrimaryPlaceholder] = useState("");
   const [formGalleryPlaceholders, setFormGalleryPlaceholders] = useState<Set<string>>(new Set());
   const [formCustomPlaceholder, setFormCustomPlaceholder] = useState("");
+  const [formStyleConfig, setFormStyleConfig] = useState<CustomizerPageStyleConfig | null>(null);
+  const [editStyleConfig, setEditStyleConfig] = useState<CustomizerPageStyleConfig | null>(null);
   const [handleTouched, setHandleTouched] = useState(false);
   const [titleTouched, setTitleTouched] = useState(false);
 
@@ -237,6 +294,29 @@ export default function AdminCustomizerPages() {
     enabled: createOpen || !!editTarget,
   });
 
+  // Open the create wizard as soon as we know a deep-linked product is pending.
+  useEffect(() => {
+    if (pendingCreateProductTypeId != null) setCreateOpen(true);
+  }, [pendingCreateProductTypeId]);
+
+  // Once blanks have loaded, pre-select the deep-linked product and clear the query param.
+  useEffect(() => {
+    if (pendingCreateProductTypeId == null) return;
+    if (!blanksData?.blanks) return;
+    const match = blanksData.blanks.find((b) => b.productTypeId === pendingCreateProductTypeId);
+    if (match) {
+      setFormProductId(match.productId ? match.productId : `pt:${match.productTypeId}`);
+    }
+    setPendingCreateProductTypeId(null);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("createForProductType");
+    window.history.replaceState({}, "", url.toString());
+  }, [pendingCreateProductTypeId, blanksData]);
+
+  const { data: adminStyles = [] } = useQuery<Array<{ id: number; name: string; category?: string | null }>>({
+    queryKey: ["/api/admin/styles"],
+  });
+
   const editBlank = useMemo(() => {
     if (!editTarget || !blanksData?.blanks) return null;
     return blanksData.blanks.find(
@@ -254,6 +334,17 @@ export default function AdminCustomizerPages() {
     setEditCustomPlaceholder("");
   }, [editTarget?.id, editBlank?.productTypeId]);
 
+  useEffect(() => {
+    if (!editTarget) {
+      setEditStyleConfig(null);
+      return;
+    }
+    setEditStyleConfig(
+      parseCustomizerPageStyleConfig(editTarget.styleConfig) ??
+        defaultStyleConfigForDesignerType(editBlank?.designerType),
+    );
+  }, [editTarget?.id, editTarget?.styleConfig, editBlank?.designerType]);
+
   const shopDomain =
     createdPageResult?.page?.shop ??
     pagesData?.pages?.find((p) => p.shop)?.shop ??
@@ -268,6 +359,7 @@ export default function AdminCustomizerPages() {
       productTypeId?: number;
       variantPrices: Record<string, string>;
       baseMockupImages?: { primary: string; gallery: string[]; custom?: string[] };
+      styleConfig: CustomizerPageStyleConfig;
     }) => {
       const res = await apiRequest("POST", "/api/appai/customizer-pages", body);
       return res.json();
@@ -292,17 +384,18 @@ export default function AdminCustomizerPages() {
   const editMutation = useMutation({
     mutationFn: async () => {
       if (!editTarget) throw new Error("No customizer page selected");
-      const custom = [
-        ...(editBlank?.baseMockupImages?.custom || []),
-        editCustomPlaceholder.trim(),
-      ].filter(Boolean).slice(0, MAX_GALLERY_PLACEHOLDERS);
+      const styleErr = validateCustomizerPageStyleConfig(editStyleConfig);
+      if (styleErr) throw new Error(styleErr);
+      const curated = buildCuratedPlaceholderPayload(
+        editPrimaryPlaceholder,
+        editGalleryPlaceholders,
+        editBlank?.baseMockupImages?.custom,
+        editCustomPlaceholder,
+      );
       const res = await apiRequest("PATCH", `/api/appai/customizer-pages/${editTarget.id}`, {
         description: editDescription,
-        baseMockupImages: {
-          primary: editPrimaryPlaceholder,
-          gallery: Array.from(editGalleryPlaceholders),
-          custom,
-        },
+        styleConfig: editStyleConfig,
+        baseMockupImages: curated,
       });
       return res.json();
     },
@@ -411,6 +504,7 @@ export default function AdminCustomizerPages() {
     setFormPrimaryPlaceholder("");
     setFormGalleryPlaceholders(new Set());
     setFormCustomPlaceholder("");
+    setFormStyleConfig(null);
     setHandleTouched(false);
     setTitleTouched(false);
     setFormStep(1);
@@ -635,9 +729,28 @@ export default function AdminCustomizerPages() {
     setFormCustomPlaceholder("");
   }, [selectedBlank?.productTypeId, formProductId]);
 
+  useEffect(() => {
+    if (!selectedBlank) {
+      setFormStyleConfig(null);
+      return;
+    }
+    setFormStyleConfig(defaultStyleConfigForDesignerType(selectedBlank.designerType));
+  }, [selectedBlank?.productTypeId, formProductId]);
+
+  const formStyleError = validateCustomizerPageStyleConfig(formStyleConfig);
+  const editStyleError = validateCustomizerPageStyleConfig(editStyleConfig);
+
   /** When moving from Step 1 → Step 2, pre-fill prices from Shopify data */
   function advanceToStep2() {
     if (!formTitle.trim() || !formHandle.trim() || !formProductId) return;
+    if (formStyleError) {
+      toast({
+        title: "Art styles required",
+        description: formStyleError,
+        variant: "destructive",
+      });
+      return;
+    }
     if (selectedVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
       toast({
         title: "Too many variants for Shopify",
@@ -681,23 +794,31 @@ export default function AdminCustomizerPages() {
   }
 
   function handleSubmitCreate() {
+    if (!formStyleConfig || formStyleError) {
+      toast({
+        title: "Art styles required",
+        description: formStyleError ?? "Choose art styles before creating this page.",
+        variant: "destructive",
+      });
+      return;
+    }
     // For products on Shopify: pass their shopify productId.
     // For products not yet on Shopify: pass the productTypeId so the backend can auto-send.
     const isSync = selectedBlank?.needsShopifySync;
+    const curated = buildCuratedPlaceholderPayload(
+      formPrimaryPlaceholder,
+      formGalleryPlaceholders,
+      selectedBlank?.baseMockupImages?.custom,
+      formCustomPlaceholder,
+    );
     createMutation.mutate({
       title: formTitle,
       handle: formHandle,
       baseProductId: isSync ? undefined : formProductId,
       productTypeId: isSync ? selectedBlank?.productTypeId : undefined,
       variantPrices,
-      baseMockupImages: {
-        primary: formPrimaryPlaceholder,
-        gallery: Array.from(formGalleryPlaceholders),
-        custom: [
-          ...(selectedBlank?.baseMockupImages?.custom || []),
-          formCustomPlaceholder.trim(),
-        ].filter(Boolean).slice(0, MAX_GALLERY_PLACEHOLDERS),
-      },
+      styleConfig: formStyleConfig,
+      baseMockupImages: curated,
     });
   }
 
@@ -827,6 +948,15 @@ export default function AdminCustomizerPages() {
                         </p>
                       ) : null}
                     </div>
+
+                    {selectedBlank && formStyleConfig && (
+                      <CustomizerPageStyleSelector
+                        designerType={selectedBlank.designerType}
+                        availableStyles={adminStyles}
+                        value={formStyleConfig}
+                        onChange={setFormStyleConfig}
+                      />
+                    )}
 
                     <div>
                       <Label htmlFor="title">Page Title</Label>
@@ -964,6 +1094,7 @@ export default function AdminCustomizerPages() {
                         !formTitle.trim() ||
                         !formHandle.trim() ||
                         !formProductId ||
+                        !!formStyleError ||
                         selectedVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT
                       }
                       onClick={advanceToStep2}
@@ -1352,6 +1483,12 @@ export default function AdminCustomizerPages() {
                         <span className="text-muted-foreground">Product</span>
                         <span className="font-medium">{selectedBlank?.title ?? formProductId}</span>
                       </div>
+                      <div className="flex justify-between gap-4">
+                        <span className="text-muted-foreground shrink-0">Art styles</span>
+                        <span className="font-medium text-right">
+                          {formatStyleConfigSummary(formStyleConfig, adminStyles)}
+                        </span>
+                      </div>
                       {selectedVariants.length > 0 ? (
                         <div className="border-t pt-2 mt-1 space-y-1">
                           <span className="text-muted-foreground text-xs uppercase tracking-wide">Variant prices</span>
@@ -1611,6 +1748,12 @@ export default function AdminCustomizerPages() {
                               {page.baseProductPrice && ` · $${parseFloat(page.baseProductPrice).toFixed(2)}`}
                             </p>
                           )}
+                          <p className="text-xs text-muted-foreground mt-1">
+                            Styles: {formatStyleConfigSummary(
+                              parseCustomizerPageStyleConfig(page.styleConfig),
+                              adminStyles,
+                            )}
+                          </p>
                         </div>
 
                         <div className="flex items-center gap-2 flex-shrink-0">
@@ -1736,6 +1879,15 @@ export default function AdminCustomizerPages() {
                 </p>
               </div>
 
+              {editStyleConfig && (
+                <CustomizerPageStyleSelector
+                  designerType={editBlank.designerType}
+                  availableStyles={adminStyles}
+                  value={editStyleConfig}
+                  onChange={setEditStyleConfig}
+                />
+              )}
+
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <Label>Placeholder Images</Label>
@@ -1824,7 +1976,10 @@ export default function AdminCustomizerPages() {
                 <Button variant="outline" onClick={() => setEditTarget(null)} disabled={editMutation.isPending}>
                   Cancel
                 </Button>
-                <Button onClick={() => editMutation.mutate()} disabled={editMutation.isPending}>
+                <Button
+                  onClick={() => editMutation.mutate()}
+                  disabled={editMutation.isPending || !!editStyleError}
+                >
                   {editMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}
                   Save Changes
                 </Button>

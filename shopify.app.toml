@@ -34,6 +34,23 @@ uri = "/shopify/webhooks/shop-redact"
 # The handler in server/routes.ts is already live and idempotent, so the
 # moment the subscription is re-enabled, redemption debits + audit rows
 # resume automatically.
+#
+# Design product sale recording (My Orders stats dashboard) piggybacks on this
+# same orders/paid handler — see recordDesignProductSalesForOrder in
+# server/design-product-events.ts. No separate re-enable step needed.
+
+# carts/create + carts/update feed the "add to cart" counts on the My Orders
+# stats dashboard for permanent design products. Also contains protected
+# customer data (cart.customer), so they wait on the same PCD approval as
+# orders/paid above. Handlers already exist and are idempotent:
+#
+# [[webhooks.subscriptions]]
+# topics = [ "carts/create" ]
+# uri = "/shopify/webhooks/carts-create"
+#
+# [[webhooks.subscriptions]]
+# topics = [ "carts/update" ]
+# uri = "/shopify/webhooks/carts-update"
 
 [access_scopes]
 # write_content required for creating/updating Shopify Pages via Admin API

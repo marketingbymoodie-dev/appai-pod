@@ -3,9 +3,9 @@ import { generatePattern, type PatternType } from "./replicate-bg-remover";
 import {
   processApparelMotif,
   trimTransparentBounds,
-  resolveApparelStylePrefix,
   resolveApparelDarkTierPrefix,
   resolveIsApparelGeneration,
+  resolveMotifStylePrefix,
   APPAREL_CHROMA_STYLE_BY_NAME,
   processApparelMotifToDataUrl,
 } from "./apparel-matting";
@@ -21,7 +21,7 @@ import sharp from "sharp";
 import jwt from "jsonwebtoken";
 import { storage } from "./storage";
 import { pool, db } from "./db";
-import { customizerDesigns, customizerPages, generationJobs, productTypes, publishedProducts, cachedPanelImages } from "@shared/schema";
+import { customizerDesigns, customizerPages, generationJobs, productTypes, publishedProducts, cachedPanelImages, designProducts, designProductEvents } from "@shared/schema";
 import { eq, and, desc, inArray, sql, or } from "drizzle-orm";
 import { resolvePrintifyColorHex } from "@shared/printifyColorResolver";
 import { slugPrintifyColorId } from "@shared/printifyColorSlug";
@@ -64,12 +64,13 @@ import {
   usesAopStorefrontCustomizer,
   usesToteFoldedFulfillment,
 } from "@shared/productLayoutPolicy";
+import { resolveFabricWeaveTexture, WOVEN_WALL_TAPESTRY_BLUEPRINT_ID } from "@shared/fabricWeave";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShopifyToken } from "./shopify";
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { syncCreditEntitlementMetafield } from "./credit-entitlements";
 import { privacyPolicyHtml } from "./privacy-policy";
 import Stripe from "stripe";
-import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota } from "./customizer-plans";
+import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota, getDesignProductLimit, canActivateDesignProduct } from "./customizer-plans";
 import { extractUsageLineItemId, retryPendingOverageCharges } from "./usage-billing";
 import { peekMerchantGenerationQuota, quotaBlockBody } from "./generation-quota";
 import {
@@ -94,6 +95,7 @@ import {
   OVERAGE_PRICE_CENTS,
 } from "./overage-settings";
 import { logMerchantGeneration } from "./merchant-generation-log";
+import { recordDesignProductSalesForOrder, recordDesignProductAtcForCart } from "./design-product-events";
 import type { CustomizerPage } from "@shared/schema";
 import { ObjectStorageService, registerObjectStorageRoutes, objectStorageClient, getStorageDir } from "./replit_integrations/object_storage";
 import {
@@ -110,6 +112,15 @@ import {
 import { enqueueMockupJob, getMockupJob } from "./mockup-jobs";
 import { harvestFlatCalibration, type HarvestOptions } from "./flat-calibration";
 import { slimPhoneCaseBlueprintId, type CanonicalPublishedMeta } from "@shared/canonicalProducts";
+import {
+  parseCustomizerPageStyleConfig,
+  validateCustomizerPageStyleConfig,
+  defaultStyleConfigForDesignerType,
+  filterStylePresetsForPage,
+  dedupeStylePresets,
+  sanitizeStylePrefixForAop,
+  type CustomizerPageStyleConfig,
+} from "@shared/customizerPageStyles";
 import {
   canMerchantImportEntry,
   canOperatorImportEntry,
@@ -1984,7 +1995,7 @@ export async function registerRoutes(
 
       console.log(`[CONFIG] DB done ${Date.now() - t0}ms, ${dbStyles.length} styles`);
 
-      const stylePresets =
+      const stylePresets = dedupeStylePresets(
         dbStyles.length > 0
           ? dbStyles.map((s) => {
               // Merge options and baseImageUrl from hardcoded STYLE_PRESETS (DB doesn't store sub-options)
@@ -2004,7 +2015,8 @@ export async function registerRoutes(
                 descriptionOptional: !!(s as any).descriptionOptional,
               };
             })
-          : hardcodedFallback;
+          : hardcodedFallback,
+      );
 
       const payload = {
         sizes: PRINT_SIZES,
@@ -2420,11 +2432,19 @@ export async function registerRoutes(
       // AOP zip hoodies use designerType "all-over-print" — still need chroma matting.
       let isApparel = resolveIsApparelGeneration(productType, styleCategory);
 
-      if (isApparel) {
-        stylePromptPrefix = resolveApparelStylePrefix(styleName, stylePromptPrefix);
+      const isAllOverPrint = !!(productType?.isAllOverPrint);
+      if (isApparel && !isAllOverPrint) {
+        stylePromptPrefix = resolveMotifStylePrefix(
+          styleCategory,
+          styleName,
+          stylePreset,
+          stylePromptPrefix,
+        );
+      } else if (isAllOverPrint && stylePromptPrefix) {
+        stylePromptPrefix = sanitizeStylePrefixForAop(stylePromptPrefix);
       }
 
-      const isAllOverPrint = !!(productType?.isAllOverPrint);      // Determine color tier for apparel products
+      // Determine color tier for apparel products
       let colorTier: ColorTier = "light"; // Default to light (dark designs on white background)
 
       aspectRatioStr = resolveGenerationAspectRatio(aspectRatioStr, { isApparel, isAllOverPrint });
@@ -2465,7 +2485,7 @@ export async function registerRoutes(
       const userDescAdmin = (rawUserPromptAdmin || "").trim();
       let fullPrompt: string;
       
-      if (isApparel && colorTier === "dark" && stylePreset) {
+      if (styleCategory === "apparel" && isApparel && colorTier === "dark" && stylePreset) {
         const darkTierPrompt = resolveApparelDarkTierPrefix(stylePreset, stylePromptPrefixDark);
         if (darkTierPrompt) {
           fullPrompt = userDescAdmin ? `${userDescAdmin}, ${darkTierPrompt}` : darkTierPrompt;
@@ -3214,8 +3234,16 @@ console.log("[shopify/session] installation ok", {
       }
 
       const embedIsApparelEarly = resolveIsApparelGeneration(productType, embedStyleCategory);
-      if (embedIsApparelEarly) {
-        stylePromptPrefix = resolveApparelStylePrefix(styleName, stylePromptPrefix);
+      const embedIsAllOverPrintEarly = !!(productType?.isAllOverPrint);
+      if (embedIsApparelEarly && !embedIsAllOverPrintEarly) {
+        stylePromptPrefix = resolveMotifStylePrefix(
+          embedStyleCategory,
+          styleName,
+          stylePreset,
+          stylePromptPrefix,
+        );
+      } else if (embedIsAllOverPrintEarly && stylePromptPrefix) {
+        stylePromptPrefix = sanitizeStylePrefixForAop(stylePromptPrefix);
       }
 
 
@@ -3621,6 +3649,34 @@ ${textEdgeRestrictions}
    * Called directly (no HTTP) so it works inside other route handlers.
    * Returns { shopifyProductId, shopifyHandle } on success, throws on failure.
    */
+  async function syncCustomizerPagesForShopifyProduct(args: {
+    productTypeId: number;
+    shop: string;
+    shopifyProductId: string;
+    shopifyHandle: string;
+    firstVariantId: string | number;
+  }): Promise<void> {
+    const pages = await storage.listCustomizerPagesByProductTypeId(args.productTypeId);
+    for (const page of pages) {
+      if (page.shop !== args.shop) continue;
+      if (
+        String(page.baseProductId) === String(args.shopifyProductId) &&
+        String(page.baseVariantId) === String(args.firstVariantId) &&
+        (page as any).baseProductHandle === args.shopifyHandle
+      ) {
+        continue;
+      }
+      await storage.updateCustomizerPage(page.id, {
+        baseProductId: String(args.shopifyProductId),
+        baseVariantId: String(args.firstVariantId),
+        baseProductHandle: args.shopifyHandle,
+      });
+      console.log(
+        `[customizer-pages] synced page ${page.handle} → product ${args.shopifyProductId} variant ${args.firstVariantId}`,
+      );
+    }
+  }
+
   async function createShopifyProductForType(
     shop: string,
     accessToken: string,
@@ -3763,6 +3819,17 @@ ${textEdgeRestrictions}
       shopifyVariantIds: shopifyVariantIds,
       lastPushedToShopify: new Date(),
     });
+
+    const firstVariantId = createdVariants[0]?.id;
+    if (firstVariantId) {
+      await syncCustomizerPagesForShopifyProduct({
+        productTypeId: productType.id,
+        shop,
+        shopifyProductId: newShopifyProductId,
+        shopifyHandle,
+        firstVariantId,
+      });
+    }
 
     return { shopifyProductId: newShopifyProductId, shopifyHandle };
   }
@@ -4372,6 +4439,17 @@ ${textEdgeRestrictions}
             lastPushedToShopify: new Date(),
           });
 
+          const firstVariantId = createdVariants[0]?.id;
+          if (firstVariantId) {
+            await syncCustomizerPagesForShopifyProduct({
+              productTypeId,
+              shop: shopDomain,
+              shopifyProductId: String(shopifyProductId),
+              shopifyHandle,
+              firstVariantId,
+            });
+          }
+
           return res.json({
             success: true,
             message: "Product created in Shopify",
@@ -4612,6 +4690,17 @@ ${textEdgeRestrictions}
         shopifyVariantIds: shopifyVariantIds,
         lastPushedToShopify: new Date(),
       });
+
+      const firstVariantId = createdVariants[0]?.id;
+      if (firstVariantId) {
+        await syncCustomizerPagesForShopifyProduct({
+          productTypeId,
+          shop: shopDomain,
+          shopifyProductId: String(shopifyProductId),
+          shopifyHandle,
+          firstVariantId,
+        });
+      }
 
       return res.json({
         success: true,
@@ -5519,6 +5608,7 @@ ${textEdgeRestrictions}
         name: productType.name,
         description: productType.description,
         printifyBlueprintId: productType.printifyBlueprintId,
+        fabricWeaveTexture: (productType as any).fabricWeaveTexture ?? null,
         aspectRatio: designerDisplayAspectRatio(productType),
         printShape: productType.printShape || "rectangle",
         printAreaWidth: productType.printAreaWidth,
@@ -5569,9 +5659,11 @@ ${textEdgeRestrictions}
         fulfillmentLayout: (productType as any).fulfillmentLayout || null,
         effectiveStorefrontMockupMode: resolveStorefrontMockupMode({
           isAllOverPrint: productType.isAllOverPrint,
+          panelMappingTemplate: (productType as any).panelMappingTemplate || null,
           storefrontMockupMode: (productType as any).storefrontMockupMode,
           fulfillmentLayout: (productType as any).fulfillmentLayout,
           printifyBlueprintId: productType.printifyBlueprintId,
+          onTheFlyTier: (productType as any).onTheFlyTier || null,
         }),
         effectiveFulfillmentLayout: resolveFulfillmentLayout({
           isAllOverPrint: productType.isAllOverPrint,
@@ -5581,9 +5673,11 @@ ${textEdgeRestrictions}
         }),
         useAopCustomizer: usesAopStorefrontCustomizer({
           isAllOverPrint: productType.isAllOverPrint,
+          panelMappingTemplate: (productType as any).panelMappingTemplate || null,
           storefrontMockupMode: (productType as any).storefrontMockupMode,
           fulfillmentLayout: (productType as any).fulfillmentLayout,
           printifyBlueprintId: productType.printifyBlueprintId,
+          onTheFlyTier: (productType as any).onTheFlyTier || null,
         }),
         onTheFlyTier: (productType as any).onTheFlyTier || null,
         flatCalibration: parseFlatCalibrationManifest((productType as any).flatCalibration),
@@ -5858,6 +5952,7 @@ ${textEdgeRestrictions}
       name: productTypeToUse.name,
       description: productTypeToUse.description,
       printifyBlueprintId: productTypeToUse.printifyBlueprintId,
+      fabricWeaveTexture: (productTypeToUse as any).fabricWeaveTexture ?? null,
       aspectRatio: displayAspectRatio,
       printShape: productTypeToUse.printShape || "rectangle",
       printAreaWidth: productTypeToUse.printAreaWidth,
@@ -5876,9 +5971,11 @@ ${textEdgeRestrictions}
       fulfillmentLayout: (productTypeToUse as any).fulfillmentLayout || null,
       effectiveStorefrontMockupMode: resolveStorefrontMockupMode({
         isAllOverPrint: productTypeToUse.isAllOverPrint,
+        panelMappingTemplate: (productTypeToUse as any).panelMappingTemplate || null,
         storefrontMockupMode: (productTypeToUse as any).storefrontMockupMode,
         fulfillmentLayout: (productTypeToUse as any).fulfillmentLayout,
         printifyBlueprintId: productTypeToUse.printifyBlueprintId,
+        onTheFlyTier: (productTypeToUse as any).onTheFlyTier || null,
       }),
       effectiveFulfillmentLayout: resolveFulfillmentLayout({
         isAllOverPrint: productTypeToUse.isAllOverPrint,
@@ -5888,9 +5985,11 @@ ${textEdgeRestrictions}
       }),
       useAopCustomizer: usesAopStorefrontCustomizer({
         isAllOverPrint: productTypeToUse.isAllOverPrint,
+        panelMappingTemplate: (productTypeToUse as any).panelMappingTemplate || null,
         storefrontMockupMode: (productTypeToUse as any).storefrontMockupMode,
         fulfillmentLayout: (productTypeToUse as any).fulfillmentLayout,
         printifyBlueprintId: productTypeToUse.printifyBlueprintId,
+        onTheFlyTier: (productTypeToUse as any).onTheFlyTier || null,
       }),
       onTheFlyTier: (productTypeToUse as any).onTheFlyTier || null,
       flatCalibration: parseFlatCalibrationManifest((productTypeToUse as any).flatCalibration),
@@ -7078,9 +7177,10 @@ ${textEdgeRestrictions}
         }
       }
 
-      // Gallery limit check for logged-in customers (20 saved designs max)
-      const GALLERY_LIMIT = 20;
+      // Gallery limit check for logged-in customers (20 saved designs max; 30 for the
+      // merchant's own design-studio identity — see getGalleryLimitForCustomer).
       if (customerId) {
+        const GALLERY_LIMIT = await getGalleryLimitForCustomer(customerId);
         const savedCount = await db
           .select({ count: sql<number>`count(*)` })
           .from(generationJobs)
@@ -7250,11 +7350,18 @@ ${textEdgeRestrictions}
       // Determine apparel status early — affects both prompt and dimensions
       let isApparel = resolveIsApparelGeneration(productType, sfStyleCategory);
 
-      if (isApparel) {
-        stylePromptPrefix = resolveApparelStylePrefix(styleName, stylePromptPrefix);
+      const isAllOverPrint = !!(productType?.isAllOverPrint);
+      if (isApparel && !isAllOverPrint) {
+        stylePromptPrefix = resolveMotifStylePrefix(
+          sfStyleCategory,
+          styleName,
+          stylePreset,
+          stylePromptPrefix,
+        );
+      } else if (isAllOverPrint && stylePromptPrefix) {
+        stylePromptPrefix = sanitizeStylePrefixForAop(stylePromptPrefix);
       }
 
-      const isAllOverPrint = !!(productType?.isAllOverPrint);
       console.log(
         P,
         reqId,
@@ -7320,7 +7427,7 @@ MANDATORY IMAGE REQUIREMENTS FOR ALL-OVER PRINT (AOP) - FOLLOW EXACTLY:
           : "VIBRANT colors. White may be used inside the subject (teeth, eyes, highlights) but NOT as a background mat. AVOID hot pink/magenta in the design.";
 
         // Use dark tier prompt variant if available
-        if (isDarkTier && stylePreset) {
+        if (sfStyleCategory === "apparel" && isDarkTier && stylePreset) {
           const darkTierPrompt = resolveApparelDarkTierPrefix(stylePreset, stylePromptPrefixDark);
           if (darkTierPrompt) {
             fullPrompt = userDescSf ? `${userDescSf}, ${darkTierPrompt}` : darkTierPrompt;
@@ -7779,6 +7886,35 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "Design generation is not complete yet" });
       }
 
+      // Merchant design-studio identities skip the generate-time GALLERY_FULL check (their
+      // generate call omits customerId to preserve shop-plan billing), so enforce the cap
+      // here instead, at the point the job actually becomes "saved". Real customer identities
+      // are unaffected — they were already capped before this job could complete.
+      if (job.customerId !== customerId) {
+        const aliases = await storage.getCustomerAliases(customerId).catch(() => []);
+        if (aliases.some((a) => a.aliasType === MERCHANT_STUDIO_ALIAS_TYPE)) {
+          const savedCount = await db
+            .select({ count: sql<number>`count(*)` })
+            .from(generationJobs)
+            .where(
+              and(
+                eq(generationJobs.shop, shop),
+                eq(generationJobs.customerId, customerId),
+                eq(generationJobs.status, "complete"),
+              ),
+            );
+          const currentCount = Number(savedCount[0]?.count ?? 0);
+          if (currentCount >= MERCHANT_STUDIO_GALLERY_LIMIT) {
+            return res.status(400).json({
+              error: "GALLERY_FULL",
+              message: `Your saved designs library is full (${MERCHANT_STUDIO_GALLERY_LIMIT} max). Delete some designs to save new ones.`,
+              count: currentCount,
+              limit: MERCHANT_STUDIO_GALLERY_LIMIT,
+            });
+          }
+        }
+      }
+
       // Link the job to the customer account
       await storage.updateGenerationJob(jobId, {
         customerId,
@@ -8213,9 +8349,11 @@ ${textEdgeRestrictions}
       });
       const useAopMockups = usesAopStorefrontCustomizer({
         isAllOverPrint: productType.isAllOverPrint,
+        panelMappingTemplate: (productType as any).panelMappingTemplate || null,
         storefrontMockupMode: (productType as any).storefrontMockupMode,
         fulfillmentLayout: (productType as any).fulfillmentLayout,
         printifyBlueprintId: productType.printifyBlueprintId,
+        onTheFlyTier: (productType as any).onTheFlyTier || null,
       });
       const effectivePrintPlacement = !useAopMockups
         ? (printPlacement === "front" || printPlacement === "back" || printPlacement === "both"
@@ -8874,7 +9012,7 @@ ${textEdgeRestrictions}
       if (!installation) {
         return res.status(403).json({ error: "Shop not authorized" });
       }
-      const GALLERY_LIMIT = 20;
+      const GALLERY_LIMIT = await getGalleryLimitForCustomer(customerId);
       console.log(`[MyDesigns] shop=${shop} customerId=${customerId}`);
       const rows = await db
         .select()
@@ -9710,9 +9848,57 @@ ${textEdgeRestrictions}
         })();
       }
 
+      // ── Permanent design-product sale recording (My Orders stats dashboard) ─
+      // Unlike the flat-fulfillment block above, this only writes an internal
+      // analytics row (no Printify/shipping calls), so it isn't gated behind
+      // FLAT_ORDER_FULFILLMENT_ENABLED — just a valid webhook HMAC. Dormant in
+      // practice until orders/paid is resubscribed in shopify.app.toml (see the
+      // comment there re: Protected Customer Data approval).
+      if (shop && hmacValid && Array.isArray(order.line_items)) {
+        void recordDesignProductSalesForOrder(shop, order).catch((e: any) =>
+          console.warn("[Shopify Orders Paid] design product sale recording failed:", e?.message || e),
+        );
+      }
+
       return res.status(200).send("OK");
     } catch (error: any) {
       console.error("[Shopify Orders Paid] error:", error);
+      return res.status(200).send("OK");
+    }
+  });
+
+  // ── Add-to-cart analytics for permanent design products (My Orders dashboard) ──
+  // Same Protected Customer Data gate as orders/paid above — subscriptions stay
+  // commented out in shopify.app.toml until approved. Handlers are wired now so
+  // enabling is just an app.toml + reinstall away.
+  app.post("/shopify/webhooks/carts-create", async (req: Request, res: Response) => {
+    try {
+      const shop = req.headers["x-shopify-shop-domain"] as string;
+      const hmacValid = verifyShopifyWebhookHmac(req);
+      if (shop && hmacValid) {
+        void recordDesignProductAtcForCart(shop, req.body || {}).catch((e: any) =>
+          console.warn("[Shopify Carts Create] atc recording failed:", e?.message || e),
+        );
+      }
+      return res.status(200).send("OK");
+    } catch (error: any) {
+      console.error("[Shopify Carts Create] error:", error);
+      return res.status(200).send("OK");
+    }
+  });
+
+  app.post("/shopify/webhooks/carts-update", async (req: Request, res: Response) => {
+    try {
+      const shop = req.headers["x-shopify-shop-domain"] as string;
+      const hmacValid = verifyShopifyWebhookHmac(req);
+      if (shop && hmacValid) {
+        void recordDesignProductAtcForCart(shop, req.body || {}).catch((e: any) =>
+          console.warn("[Shopify Carts Update] atc recording failed:", e?.message || e),
+        );
+      }
+      return res.status(200).send("OK");
+    } catch (error: any) {
+      console.error("[Shopify Carts Update] error:", error);
       return res.status(200).send("OK");
     }
   });
@@ -10263,11 +10449,34 @@ ${textEdgeRestrictions}
     }
   });
 
+  // Product-type fields only the platform operator may change; merchants
+  // manage these implicitly via Platform Catalog import, never directly.
+  const OPERATOR_ONLY_PRODUCT_TYPE_FIELDS = [
+    "isAllOverPrint",
+    "fabricWeaveTexture",
+    "storefrontMockupMode",
+    "fulfillmentLayout",
+    "aopTemplateId",
+    "panelMappingTemplate",
+    "onTheFlyTier",
+    "flatCalibrationStatus",
+  ] as const;
+
   app.patch("/api/admin/product-types/:id", isAuthenticated, async (req: any, res: Response) => {
     try {
       const id = parseInt(req.params.id);
       const updates = req.body;
-      
+
+      if (!isPlatformAdminRequest(req)) {
+        const blocked = OPERATOR_ONLY_PRODUCT_TYPE_FIELDS.filter((f) => f in updates);
+        if (blocked.length > 0) {
+          return res.status(403).json({
+            error: `These settings are managed by the platform: ${blocked.join(", ")}`,
+            code: "OPERATOR_ONLY_FIELDS",
+          });
+        }
+      }
+
       if (updates.sizes && Array.isArray(updates.sizes)) {
         updates.sizes = JSON.stringify(updates.sizes);
       }
@@ -12622,6 +12831,37 @@ ${textEdgeRestrictions}
     };
   }
 
+  /** Apply merchant placeholder picks from the customizer editor — clears stale lifestyle/custom. */
+  function applyCuratedPlaceholderSelection(
+    currentImages: Record<string, unknown>,
+    incoming: { primary?: string; gallery?: string[]; custom?: string[] },
+  ): Record<string, unknown> {
+    const available = Array.isArray(currentImages.available) ? currentImages.available : [];
+    const gallery = Array.isArray(incoming.gallery)
+      ? incoming.gallery.map(String).filter(Boolean).slice(0, 4)
+      : [];
+    const primary =
+      typeof incoming.primary === "string" && incoming.primary
+        ? incoming.primary
+        : String(currentImages.primary || currentImages.front || "");
+
+    const incomingCustom = Array.isArray(incoming.custom)
+      ? incoming.custom.map(String).filter(Boolean)
+      : [];
+    const selected = new Set([primary, ...gallery].filter(Boolean));
+    const custom = incomingCustom.filter((url) => selected.has(url)).slice(0, 4);
+
+    const next: Record<string, unknown> = {
+      ...currentImages,
+      ...(primary ? { primary, front: primary } : { primary: undefined, front: undefined }),
+      gallery,
+      custom,
+      available,
+    };
+    delete next.lifestyle;
+    return next;
+  }
+
   // GET available placeholder images before importing a Printify product.
   app.get("/api/admin/printify/blueprints/:blueprintId/providers/:providerId/placeholders", isAuthenticated, async (req: any, res: Response) => {
     try {
@@ -13430,11 +13670,13 @@ ${textEdgeRestrictions}
       let bleedMarginPercent = 5;
       
       const positionKeys = Object.keys(placeholderDimensions);
-      const isAllOverPrint = detectPrintifyAllOverPrint({
-        name,
-        description,
-        blueprintId: Number.parseInt(String(blueprintId), 10),
-      });
+      const isAllOverPrint =
+        catalogEntry.kind === "aop" ||
+        detectPrintifyAllOverPrint({
+          name,
+          description,
+          blueprintId: Number.parseInt(String(blueprintId), 10),
+        });
 
       // Detect apparel FIRST (before framed-print check)
       if (isApparelProduct) {
@@ -13608,6 +13850,7 @@ ${textEdgeRestrictions}
           catalogEntry.kind === "aop" ? catalogEntry.panelMappingTemplate ?? null : null,
         storefrontMockupMode: catalogStorefrontMode,
         fulfillmentLayout: catalogFulfillmentLayout,
+        fabricWeaveTexture: blueprintIdNum === WOVEN_WALL_TAPESTRY_BLUEPRINT_ID,
         isActive: true,
         sortOrder: existingTypes.length,
         ...(printifyCostsAtImport ? { printifyCosts: printifyCostsAtImport } : {}),
@@ -13676,6 +13919,12 @@ ${textEdgeRestrictions}
   // background; poll the product's flatCalibrationStatus for progress.
   app.post("/api/admin/product-types/:id/calibrate-flat", isAuthenticated, async (req: any, res: Response) => {
     try {
+      if (!isPlatformAdminRequest(req)) {
+        return res.status(403).json({
+          error: "Calibration is managed by the platform via the Platform Catalog.",
+          code: "OPERATOR_ONLY",
+        });
+      }
       const userId = req.user.claims.sub;
       const productTypeId = parseInt(req.params.id);
       const merchant = await storage.getMerchantByUserId(userId);
@@ -15836,6 +16085,38 @@ ${textEdgeRestrictions}
     return { ok: true, installation };
   }
 
+  // ==================== MERCHANT DESIGN STUDIO IDENTITY ====================
+  // Merchants create designs through the SAME storefront customizer real customers use
+  // (client renders EmbedDesign in-process with embeddedContext.mode = 'merchant-studio'),
+  // but identity comes from the admin session rather than an anonymous localStorage id.
+  // A dedicated customer-alias type keeps this fully separate from real shopper accounts,
+  // and lets us raise the saved-design cap (30, flat — see plan) without touching the
+  // 20-design cap that applies to real customers.
+  const MERCHANT_STUDIO_ALIAS_TYPE = "merchant_studio";
+  const MERCHANT_STUDIO_GALLERY_LIMIT = 30;
+
+  async function resolveMerchantStudioCustomer(merchantId: string, shop: string) {
+    return storage.resolveOrCreateCustomerAlias({
+      aliasType: MERCHANT_STUDIO_ALIAS_TYPE,
+      aliasValue: merchantId,
+      shop,
+      legacyUserId: `merchant_studio:${shop}:${merchantId}`,
+    });
+  }
+
+  /** Real customers keep the existing 20-design cap; the merchant's own studio gets 30 (flat, not plan-tied). */
+  async function getGalleryLimitForCustomer(customerId: string): Promise<number> {
+    try {
+      const aliases = await storage.getCustomerAliases(customerId);
+      if (aliases.some((a) => a.aliasType === MERCHANT_STUDIO_ALIAS_TYPE)) {
+        return MERCHANT_STUDIO_GALLERY_LIMIT;
+      }
+    } catch (err) {
+      console.warn("[getGalleryLimitForCustomer] alias lookup failed:", (err as Error)?.message);
+    }
+    return 20;
+  }
+
   /**
    * Legacy helper kept for older routes that still look up a merchant.
    * New /api/appai/* routes use resolveShopInstallation instead.
@@ -15866,6 +16147,538 @@ ${textEdgeRestrictions}
     }
     return { ok: true, merchant, installation };
   }
+
+  /**
+   * GET /api/appai/design-studio/identity
+   * Resolves (or creates) the merchant's own design-studio customer identity for their
+   * connected shop, plus their current saved-design count. The client (EmbedDesign in
+   * merchant-studio mode, and the My Designs library page) uses the returned shop +
+   * customerId for all subsequent storefront-API calls (generate/save-design/my-designs).
+   */
+  app.get("/api/appai/design-studio/identity", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+    const { merchant, installation } = resolved;
+    const shop: string = installation.shopDomain;
+
+    const customer = await resolveMerchantStudioCustomer(merchant.id, shop);
+
+    const savedCountRows = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(generationJobs)
+      .where(
+        and(
+          eq(generationJobs.shop, shop),
+          eq(generationJobs.customerId, customer.id),
+          eq(generationJobs.status, "complete"),
+        ),
+      );
+    const savedCount = Number(savedCountRows[0]?.count ?? 0);
+
+    res.json({
+      shop,
+      customerId: customer.id,
+      savedCount,
+      savedLimit: MERCHANT_STUDIO_GALLERY_LIMIT,
+    });
+  }));
+
+  // ==================== PERMANENT DESIGN PRODUCTS ====================
+  // "List as product" turns a saved My Designs studio design (generation_jobs row) into a
+  // real, browsable, non-customizable Shopify listing (design_products), auto-fulfilled via
+  // the SAME artwork stored on that job. See docs in shared/schema.ts (designProducts) and
+  // server/flat-order-fulfillment.ts (findDesignProductByVariant) for the fulfillment side.
+  //
+  // v1 scope: publishes variants for every size available on the design's product, all fixed
+  // to the ONE color/style the design was generated in (per-color re-rendering is a follow-up —
+  // see the plan's "Colors that can't render are excluded from the variant set" note).
+
+  /** Live Shopify prices for a product type's customizer page, keyed by "sizeId:colorId" / "sizeId:default". */
+  async function fetchCustomizerPagePriceMap(
+    shop: string,
+    installation: any,
+    productType: any,
+  ): Promise<Record<string, string>> {
+    try {
+      const allSizes = typeof productType.sizes === "string" ? JSON.parse(productType.sizes || "[]") : productType.sizes || [];
+      const allColors = typeof productType.frameColors === "string" ? JSON.parse(productType.frameColors || "[]") : productType.frameColors || [];
+      const pages = await storage.listCustomizerPagesByProductTypeId(productType.id);
+      const page = pages.find((p: any) => p.shop === shop && p.baseProductId);
+      if (!page) return {};
+      const prodRes = await shopifyApiCall(shop, installation.accessToken, `products/${page.baseProductId}.json?fields=id,variants`);
+      const variants = prodRes.data?.product?.variants || [];
+      const priceMap: Record<string, string> = {};
+      for (const v of variants) {
+        const size = allSizes.find((s: any) => s.name === v.option1);
+        if (!size) continue;
+        if (v.option2) {
+          const color = allColors.find((c: any) => c.name === v.option2);
+          if (color) priceMap[`${size.id}:${color.id}`] = v.price;
+        } else {
+          priceMap[`${size.id}:default`] = v.price;
+        }
+      }
+      return priceMap;
+    } catch (e: any) {
+      console.warn("[design-products] fetchCustomizerPagePriceMap failed:", e?.message ?? e);
+      return {};
+    }
+  }
+
+  /** Build the Shopify variant list + parallel {sizeId,colorId} metadata for a design product. */
+  function buildDesignProductVariants(
+    productType: any,
+    job: any,
+    priceMap: Record<string, string>,
+  ): {
+    shopifyVariants: Array<{ option1: string; option2?: string; price: string; sku: string; inventory_management: null; inventory_policy: string }>;
+    variantMeta: Array<{ sizeId: string; colorId: string }>;
+    productOptions: Array<{ name: string; values: string[] }>;
+  } {
+    const allSizes = typeof productType.sizes === "string" ? JSON.parse(productType.sizes || "[]") : productType.sizes || [];
+    const variantMap = typeof productType.variantMap === "string" ? JSON.parse(productType.variantMap || "{}") : productType.variantMap || {};
+    const savedSizeIds: string[] = typeof productType.selectedSizeIds === "string" ? JSON.parse(productType.selectedSizeIds || "[]") : productType.selectedSizeIds || [];
+    const sizeIdsToUse = savedSizeIds.length > 0 ? savedSizeIds : allSizes.map((s: any) => s.id);
+    const sizesToUse = allSizes.filter((s: any) => sizeIdsToUse.includes(s.id));
+
+    const jobColorId = job.frameColor || null;
+
+    const shopifyVariants: Array<{ option1: string; option2?: string; price: string; sku: string; inventory_management: null; inventory_policy: string }> = [];
+    const variantMeta: Array<{ sizeId: string; colorId: string }> = [];
+
+    for (const size of sizesToUse) {
+      const colorKey = jobColorId ? `${size.id}:${jobColorId}` : null;
+      const defaultKey = `${size.id}:default`;
+      if (!(colorKey && variantMap[colorKey]) && !variantMap[defaultKey]) continue;
+      const price = (colorKey && priceMap[colorKey]) || priceMap[defaultKey] || "0.00";
+      const numericPrice = parseFloat(price);
+      shopifyVariants.push({
+        option1: size.name,
+        price: Number.isFinite(numericPrice) && numericPrice > 0 ? numericPrice.toFixed(2) : "0.00",
+        sku: `DP-${productType.id}-${size.id}-${jobColorId || "default"}`,
+        inventory_management: null,
+        inventory_policy: "continue",
+      });
+      variantMeta.push({ sizeId: size.id, colorId: jobColorId || "default" });
+    }
+
+    const productOptions: Array<{ name: string; values: string[] }> = [];
+    if (shopifyVariants.length > 0) {
+      productOptions.push({ name: "Size", values: Array.from(new Set(shopifyVariants.map((v) => v.option1))) });
+    }
+
+    return { shopifyVariants, variantMeta, productOptions };
+  }
+
+  /**
+   * POST /api/appai/design-products
+   * Publish a saved My Designs studio design (generation_jobs row) as a permanent,
+   * browsable Shopify product. Plan-gated: at the active-product-design limit, the
+   * Shopify product is still created but as a draft (status "inactive").
+   */
+  app.post("/api/appai/design-products", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+    const { merchant, installation } = resolved;
+    const shop: string = installation.shopDomain;
+
+    const { jobId, title: titleOverride } = req.body as { jobId?: string; title?: string };
+    if (!jobId) return res.status(400).json({ error: "jobId is required" });
+
+    const job = await storage.getGenerationJob(jobId);
+    if (!job || job.shop !== shop) {
+      return res.status(404).json({ error: "Design not found" });
+    }
+    if (job.status !== "complete") {
+      return res.status(400).json({ error: "This design hasn't finished generating yet" });
+    }
+
+    const productTypeId = Number(job.productTypeId);
+    if (!Number.isFinite(productTypeId)) {
+      return res.status(400).json({ error: "This design has no product attached" });
+    }
+    const productType = await storage.getProductType(productTypeId);
+    if (!productType) return res.status(404).json({ error: "Product type not found" });
+
+    const plan = getEffectivePlan(installation as any, shop);
+    const activeCountRows = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(designProducts)
+      .where(and(eq(designProducts.merchantId, merchant.id), eq(designProducts.status, "active")));
+    const activeCount = Number(activeCountRows[0]?.count ?? 0);
+    const { allowed, limit } = canActivateDesignProduct(plan.planName, activeCount);
+    const initialStatus: "active" | "inactive" = allowed ? "active" : "inactive";
+
+    const priceMap = await fetchCustomizerPagePriceMap(shop, installation, productType);
+    const { shopifyVariants, variantMeta, productOptions } = buildDesignProductVariants(productType, job, priceMap);
+
+    if (shopifyVariants.length === 0) {
+      return res.status(400).json({ error: "Couldn't find any purchasable sizes for this design. Check the product's variant setup in the platform catalog." });
+    }
+    if (shopifyVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+      return res.status(400).json({ error: `Too many variants (${shopifyVariants.length}). Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}.` });
+    }
+
+    const imageUrl: string | null =
+      (Array.isArray(job.mockupUrls) && (job.mockupUrls as string[])[0]) ||
+      (job as any).thumbnailUrl ||
+      job.designImageUrl ||
+      null;
+    const rawTitle = (titleOverride && titleOverride.trim()) || job.userPrompt || `Custom ${productType.name}`;
+    const cleanTitle = rawTitle.slice(0, 250);
+
+    const shopifyProductPayload = {
+      product: {
+        title: cleanTitle,
+        body_html: job.userPrompt ? `<p>${String(job.userPrompt).replace(/</g, "&lt;")}</p>` : undefined,
+        vendor: merchant.storeName || "AI Art Studio",
+        product_type: productType.name,
+        status: initialStatus === "active" ? "active" : "draft",
+        published: initialStatus === "active",
+        tags: ["ai-art-studio-design", "design-product"],
+        options: productOptions.length > 0 ? productOptions : undefined,
+        variants: shopifyVariants,
+        images: imageUrl ? [{ src: imageUrl, alt: cleanTitle }] : undefined,
+      },
+    };
+
+    const createRes = await fetch(`https://${shop}/admin/api/2025-10/products.json`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": installation.accessToken },
+      body: JSON.stringify(shopifyProductPayload),
+    });
+    if (!createRes.ok) {
+      const errText = await createRes.text();
+      console.error("[design-products] Shopify create failed:", createRes.status, errText);
+      return res.status(502).json({ error: "Failed to create Shopify product", details: errText });
+    }
+    const created = await createRes.json();
+    const shopifyProductId = String(created.product.id);
+    const shopifyHandle = created.product.handle as string;
+    const createdVariants: any[] = created.product.variants || [];
+
+    const variantMapOut: Record<string, { sizeId: string; colorId: string }> = {};
+    createdVariants.forEach((v: any, idx: number) => {
+      const meta = variantMeta[idx];
+      if (meta) variantMapOut[String(v.id)] = meta;
+    });
+
+    if (initialStatus === "active") {
+      try {
+        await ensureProductPublishedToOnlineStore(shop, installation.accessToken, Number(shopifyProductId));
+      } catch (e: any) {
+        console.warn("[design-products] publish to online store failed:", e.message);
+      }
+    }
+
+    const [row] = await db
+      .insert(designProducts)
+      .values({
+        merchantId: merchant.id,
+        shop,
+        jobId: job.id,
+        productTypeId,
+        shopifyProductId,
+        handle: shopifyHandle,
+        title: cleanTitle,
+        status: initialStatus,
+        variantMap: variantMapOut,
+        mockupUrls: imageUrl ? [imageUrl] : [],
+      })
+      .returning();
+
+    res.json({
+      success: true,
+      designProduct: row,
+      shopifyProductId,
+      shopifyAdminUrl: `https://${shop}/admin/products/${shopifyProductId}`,
+      status: initialStatus,
+      limitReached: !allowed,
+      limit,
+    });
+  }));
+
+  /** GET /api/appai/design-products — merchant's published design listings. */
+  app.get("/api/appai/design-products", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+    const { merchant, installation } = resolved;
+    const shop: string = installation.shopDomain;
+
+    const rows = await db
+      .select()
+      .from(designProducts)
+      .where(and(eq(designProducts.merchantId, merchant.id), eq(designProducts.shop, shop)))
+      .orderBy(desc(designProducts.createdAt));
+
+    const plan = getEffectivePlan(installation as any, shop);
+    const limit = getDesignProductLimit(plan.planName);
+    const activeCount = rows.filter((r) => r.status === "active").length;
+
+    res.json({ designProducts: rows, activeCount, limit });
+  }));
+
+  /**
+   * GET /api/appai/design-products/stats — My Orders dashboard data source.
+   * Per-product units sold / revenue / add-to-carts / conversion, all-time and
+   * last 30 days. Backed by design_product_events (see server/design-product-events.ts);
+   * empty until sale/atc-producing webhooks are live (see shopify.app.toml notes).
+   */
+  app.get("/api/appai/design-products/stats", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+    const { merchant, installation } = resolved;
+    const shop: string = installation.shopDomain;
+
+    const products = await db
+      .select()
+      .from(designProducts)
+      .where(and(eq(designProducts.merchantId, merchant.id), eq(designProducts.shop, shop)))
+      .orderBy(desc(designProducts.createdAt));
+
+    const emptyBucket = () => ({ unitsSold: 0, revenueCents: 0, atc: 0, conversion: null as number | null });
+    const emptyTotals = () => ({ allTime: emptyBucket(), last30d: emptyBucket() });
+
+    if (products.length === 0) {
+      return res.json({ products: [], totals: emptyTotals() });
+    }
+
+    const ids = products.map((p) => p.id);
+    const statsResult = await pool.query<{
+      design_product_id: string;
+      sale_count_all: string; units_sold_all: string; revenue_cents_all: string; atc_count_all: string;
+      sale_count_30d: string; units_sold_30d: string; revenue_cents_30d: string; atc_count_30d: string;
+    }>(
+      `SELECT
+         design_product_id,
+         COUNT(*) FILTER (WHERE event_type = 'sale') AS sale_count_all,
+         COALESCE(SUM(quantity) FILTER (WHERE event_type = 'sale'), 0) AS units_sold_all,
+         COALESCE(SUM(amount_cents) FILTER (WHERE event_type = 'sale'), 0) AS revenue_cents_all,
+         COUNT(*) FILTER (WHERE event_type = 'atc') AS atc_count_all,
+         COUNT(*) FILTER (WHERE event_type = 'sale' AND created_at >= NOW() - INTERVAL '30 days') AS sale_count_30d,
+         COALESCE(SUM(quantity) FILTER (WHERE event_type = 'sale' AND created_at >= NOW() - INTERVAL '30 days'), 0) AS units_sold_30d,
+         COALESCE(SUM(amount_cents) FILTER (WHERE event_type = 'sale' AND created_at >= NOW() - INTERVAL '30 days'), 0) AS revenue_cents_30d,
+         COUNT(*) FILTER (WHERE event_type = 'atc' AND created_at >= NOW() - INTERVAL '30 days') AS atc_count_30d
+       FROM design_product_events
+       WHERE design_product_id = ANY($1::text[])
+       GROUP BY design_product_id`,
+      [ids],
+    );
+    const statsById = new Map(statsResult.rows.map((r) => [r.design_product_id, r]));
+
+    const productsOut = products.map((p) => {
+      const s = statsById.get(p.id);
+      const saleCountAll = Number(s?.sale_count_all ?? 0);
+      const atcCountAll = Number(s?.atc_count_all ?? 0);
+      const saleCount30d = Number(s?.sale_count_30d ?? 0);
+      const atcCount30d = Number(s?.atc_count_30d ?? 0);
+      return {
+        id: p.id,
+        title: p.title,
+        status: p.status,
+        shopifyProductId: p.shopifyProductId,
+        handle: p.handle,
+        mockupUrl: Array.isArray(p.mockupUrls) ? (p.mockupUrls as string[])[0] ?? null : null,
+        allTime: {
+          unitsSold: Number(s?.units_sold_all ?? 0),
+          revenueCents: Number(s?.revenue_cents_all ?? 0),
+          atc: atcCountAll,
+          conversion: atcCountAll > 0 ? saleCountAll / atcCountAll : null,
+        },
+        last30d: {
+          unitsSold: Number(s?.units_sold_30d ?? 0),
+          revenueCents: Number(s?.revenue_cents_30d ?? 0),
+          atc: atcCount30d,
+          conversion: atcCount30d > 0 ? saleCount30d / atcCount30d : null,
+        },
+      };
+    });
+
+    const totals = productsOut.reduce(
+      (acc, p) => {
+        acc.allTime.unitsSold += p.allTime.unitsSold;
+        acc.allTime.revenueCents += p.allTime.revenueCents;
+        acc.allTime.atc += p.allTime.atc;
+        acc.last30d.unitsSold += p.last30d.unitsSold;
+        acc.last30d.revenueCents += p.last30d.revenueCents;
+        acc.last30d.atc += p.last30d.atc;
+        return acc;
+      },
+      emptyTotals(),
+    );
+
+    res.json({ products: productsOut, totals });
+  }));
+
+  /** PATCH /api/appai/design-products/:id — activate/deactivate (flips Shopify active/draft). */
+  app.patch("/api/appai/design-products/:id", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+    const { merchant, installation } = resolved;
+    const shop: string = installation.shopDomain;
+
+    const { status } = req.body as { status?: "active" | "inactive" };
+    if (status !== "active" && status !== "inactive") {
+      return res.status(400).json({ error: "status must be 'active' or 'inactive'" });
+    }
+
+    const [row] = await db
+      .select()
+      .from(designProducts)
+      .where(and(eq(designProducts.id, req.params.id), eq(designProducts.merchantId, merchant.id)));
+    if (!row) return res.status(404).json({ error: "Design product not found" });
+
+    if (status === "active" && row.status !== "active") {
+      const activeCountRows = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(designProducts)
+        .where(and(eq(designProducts.merchantId, merchant.id), eq(designProducts.status, "active")));
+      const activeCount = Number(activeCountRows[0]?.count ?? 0);
+      const plan = getEffectivePlan(installation as any, shop);
+      const { allowed, limit } = canActivateDesignProduct(plan.planName, activeCount);
+      if (!allowed) {
+        return res.status(402).json({
+          error: `You've reached your plan's limit of ${limit} active product design${limit === 1 ? "" : "s"}. Deactivate one or upgrade your plan.`,
+          limit,
+          activeCount,
+        });
+      }
+    }
+
+    if (row.shopifyProductId) {
+      try {
+        await fetch(`https://${shop}/admin/api/2025-10/products/${row.shopifyProductId}.json`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": installation.accessToken },
+          body: JSON.stringify({
+            product: {
+              id: Number(row.shopifyProductId),
+              status: status === "active" ? "active" : "draft",
+              published: status === "active",
+            },
+          }),
+        });
+        if (status === "active") {
+          await ensureProductPublishedToOnlineStore(shop, installation.accessToken, Number(row.shopifyProductId));
+        }
+      } catch (e: any) {
+        console.warn("[design-products] Shopify status update failed:", e.message);
+      }
+    }
+
+    const [updated] = await db
+      .update(designProducts)
+      .set({ status, updatedAt: new Date() })
+      .where(eq(designProducts.id, row.id))
+      .returning();
+    res.json({ success: true, designProduct: updated });
+  }));
+
+  /** DELETE /api/appai/design-products/:id — unpublish: remove the Shopify product + the listing. */
+  app.delete("/api/appai/design-products/:id", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+    const { merchant, installation } = resolved;
+    const shop: string = installation.shopDomain;
+
+    const [row] = await db
+      .select()
+      .from(designProducts)
+      .where(and(eq(designProducts.id, req.params.id), eq(designProducts.merchantId, merchant.id)));
+    if (!row) return res.status(404).json({ error: "Design product not found" });
+
+    if (row.shopifyProductId) {
+      await deleteShopifyProductBestEffort(shop, installation.accessToken, row.shopifyProductId);
+    }
+    await db.delete(designProductEvents).where(eq(designProductEvents.designProductId, row.id));
+    await db.delete(designProducts).where(eq(designProducts.id, row.id));
+    res.json({ success: true });
+  }));
+
+  /**
+   * POST /api/appai/design-products/:id/printify-mockups
+   * Optional add-on: renders a real Printify mockup for the design's resolved
+   * size/color variant (using the merchant's own Printify credentials) and
+   * appends it to the Shopify product's image gallery alongside the AI Art
+   * Studio preview image.
+   */
+  app.post("/api/appai/design-products/:id/printify-mockups", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+    const { merchant, installation } = resolved;
+    const shop: string = installation.shopDomain;
+
+    const [row] = await db
+      .select()
+      .from(designProducts)
+      .where(and(eq(designProducts.id, req.params.id), eq(designProducts.merchantId, merchant.id)));
+    if (!row) return res.status(404).json({ error: "Design product not found" });
+    if (!merchant.printifyApiToken || !merchant.printifyShopId) {
+      return res.status(400).json({ error: "Connect your Printify account before adding Printify mockups." });
+    }
+
+    const job = await storage.getGenerationJob(row.jobId);
+    if (!job) return res.status(404).json({ error: "Source design not found" });
+    const productType = row.productTypeId != null ? await storage.getProductType(row.productTypeId) : undefined;
+    if (!productType) return res.status(404).json({ error: "Product type not found" });
+
+    const variantMapData: VariantMap = typeof productType.variantMap === "string" ? JSON.parse(productType.variantMap || "{}") : productType.variantMap || {};
+    const sizeId = job.size || "default";
+    const colorId = job.frameColor || "default";
+    const resolvedVariant = resolveVariantFromMap(variantMapData, sizeId, colorId, { allowSizeFallbackForColor: true });
+    const printifyVariantId = resolvedVariant?.entry?.printifyVariantId;
+    const blueprintId = Number(productType.printifyBlueprintId);
+    const providerId = Number((resolvedVariant?.entry as any)?.providerId ?? productType.printifyProviderId ?? 1);
+    if (!printifyVariantId || !Number.isFinite(blueprintId)) {
+      return res.status(400).json({ error: "Couldn't resolve a Printify variant for this design's size/color." });
+    }
+
+    const artworkUrl = job.designImageUrl || (Array.isArray(job.mockupUrls) && (job.mockupUrls as string[])[0]);
+    if (!artworkUrl) return res.status(400).json({ error: "This design has no artwork to render." });
+
+    const designState: any = typeof job.designState === "string" ? JSON.parse(job.designState || "{}") : job.designState || {};
+
+    const { generatePrintifyMockup } = await import("./printify-mockups.js");
+    const result = await generatePrintifyMockup({
+      blueprintId,
+      providerId,
+      variantId: Number(printifyVariantId),
+      imageUrl: artworkUrl,
+      printifyApiToken: merchant.printifyApiToken,
+      printifyShopId: merchant.printifyShopId,
+      scale: typeof designState.scale === "number" ? designState.scale / 100 : undefined,
+      x: typeof designState.x === "number" ? designState.x / 100 : undefined,
+      y: typeof designState.y === "number" ? designState.y / 100 : undefined,
+    });
+
+    if (!result.success || !result.mockupUrls?.length) {
+      return res.status(502).json({ error: result.error || "Printify mockup generation failed" });
+    }
+
+    if (row.shopifyProductId) {
+      for (const url of result.mockupUrls) {
+        try {
+          await fetch(`https://${shop}/admin/api/2025-10/products/${row.shopifyProductId}/images.json`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": installation.accessToken },
+            body: JSON.stringify({ image: { src: url } }),
+          });
+        } catch (e: any) {
+          console.warn("[design-products] Failed to attach Printify mockup image:", e.message);
+        }
+      }
+    }
+
+    const existingMockups: string[] = Array.isArray(row.mockupUrls) ? (row.mockupUrls as string[]) : [];
+    const mergedMockups = Array.from(new Set([...existingMockups, ...result.mockupUrls]));
+    const [updated] = await db
+      .update(designProducts)
+      .set({ mockupUrls: mergedMockups, updatedAt: new Date() })
+      .where(eq(designProducts.id, row.id))
+      .returning();
+
+    res.json({ success: true, designProduct: updated, addedCount: result.mockupUrls.length });
+  }));
 
   /** GET /api/appai/customizer-pages */
   app.get("/api/appai/customizer-pages", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
@@ -15972,7 +16785,7 @@ ${textEdgeRestrictions}
     }
     const shop: string = installation.shopDomain;
 
-    const { title, handle, baseVariantId, baseProductId, productTypeId: incomingProductTypeId, variantPrices, baseMockupImages: incomingBaseMockupImages } = req.body as {
+    const { title, handle, baseVariantId, baseProductId, productTypeId: incomingProductTypeId, variantPrices, baseMockupImages: incomingBaseMockupImages, styleConfig: incomingStyleConfig } = req.body as {
       title?: string;
       handle?: string;
       baseVariantId?: string;
@@ -15980,6 +16793,7 @@ ${textEdgeRestrictions}
       productTypeId?: number;
       variantPrices?: Record<string, string>;
       baseMockupImages?: { primary?: string; gallery?: string[]; custom?: string[] };
+      styleConfig?: unknown;
     };
 
     if (!title?.trim()) return res.status(400).json({ error: "Title is required" });
@@ -16396,6 +17210,16 @@ ${textEdgeRestrictions}
     }
     const shopifyPage = pageBody.data.page;
 
+    const linkedPtForStyles =
+      matchedType ?? ptForSync ?? (resolvedProductTypeId ? await storage.getProductType(resolvedProductTypeId) : null);
+    const parsedStyleConfig = parseCustomizerPageStyleConfig(incomingStyleConfig);
+    const styleConfig: CustomizerPageStyleConfig =
+      parsedStyleConfig ?? defaultStyleConfigForDesignerType(linkedPtForStyles?.designerType);
+    const styleConfigError = validateCustomizerPageStyleConfig(styleConfig);
+    if (initialStatus === "active" && styleConfigError) {
+      return res.status(400).json({ error: styleConfigError });
+    }
+
     // Save DB record
     const page = await storage.createCustomizerPage({
       shop,
@@ -16409,6 +17233,7 @@ ${textEdgeRestrictions}
       baseVariantTitle: variant.title ?? "",
       baseProductPrice: variant.price ?? "",
       productTypeId: resolvedProductTypeId,
+      styleConfig: styleConfig as any,
       status: initialStatus,
     });
 
@@ -16418,26 +17243,9 @@ ${textEdgeRestrictions}
         const currentImages = typeof linkedPt.baseMockupImages === "string"
           ? JSON.parse(linkedPt.baseMockupImages || "{}")
           : linkedPt.baseMockupImages || {};
-        const gallery = Array.isArray(incomingBaseMockupImages.gallery)
-          ? incomingBaseMockupImages.gallery.map(String).filter(Boolean).slice(0, 4)
-          : (currentImages.gallery || []);
-        const primary =
-          typeof incomingBaseMockupImages.primary === "string" && incomingBaseMockupImages.primary
-            ? incomingBaseMockupImages.primary
-            : currentImages.primary;
-        const custom = Array.isArray(incomingBaseMockupImages.custom)
-          ? incomingBaseMockupImages.custom.map(String).filter(Boolean).slice(0, 4)
-          : (currentImages.custom || []);
-        const available = Array.isArray(currentImages.available) ? currentImages.available : [];
+        const nextImages = applyCuratedPlaceholderSelection(currentImages, incomingBaseMockupImages);
         await storage.updateProductType(resolvedProductTypeId, {
-          baseMockupImages: JSON.stringify({
-            ...currentImages,
-            primary,
-            front: primary || currentImages.front,
-            gallery,
-            custom,
-            available,
-          }),
+          baseMockupImages: JSON.stringify(nextImages),
         });
       }
     }
@@ -16468,6 +17276,9 @@ ${textEdgeRestrictions}
 
     const updates: Partial<CustomizerPage> = {};
 
+    const productTypeIdEarly = dbPage.productTypeId ? Number(dbPage.productTypeId) : null;
+    const linkedProductTypeEarly = productTypeIdEarly ? await storage.getProductType(productTypeIdEarly) : undefined;
+
     if (req.body.title !== undefined) {
       updates.title = String(req.body.title).trim();
     }
@@ -16494,6 +17305,32 @@ ${textEdgeRestrictions}
       
       updates.status = s;
     }
+
+    if (req.body.styleConfig !== undefined) {
+      const parsed = parseCustomizerPageStyleConfig(req.body.styleConfig);
+      if (!parsed) {
+        return res.status(400).json({ error: "Invalid styleConfig — choose styles or a category bundle." });
+      }
+      const styleErr = validateCustomizerPageStyleConfig(parsed);
+      if (styleErr) return res.status(400).json({ error: styleErr });
+      updates.styleConfig = parsed as any;
+    }
+
+    const nextStatus = updates.status ?? dbPage.status;
+    if (nextStatus === "active") {
+      const effectiveStyleConfig =
+        (updates.styleConfig as CustomizerPageStyleConfig | undefined) ??
+        parseCustomizerPageStyleConfig(dbPage.styleConfig) ??
+        defaultStyleConfigForDesignerType(linkedProductTypeEarly?.designerType);
+      const styleErr = validateCustomizerPageStyleConfig(effectiveStyleConfig);
+      if (styleErr) {
+        return res.status(400).json({ error: styleErr });
+      }
+      if (!updates.styleConfig && !dbPage.styleConfig && effectiveStyleConfig) {
+        updates.styleConfig = effectiveStyleConfig as any;
+      }
+    }
+
     if (req.body.baseVariantId !== undefined) {
       const variantNum = parseInt(String(req.body.baseVariantId).replace(/\D/g, ""), 10);
       if (!variantNum) return res.status(400).json({ error: "Invalid baseVariantId" });
@@ -16555,18 +17392,7 @@ ${textEdgeRestrictions}
         ? JSON.parse(linkedProductType.baseMockupImages || "{}")
         : linkedProductType.baseMockupImages || {};
       const incomingImages = req.body.baseMockupImages || {};
-      const available = Array.isArray(currentImages.available) ? currentImages.available : [];
-      const custom = Array.isArray(incomingImages.custom) ? incomingImages.custom.map(String).filter(Boolean).slice(0, 4) : (currentImages.custom || []);
-      const gallery = Array.isArray(incomingImages.gallery) ? incomingImages.gallery.map(String).filter(Boolean).slice(0, 4) : (currentImages.gallery || []);
-      const primary = typeof incomingImages.primary === "string" && incomingImages.primary ? incomingImages.primary : currentImages.primary;
-      const nextImages = {
-        ...currentImages,
-        primary,
-        front: primary || currentImages.front,
-        gallery,
-        custom,
-        available,
-      };
+      const nextImages = applyCuratedPlaceholderSelection(currentImages, incomingImages);
       await storage.updateProductType(linkedProductType.id, {
         baseMockupImages: JSON.stringify(nextImages),
       });
@@ -16958,6 +17784,8 @@ ${textEdgeRestrictions}
           title: pt.name,
           imageUrl,
           needsShopifySync,
+          designerType: pt.designerType ?? null,
+          isAllOverPrint: pt.isAllOverPrint ?? false,
           printifyBlueprintId: pt.printifyBlueprintId ?? null,
           printifyProviderId: pt.printifyProviderId ?? null,
           printifyVariantLabels: pvLabels,
@@ -17322,11 +18150,14 @@ ${textEdgeRestrictions}
       }
     }
 
-    // Fetch style presets so the storefront iframe doesn't need a separate
-    // /api/config round-trip (which can fail/timeout in CORS-restricted envs).
+    // Fetch style presets for this shop's merchant only (never all merchants —
+    // getAllActiveStylePresets duplicates names across tenants).
     let stylePresets: Array<{ id: string; name: string; promptSuffix: string; category: string; promptPlaceholder?: string; options?: any; baseImageUrl?: string; descriptionOptional?: boolean }> = [];
     try {
-      const dbStyles = await storage.getAllActiveStylePresets();
+      const merchantId = installation?.merchantId;
+      const dbStyles = merchantId
+        ? await storage.getActiveStylePresetsByMerchant(merchantId)
+        : [];
       stylePresets = dbStyles.map((s: any) => {
         const hardcoded = STYLE_PRESETS.find(h => h.id === s.id.toString() || h.name === s.name);
         return {
@@ -17344,6 +18175,18 @@ ${textEdgeRestrictions}
       console.warn(`[proxy/customizer-page] Failed to load stylePresets:`, e);
     }
 
+    const pageStyleConfig =
+      parseCustomizerPageStyleConfig(page.styleConfig) ??
+      defaultStyleConfigForDesignerType(designerConfig?.designerType);
+    stylePresets = filterStylePresetsForPage(
+      stylePresets,
+      pageStyleConfig,
+      designerConfig?.designerType,
+    ).map((s) => ({
+      ...s,
+      promptPrefix: (s as any).promptSuffix ?? (s as any).promptPrefix,
+    }));
+
     return res.json({
       id: page.id,
       handle: page.handle,
@@ -17359,6 +18202,7 @@ ${textEdgeRestrictions}
       designerConfig,
       variants,
       stylePresets,
+      styleConfig: pageStyleConfig,
       productPublished,
     });
   }));

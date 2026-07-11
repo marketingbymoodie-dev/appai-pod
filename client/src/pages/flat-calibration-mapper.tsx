@@ -22,9 +22,13 @@ import {
   flatPlacementScaleMax,
   flatPrintCanvasLayout,
   flatVisibleRectPx,
+  getWeaveConfig,
   renderFlatView,
+  resetWeaveConfig,
+  setWeaveConfig,
   type CalibratorLayerAdjust,
   type Rect,
+  type WeaveConfig,
 } from "@/components/designer/FlatProductPlacer/lib/flatRender";
 import type { FlatViewCalibration } from "@/pages/embed-design";
 import {
@@ -237,6 +241,12 @@ export default function FlatCalibrationMapperPage() {
     ...DEFAULT_ARTWORK_PLACEMENT,
   });
   const [harvestPhase, setHarvestPhase] = useState<"idle" | "running" | "complete">("idle");
+  const [weavePreview, setWeavePreview] = useState(false);
+  const [weaveCfg, setWeaveCfgState] = useState<WeaveConfig>(() => getWeaveConfig());
+
+  const patchWeave = useCallback((patch: Partial<WeaveConfig>) => {
+    setWeaveCfgState(setWeaveConfig(patch));
+  }, []);
 
   const { data, isLoading, refetch } = useQuery<CalibratorState>({
     queryKey: calibratorQueryKey,
@@ -456,6 +466,7 @@ export default function FlatCalibrationMapperPage() {
         placement: previewPlacement,
         tier: "flat",
         edgeWrapMode,
+        decorMode: weavePreview && !edgeWrapMode,
         forceShadingMap: edgeWrapMode,
         artworkCorsClean: true,
         layerAdjust: lockedLayerAdjust,
@@ -489,6 +500,8 @@ export default function FlatCalibrationMapperPage() {
     edgeWrapMode,
     artScaleMax,
     lockedLayerAdjust,
+    weavePreview,
+    weaveCfg,
   ]);
 
   useEffect(() => {
@@ -841,6 +854,141 @@ export default function FlatCalibrationMapperPage() {
                   </div>
                 )}
               </div>
+
+              {!edgeWrapMode && (
+                <div className="space-y-3 rounded border p-2">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs font-medium">Weave texture (decor)</Label>
+                    <Switch checked={weavePreview} onCheckedChange={setWeavePreview} />
+                  </div>
+                  {weavePreview && (
+                    <>
+                      {!testArtUrl && (
+                        <p className="rounded border border-amber-400/50 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800">
+                          Weave is applied to the artwork — paste a test artwork URL above to see it.
+                        </p>
+                      )}
+                      <div>
+                        <Label className="text-xs">
+                          Horizontal thread height {weaveCfg.weftMin}–{weaveCfg.weftMax}px
+                        </Label>
+                        <Slider
+                          min={2}
+                          max={40}
+                          step={1}
+                          value={[weaveCfg.weftMin, weaveCfg.weftMax]}
+                          onValueChange={([lo, hi]) => patchWeave({ weftMin: lo, weftMax: hi })}
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-xs">
+                          Vertical thread width {weaveCfg.warpMin}–{weaveCfg.warpMax}px
+                        </Label>
+                        <Slider
+                          min={2}
+                          max={40}
+                          step={1}
+                          value={[weaveCfg.warpMin, weaveCfg.warpMax]}
+                          onValueChange={([lo, hi]) => patchWeave({ warpMin: lo, warpMax: hi })}
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-xs">
+                          Pattern size ×{weaveCfg.scale.toFixed(2)}
+                        </Label>
+                        <Slider
+                          min={25}
+                          max={400}
+                          step={5}
+                          value={[Math.round(weaveCfg.scale * 100)]}
+                          onValueChange={([v]) => patchWeave({ scale: v / 100 })}
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-xs">Thread irregularity {weaveCfg.slub}</Label>
+                        <Slider
+                          min={0}
+                          max={60}
+                          step={1}
+                          value={[weaveCfg.slub]}
+                          onValueChange={([v]) => patchWeave({ slub: v })}
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-xs">Cell noise {weaveCfg.cellNoise}</Label>
+                        <Slider
+                          min={0}
+                          max={40}
+                          step={1}
+                          value={[weaveCfg.cellNoise]}
+                          onValueChange={([v]) => patchWeave({ cellNoise: v })}
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-xs">
+                          Groove darkness {128 - weaveCfg.grooveTone}
+                        </Label>
+                        <Slider
+                          min={0}
+                          max={126}
+                          step={2}
+                          value={[128 - weaveCfg.grooveTone]}
+                          onValueChange={([v]) => patchWeave({ grooveTone: 128 - v })}
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-xs">
+                          Ridge brightness {weaveCfg.ridgeTone - 128}
+                        </Label>
+                        <Slider
+                          min={0}
+                          max={127}
+                          step={1}
+                          value={[weaveCfg.ridgeTone - 128]}
+                          onValueChange={([v]) => patchWeave({ ridgeTone: 128 + v })}
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-xs">
+                          Texture strength {Math.round(weaveCfg.overlayAlpha * 100)}%
+                        </Label>
+                        <Slider
+                          min={0}
+                          max={100}
+                          step={5}
+                          value={[Math.round(weaveCfg.overlayAlpha * 100)]}
+                          onValueChange={([v]) => patchWeave({ overlayAlpha: v / 100 })}
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-xs">
+                          Darkening {Math.round(weaveCfg.multiplyAlpha * 100)}%
+                        </Label>
+                        <Slider
+                          min={0}
+                          max={100}
+                          step={5}
+                          value={[Math.round(weaveCfg.multiplyAlpha * 100)]}
+                          onValueChange={([v]) => patchWeave({ multiplyAlpha: v / 100 })}
+                        />
+                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 w-full text-xs"
+                        onClick={() => setWeaveCfgState(resetWeaveConfig())}
+                      >
+                        Reset weave to defaults
+                      </Button>
+                      <p className="text-[10px] text-muted-foreground">
+                        Tuning values are saved in this browser only — customers keep the shipped
+                        defaults. When it looks right, send me these numbers and I&apos;ll bake them
+                        in as the new defaults.
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border bg-zinc-100 p-3">

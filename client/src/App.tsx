@@ -30,6 +30,7 @@ import AdminCoupons from "@/pages/admin/coupons";
 import AdminCredits from "@/pages/admin/credits";
 import AdminCreateProduct from "@/pages/admin/create-product";
 import AdminCustomizerPages from "@/pages/admin/customizer-pages";
+import AdminDesignStudio from "@/pages/admin/design-studio";
 import AdminPlanPicker from "@/pages/admin/plan-picker-page";
 
 // DEV-ONLY: Storefront preview launcher — tree-shaken out of production builds
@@ -70,6 +71,7 @@ function AppRouter() {
       <Route path="/admin/credits" component={AdminCredits} />
       <Route path="/admin/create-product" component={AdminCreateProduct} />
       <Route path="/admin/customizer-pages" component={AdminCustomizerPages} />
+      <Route path="/admin/design-studio" component={AdminDesignStudio} />
       <Route path="/admin/plan" component={AdminPlanPicker} />
       <Route path="/admin" component={AdminDashboard} />
 

@@ -13,8 +13,8 @@ import {
 } from "./edgeDetection";
 import {
   distSq,
-  nearestEdge,
-  svgPathToAnchors,
+  findNearestEdgeOnSubpaths,
+  svgPathToSubpaths,
   anchorsToSvgPath,
 } from "../lib/svgPath";
 import MaskLayersOverlay from "./MaskLayersOverlay";
@@ -24,6 +24,8 @@ import PenToolOverlay from "./PenToolOverlay";
 import AnchorHandlesOverlay from "./AnchorHandlesOverlay";
 import ReferenceOverlayLayer from "./ReferenceOverlayLayer";
 import MockupBaseLayer from "./MockupBaseLayer";
+import MockupCropOverlay from "./MockupCropOverlay";
+import { loadMapperAssetImage } from "../lib/mapperAssetImage";
 import type { Pt } from "@shared/hoodieTemplate";
 
 /**
@@ -62,33 +64,18 @@ const PEN_CLOSE_RADIUS = 12;
 /** Distance to nearest edge (in mockup px) at which alt-click inserts a new anchor. */
 const EDGE_INSERT_THRESHOLD = 14;
 
-function isCrossOrigin(src: string): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    const url = new URL(src, window.location.href);
-    return url.origin !== window.location.origin;
-  } catch {
-    return false;
-  }
-}
-
 type ImageLoadResult = { img: HTMLImageElement | null; error: string | null };
 
 function loadHtmlImage(src: string | null | undefined): Promise<ImageLoadResult> {
   if (!src) return Promise.resolve({ img: null, error: null });
-  return new Promise((resolve) => {
-    const img = new Image();
-    if (isCrossOrigin(src)) {
-      img.crossOrigin = "anonymous";
-    }
-    img.onload = () => resolve({ img, error: null });
-    img.onerror = (e) => {
+  return loadMapperAssetImage(src)
+    .then((img) => ({ img, error: null as string | null }))
+    .catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
       // eslint-disable-next-line no-console
-      console.warn("[hoodie-mapper] image load failed", src, e);
-      resolve({ img: null, error: `Failed to load mockup at ${src}` });
-    };
-    img.src = src;
-  });
+      console.warn("[hoodie-mapper] image load failed", src, message);
+      return { img: null, error: message || `Failed to load mockup at ${src}` };
+    });
 }
 
 type LoadedImageState = {
@@ -175,9 +162,11 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
   const magneticRadius = useHoodieMapperStore((s) => s.magneticRadius);
   const magneticTolerance = useHoodieMapperStore((s) => s.magneticTolerance);
   const selectedAnchorIndex = useHoodieMapperStore((s) => s.selectedAnchorIndex);
+  const selectedAnchorSubpathIndex = useHoodieMapperStore((s) => s.selectedAnchorSubpathIndex);
   const mockup = useHoodieMapperStore((s) => s.template.views[s.view].mockup);
   const referenceOverlay = useHoodieMapperStore((s) => s.template.views[s.view].referenceOverlay);
   const meshEdit = useHoodieMapperStore((s) => s.meshEdit);
+  const mockupCrop = useHoodieMapperStore((s) => s.mockupCrop);
   const actions = useHoodieMapperStore((s) => s.actions);
 
   const mockupImageState = useLoadedImage(mockup?.src);
@@ -332,36 +321,36 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
     () => layers.find((l) => l.id === selectedLayerId) ?? null,
     [layers, selectedLayerId],
   );
-  const selectedAnchors = useMemo(
-    () => (selectedLayer ? svgPathToAnchors(selectedLayer.maskPath) : []),
+  const selectedSubpaths = useMemo(
+    () => (selectedLayer ? svgPathToSubpaths(selectedLayer.maskPath) : []),
     [selectedLayer],
   );
   // While dragging an anchor we don't push every move into the global store
   // (which would re-serialize the path on every frame). Local state buffers
   // the in-flight drag and we commit once on drag end.
-  const [dragAnchors, setDragAnchors] = useState<Pt[] | null>(null);
+  const [dragSubpaths, setDragSubpaths] = useState<Pt[][] | null>(null);
 
-  // Polygon-translate drag state — lets the user grab the body of the
-  // already-selected polygon and drag the whole shape to a new location
-  // (the duplicate-and-move workflow). `start` is captured on mousedown
-  // and `last` is updated on every stage mousemove; on mouseup we commit
-  // a single translateLayerPolygon() with the cumulative delta and clear
-  // the override. Mesh + artwork stay put — only the polygon mask moves.
+  // Polygon-translate drag state — grab the panel body in Move tool and
+  // drag mask + mesh together. `start` is captured on mousedown and
+  // `last` is updated on every stage mousemove; on mouseup we commit
+  // a single translateLayerMesh() with the cumulative delta.
   const [polyDrag, setPolyDrag] = useState<
-    { id: string; start: Pt; last: Pt; baseAnchors: Pt[] } | null
+    { id: string; start: Pt; last: Pt; baseSubpaths: Pt[][] } | null
   >(null);
   const polyDragOffset = polyDrag
     ? { dx: polyDrag.last.x - polyDrag.start.x, dy: polyDrag.last.y - polyDrag.start.y }
     : null;
 
-  // The anchors we display for the selected layer right now. Anchor
-  // drag wins (only one anchor at a time); polygon drag rewrites the
-  // whole set on the fly.
-  const liveAnchors: Pt[] = dragAnchors
-    ? dragAnchors
+  const liveSubpaths: Pt[][] = dragSubpaths
+    ? dragSubpaths
     : polyDrag && polyDragOffset
-      ? polyDrag.baseAnchors.map((a) => ({ x: a.x + polyDragOffset.dx, y: a.y + polyDragOffset.dy }))
-      : selectedAnchors;
+      ? polyDrag.baseSubpaths.map((ring) =>
+          ring.map((a) => ({
+            x: a.x + polyDragOffset.dx,
+            y: a.y + polyDragOffset.dy,
+          })),
+        )
+      : selectedSubpaths;
 
   // Tracks the last anchor we dropped while in magnetic-pen click-and-drag
   // mode, plus whether the LMB is currently held. Lets mousemove drop new
@@ -388,6 +377,7 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
       // initiates a pan also drops an anchor. Spacebar drags should be
       // pan-only.
       if (isPanning || evt.shiftKey) return;
+      if (mockupCrop.active) return;
       const mockupPt = pointerToMockup();
       if (!mockupPt) return;
 
@@ -422,14 +412,16 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
 
       // Move tool: alt-click on a layer's edge to insert an anchor.
       if (tool === "move" && evt.altKey && selectedLayer) {
-        const anchors = svgPathToAnchors(selectedLayer.maskPath);
-        const ne = nearestEdge(mockupPt, anchors);
+        const subpaths = svgPathToSubpaths(selectedLayer.maskPath);
+        const ne = findNearestEdgeOnSubpaths(mockupPt, subpaths);
         if (ne && Math.sqrt(ne.distSq) <= EDGE_INSERT_THRESHOLD / scale) {
-          const insertAt = (ne.segmentIndex + 1) % (anchors.length + 1);
-          const next = [...anchors];
-          next.splice(insertAt, 0, ne.point);
-          actions.setLayerAnchors(selectedLayer.id, next);
-          actions.setSelectedAnchorIndex(insertAt);
+          const ring = subpaths[ne.subpathIndex] ?? [];
+          const insertAt = (ne.segmentIndex + 1) % (ring.length + 1);
+          const nextRing = [...ring];
+          nextRing.splice(insertAt, 0, ne.point);
+          const next = subpaths.map((r, i) => (i === ne.subpathIndex ? nextRing : r));
+          actions.setLayerSubpaths(selectedLayer.id, next);
+          actions.setSelectedAnchorIndex(insertAt, ne.subpathIndex);
           return;
         }
       }
@@ -439,7 +431,7 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
         actions.setSelectedLayer(null);
       }
     },
-    [actions, isPenActive, isPanning, penDraft, pointerToMockup, scale, selectedLayer, tool],
+    [actions, isPenActive, isPanning, mockupCrop.active, penDraft, pointerToMockup, scale, selectedLayer, tool],
   );
 
   // Snap a raw mockup point to the nearest strong edge when the magnetic pen
@@ -661,8 +653,18 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
           <MockupBaseLayer
             mockup={mockup}
             image={mockupImage}
-            panLocked={isPanning}
+            panLocked={isPanning || mockupCrop.active}
             onChange={(patch) => actions.patchMockup(view, patch)}
+          />
+        )}
+
+        {mockupCrop.active && mockupCrop.rect && mockupWidth > 0 && mockupHeight > 0 && (
+          <MockupCropOverlay
+            mockupWidth={mockupWidth}
+            mockupHeight={mockupHeight}
+            rect={mockupCrop.rect}
+            zoom={scale}
+            onChange={(rect) => actions.setMockupCropRect(rect)}
           />
         )}
 
@@ -723,19 +725,21 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
             showHoverHighlight={debug.showHoverHighlight}
             interactive={tool === "move"}
             // While the user is dragging an anchor we keep the live geometry
-            // in `dragAnchors` (avoids per-frame store writes); pass it
+            // in `dragSubpaths` (avoids per-frame store writes); pass it
             // through here so the polygon outline tracks the dot in real
             // time rather than snapping at drop.
             dragOverride={
-              dragAnchors && selectedLayer
-                ? { id: selectedLayer.id, anchors: dragAnchors }
+              dragSubpaths && selectedLayer
+                ? { id: selectedLayer.id, subpaths: dragSubpaths }
                 : polyDrag && selectedLayer && polyDragOffset
                   ? {
                       id: selectedLayer.id,
-                      anchors: polyDrag.baseAnchors.map((a) => ({
-                        x: a.x + polyDragOffset.dx,
-                        y: a.y + polyDragOffset.dy,
-                      })),
+                      subpaths: polyDrag.baseSubpaths.map((ring) =>
+                        ring.map((a) => ({
+                          x: a.x + polyDragOffset.dx,
+                          y: a.y + polyDragOffset.dy,
+                        })),
+                      ),
                     }
                   : null
             }
@@ -748,49 +752,68 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
                 id,
                 start: { x: mx, y: my },
                 last: { x: mx, y: my },
-                baseAnchors: svgPathToAnchors(target.maskPath),
+                baseSubpaths: svgPathToSubpaths(target.maskPath),
               });
             }}
             onAltClick={(id, mx, my) => {
               const target = layers.find((l) => l.id === id);
               if (!target) return;
-              const anchors = svgPathToAnchors(target.maskPath);
-              const ne = nearestEdge({ x: mx, y: my }, anchors);
+              const subpaths = svgPathToSubpaths(target.maskPath);
+              const ne = findNearestEdgeOnSubpaths({ x: mx, y: my }, subpaths);
               if (!ne) return;
               if (Math.sqrt(ne.distSq) > EDGE_INSERT_THRESHOLD / scale) return;
-              const insertAt = (ne.segmentIndex + 1) % (anchors.length + 1);
-              const next = [...anchors];
-              next.splice(insertAt, 0, ne.point);
+              const ring = subpaths[ne.subpathIndex] ?? [];
+              const insertAt = (ne.segmentIndex + 1) % (ring.length + 1);
+              const nextRing = [...ring];
+              nextRing.splice(insertAt, 0, ne.point);
+              const next = subpaths.map((r, i) => (i === ne.subpathIndex ? nextRing : r));
               actions.setSelectedLayer(id);
-              actions.setLayerAnchors(id, next);
-              actions.setSelectedAnchorIndex(insertAt);
+              actions.setLayerSubpaths(id, next);
+              actions.setSelectedAnchorIndex(insertAt, ne.subpathIndex);
             }}
           />
 
           {/* Draggable anchor handles for the selected layer (move tool only).
               Suppressed when the user has toggled off polygon-anchor display
               (e.g. while focusing on mesh-warp artwork placement). */}
-          {tool === "move" && debug.showAnchors && selectedLayer && liveAnchors.length >= MIN_MASK_ANCHORS && (
+          {tool === "move" &&
+            debug.showAnchors &&
+            selectedLayer &&
+            liveSubpaths.some((ring) => ring.length >= MIN_MASK_ANCHORS) && (
             <AnchorHandlesOverlay
-              anchors={liveAnchors}
+              subpaths={liveSubpaths}
               zoom={scale}
+              selectedSubpath={selectedAnchorSubpathIndex}
               selectedIndex={selectedAnchorIndex}
-              onSelectAnchor={(idx) => actions.setSelectedAnchorIndex(idx)}
-              onDragMove={(idx, p) => {
-                const base = dragAnchors ?? selectedAnchors;
-                const next = base.map((a, i) => (i === idx ? p : a));
-                setDragAnchors(next);
+              onSelectAnchor={(subpathIndex, anchorIndex) =>
+                actions.setSelectedAnchorIndex(anchorIndex, subpathIndex)
+              }
+              onDragMove={(subpathIndex, anchorIndex, p) => {
+                const base = dragSubpaths ?? selectedSubpaths.map((ring) => ring.map((a) => ({ ...a })));
+                const next = base.map((ring, si) =>
+                  si === subpathIndex
+                    ? ring.map((a, i) => (i === anchorIndex ? p : a))
+                    : ring,
+                );
+                setDragSubpaths(next);
               }}
-              onDragEnd={(idx, p) => {
-                const base = dragAnchors ?? selectedAnchors;
-                const next = base.map((a, i) => (i === idx ? p : a));
-                actions.setLayerAnchors(selectedLayer.id, next);
-                setDragAnchors(null);
+              onDragEnd={(subpathIndex, anchorIndex, p) => {
+                const base = dragSubpaths ?? selectedSubpaths.map((ring) => ring.map((a) => ({ ...a })));
+                const next = base.map((ring, si) =>
+                  si === subpathIndex
+                    ? ring.map((a, i) => (i === anchorIndex ? p : a))
+                    : ring,
+                );
+                actions.setLayerSubpaths(selectedLayer.id, next);
+                setDragSubpaths(null);
               }}
-              onDeleteAnchor={(idx) => {
-                if (selectedAnchors.length <= MIN_MASK_ANCHORS) return;
-                const next = selectedAnchors.filter((_, i) => i !== idx);
-                actions.setLayerAnchors(selectedLayer.id, next);
+              onDeleteAnchor={(subpathIndex, anchorIndex) => {
+                const ring = selectedSubpaths[subpathIndex];
+                if (!ring || ring.length <= MIN_MASK_ANCHORS) return;
+                const next = selectedSubpaths.map((r, si) =>
+                  si === subpathIndex ? r.filter((_, i) => i !== anchorIndex) : r,
+                );
+                actions.setLayerSubpaths(selectedLayer.id, next);
               }}
             />
           )}
@@ -862,6 +885,15 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
                   ? "loaded"
                   : "—"}{" "}
             · scale {scale.toFixed(2)} · pos ({Math.round(position.x)},{Math.round(position.y)})
+          </div>
+        </div>
+      )}
+
+      {mockupCrop.active && mockupCrop.rect && (
+        <div className="pointer-events-none absolute left-1/2 top-3 z-10 -translate-x-1/2 rounded border border-sky-500/40 bg-sky-500/15 px-4 py-2 text-center text-xs text-sky-100">
+          <div className="font-medium">Crop mockup — drag the box, then Apply crop in the right sidebar</div>
+          <div className="mt-0.5 text-[11px] text-sky-200/80">
+            {Math.round(mockupCrop.rect.width)}×{Math.round(mockupCrop.rect.height)} px region selected
           </div>
         </div>
       )}

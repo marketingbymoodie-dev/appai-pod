@@ -512,3 +512,18 @@ html[data-appai-embed][data-appai-mobile-native-scroll] [data-appai-drag-surface
 html[data-appai-embed][data-appai-mobile-native-scroll] canvas {
   touch-action: none;
 }
+
+/* Storefront embed: Radix Select dropdown contrast — merchant theme CSS vars
+   can leave popover/highlight pairs unreadable (black on black). These rules
+   are scoped to the iframe and use fixed light/dark pairs for the open list. */
+html[data-appai-embed] [data-radix-select-content] {
+  color: hsl(var(--popover-foreground));
+}
+html[data-appai-embed] [data-radix-select-viewport] [role="option"] {
+  color: hsl(var(--popover-foreground));
+}
+html[data-appai-embed] [data-radix-select-viewport] [role="option"][data-highlighted],
+html[data-appai-embed] [data-radix-select-viewport] [role="option"]:focus {
+  background-color: hsl(0 0% 9%);
+  color: hsl(0 0% 98%);
+}

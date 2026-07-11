@@ -10,11 +10,15 @@ import {
   Image as ImageIcon,
   ChevronDown,
   ChevronRight,
+  Combine,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import MergeLayersDialog from "./MergeLayersDialog";
 import {
   PANEL_DISPLAY_LABEL,
   panelsEligibleForView,
+  resolvePlacerEditor,
+  resolveGarmentLayout,
   layerRenderPriority,
   type HoodieView,
 } from "@shared/hoodieTemplate";
@@ -22,9 +26,11 @@ import { useHoodieMapperStore } from "./store";
 import {
   listMockups,
   listTemplates,
+  mockupUrlsMatch,
   type MockupListEntry,
   type TemplateListEntry,
 } from "./api";
+import { readMapperAssetDimensions } from "./lib/mapperAssetImage";
 
 /**
  * Persisted expanded/collapsed state for each LeftSidebar section.
@@ -133,25 +139,19 @@ function inferViewFromFilename(filename: string): HoodieView | null {
   return null;
 }
 
-function readImageDimsFromUrl(url: string): Promise<{ width: number; height: number } | null> {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
-    img.onerror = () => resolve(null);
-    img.src = url;
-  });
-}
-
 export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name: string) => void }) {
   const view = useHoodieMapperStore((s) => s.view);
   const layers = useHoodieMapperStore((s) => s.template.views[s.view].layers);
   const frontMockupSrc = useHoodieMapperStore((s) => s.template.views.front?.mockup?.src ?? null);
   const backMockupSrc = useHoodieMapperStore((s) => s.template.views.back?.mockup?.src ?? null);
   const selectedLayerId = useHoodieMapperStore((s) => s.selectedLayerId);
+  const mergeSelectionIds = useHoodieMapperStore((s) => s.mergeSelectionIds);
   const hoverLayerId = useHoodieMapperStore((s) => s.hoverLayerId);
   const saveSeq = useHoodieMapperStore((s) => s.saveSeq);
   const activeTemplateName = useHoodieMapperStore((s) => s.template.name);
   const blueprintId = useHoodieMapperStore((s) => s.template.blueprintId);
+  const placerEditor = useHoodieMapperStore((s) => resolvePlacerEditor(s.template));
+  const garmentLayout = useHoodieMapperStore((s) => resolveGarmentLayout(s.template));
   const actions = useHoodieMapperStore((s) => s.actions);
 
   const [templates, setTemplates] = useState<TemplateListEntry[]>([]);
@@ -159,6 +159,7 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
   const [loading, setLoading] = useState(false);
   const [mockupLoading, setMockupLoading] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [mergeDialogOpen, setMergeDialogOpen] = useState(false);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const { toast } = useToast();
 
@@ -176,23 +177,31 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
     if (renamingId) renameInputRef.current?.select();
   }, [renamingId]);
 
-  async function refreshTemplates() {
+  async function refreshTemplates(options?: { silent?: boolean }) {
     setLoading(true);
     try {
       setTemplates(await listTemplates());
     } catch (err: any) {
-      toast({ title: "Could not list templates", description: err?.message || String(err), variant: "destructive" });
+      const msg = err?.message || String(err);
+      const isAuth = msg.includes("401") || msg.includes("403");
+      if (!options?.silent && !isAuth) {
+        toast({ title: "Could not list templates", description: msg, variant: "destructive" });
+      }
     } finally {
       setLoading(false);
     }
   }
 
-  async function refreshMockups() {
+  async function refreshMockups(options?: { silent?: boolean }) {
     setMockupLoading(true);
     try {
       setMockups(await listMockups());
     } catch (err: any) {
-      toast({ title: "Could not list mockups", description: err?.message || String(err), variant: "destructive" });
+      const msg = err?.message || String(err);
+      const isAuth = msg.includes("401") || msg.includes("403");
+      if (!options?.silent && !isAuth) {
+        toast({ title: "Could not list mockups", description: msg, variant: "destructive" });
+      }
     } finally {
       setMockupLoading(false);
     }
@@ -200,7 +209,12 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
 
   async function attachMockupToView(entry: MockupListEntry, target?: HoodieView) {
     const inferredView = target ?? inferViewFromFilename(entry.filename) ?? view;
-    const dims = await readImageDimsFromUrl(entry.url);
+    let dims: { width: number; height: number } | null = null;
+    try {
+      dims = await readMapperAssetDimensions(entry.url);
+    } catch {
+      dims = null;
+    }
     if (!dims) {
       toast({
         title: "Could not load mockup",
@@ -227,11 +241,15 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
   // having to click the refresh icon.
   useEffect(() => {
     if (saveSeq === 0) return;
-    refreshTemplates();
+    refreshTemplates({ silent: true });
+    refreshMockups({ silent: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [saveSeq]);
 
-  const eligiblePanels = panelsEligibleForView(view, blueprintId);
+  const eligiblePanels = panelsEligibleForView(view, blueprintId, placerEditor, garmentLayout);
+
+  const mergeIdsOnView = mergeSelectionIds.filter((id) => layers.some((l) => l.id === id));
+  const canOpenMerge = mergeIdsOnView.length >= 2;
 
   return (
     <aside
@@ -258,14 +276,33 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
             No mask layers yet. Pick the Polygon (P) or Magnetic (M) pen and click on the mockup to start tracing each panel.
           </div>
         ) : (
-          <ul className="space-y-1">
+          <>
+            <div className="mb-2 space-y-1.5">
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                className="h-7 w-full text-[11px]"
+                disabled={!canOpenMerge}
+                onClick={() => setMergeDialogOpen(true)}
+                data-testid="merge-layers-open"
+              >
+                <Combine className="mr-1 h-3 w-3" />
+                Merge selected ({mergeIdsOnView.length})
+              </Button>
+              <p className="text-[10px] leading-snug text-slate-500">
+                Check layers to merge, or Ctrl+click. Merged mesh is cleared — re-mesh if needed.
+              </p>
+            </div>
+            <ul className="space-y-1">
             {[...layers]
               // Topmost-rendered at the top of the list (Photoshop convention).
               // Uses anatomical render priority so e.g. Front Pocket sits at
               // the top of the list, matching what shows on the canvas.
               .sort((a, b) => layerRenderPriority(b) - layerRenderPriority(a))
               .map((l) => {
-                const isSelected = selectedLayerId === l.id;
+                const isPrimary = selectedLayerId === l.id;
+                const inMergeSelection = mergeIdsOnView.includes(l.id);
                 const isHover = hoverLayerId === l.id;
                 const isExclusion = l.isExclusion || l.kind === "exclusion";
                 return (
@@ -273,16 +310,32 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
                     key={l.id}
                     onMouseEnter={() => actions.setHoverLayer(l.id)}
                     onMouseLeave={() => actions.setHoverLayer(null)}
-                    onClick={() => actions.setSelectedLayer(l.id)}
+                    onClick={(e) =>
+                      actions.setSelectedLayer(l.id, {
+                        additive: e.ctrlKey || e.metaKey,
+                      })
+                    }
                     onDoubleClick={() => setRenamingId(l.id)}
                     className={`flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-xs transition ${
-                      isSelected
-                        ? "bg-slate-700"
-                        : isHover
-                          ? "bg-slate-800"
-                          : "hover:bg-slate-800"
+                      inMergeSelection
+                        ? "ring-1 ring-violet-400/80 bg-slate-700"
+                        : isPrimary
+                          ? "bg-slate-700"
+                          : isHover
+                            ? "bg-slate-800"
+                            : "hover:bg-slate-800"
                     }`}
                   >
+                    <input
+                      type="checkbox"
+                      checked={inMergeSelection}
+                      title="Include in merge"
+                      aria-label={`Include ${l.name} in merge`}
+                      className="h-3.5 w-3.5 shrink-0 cursor-pointer accent-violet-400"
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={() => actions.toggleMergeSelection(l.id)}
+                      data-testid={`merge-select-${l.id}`}
+                    />
                     <button
                       type="button"
                       onClick={(e) => {
@@ -352,7 +405,7 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        actions.removeLayer(l.id);
+                        actions.requestRemoveLayer(l.id, l.name);
                       }}
                       className="text-slate-500 hover:text-red-400"
                       title="Delete layer"
@@ -363,8 +416,16 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
                 );
               })}
           </ul>
+          </>
         )}
       </div>
+
+      <MergeLayersDialog
+        open={mergeDialogOpen}
+        onOpenChange={setMergeDialogOpen}
+        view={view}
+        layerIds={mergeIdsOnView}
+      />
 
       <SectionHeader
         title={`Eligible panels · ${view}`}
@@ -409,8 +470,8 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
         ) : (
           mockups.map((m) => {
             const inferred = inferViewFromFilename(m.filename);
-            const isAttachedFront = frontMockupSrc === m.url;
-            const isAttachedBack = backMockupSrc === m.url;
+            const isAttachedFront = mockupUrlsMatch(frontMockupSrc, m.url);
+            const isAttachedBack = mockupUrlsMatch(backMockupSrc, m.url);
             const isAttached = isAttachedFront || isAttachedBack;
             return (
               <div

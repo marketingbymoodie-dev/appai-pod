@@ -15,6 +15,10 @@ import {
   APPAREL_DARK_TIER_PROMPTS,
   isChromaSafeApparelPrefix,
 } from "@shared/apparel-chroma-prompts";
+import {
+  GRAPHICS_CHROMA_STYLE_BY_ID,
+  GRAPHICS_CHROMA_STYLE_BY_NAME,
+} from "@shared/graphics-chroma-prompts";
 
 export {
   APPAREL_CHROMA_STYLE_BY_NAME,
@@ -114,15 +118,30 @@ const WHITE_BG_PATTERNS: RegExp[] = [
   /\bwhite\s+mat\b/gi,
 ];
 
-/** True when generation should use apparel chroma matting (includes AOP / all-over-print). */
+/**
+ * True when generation/post-processing should use hot-pink chroma-key matting.
+ * Decor styles always use full-bleed generation — even on AOP pillows.
+ * Apparel styles and classic apparel / zip-hoodie products use chroma key.
+ */
 export function resolveIsApparelGeneration(
   productType?: { designerType?: string | null; isAllOverPrint?: boolean | null } | null,
   styleCategory?: string | null,
 ): boolean {
+  const styleCat = (styleCategory || "all").toLowerCase();
   const designerType = (productType?.designerType || "").toLowerCase();
-  if (designerType === "apparel" || designerType === "all-over-print") return true;
-  if (productType?.isAllOverPrint) return true;
-  if ((styleCategory || "").toLowerCase() === "apparel") return true;
+
+  if (styleCat === "apparel" || styleCat === "graphics") return true;
+  if (designerType === "apparel") return true;
+
+  // Decor presets (Pop Art, Watercolor, etc.) — full bleed, no chroma plate
+  if (styleCat === "decor") return false;
+
+  // Zip hoodies / AOP garments with non-decor styles (incl. "No Style" custom prompt)
+  if (designerType === "all-over-print") return true;
+
+  // Decor AOP products (pillows): chroma only when an apparel-category style is selected
+  if (productType?.isAllOverPrint) return false;
+
   return false;
 }
 
@@ -139,6 +158,41 @@ export function sanitizeApparelStylePrefix(prefix: string): string {
     cleaned = `${cleaned}, no white mat, no rectangular frame`;
   }
   return cleaned;
+}
+
+/** Graphics prefix: chroma + matting/SVG pipeline, large-format motif language. */
+export function resolveGraphicsStylePrefix(
+  styleName: string,
+  stylePresetId: string | null | undefined,
+  dbPrefix: string,
+): string {
+  const trimmed = dbPrefix.trim();
+  if (trimmed && isChromaSafeApparelPrefix(trimmed)) {
+    return sanitizeApparelStylePrefix(trimmed);
+  }
+  const idKey = (stylePresetId || "").trim().toLowerCase();
+  if (idKey && GRAPHICS_CHROMA_STYLE_BY_ID[idKey]) {
+    return sanitizeApparelStylePrefix(GRAPHICS_CHROMA_STYLE_BY_ID[idKey]);
+  }
+  const nameKey = styleName.trim().toLowerCase();
+  const canonical = GRAPHICS_CHROMA_STYLE_BY_NAME[nameKey];
+  if (canonical) {
+    return sanitizeApparelStylePrefix(canonical);
+  }
+  return sanitizeApparelStylePrefix(trimmed);
+}
+
+/** Route motif prefix resolution by style category (apparel vs graphics). */
+export function resolveMotifStylePrefix(
+  styleCategory: string | null | undefined,
+  styleName: string,
+  stylePresetId: string | null | undefined,
+  dbPrefix: string,
+): string {
+  if ((styleCategory || "").toLowerCase() === "graphics") {
+    return resolveGraphicsStylePrefix(styleName, stylePresetId, dbPrefix);
+  }
+  return resolveApparelStylePrefix(styleName, dbPrefix);
 }
 
 /** Light-garment prefix: prefer Admin/DB when chroma-safe; else repo fallback by style name. */

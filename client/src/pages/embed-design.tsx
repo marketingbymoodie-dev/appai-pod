@@ -47,8 +47,23 @@ import {
   flatViewsForColor,
   renderFlatMockupDataUrl,
 } from "@/components/designer/FlatProductPlacer/lib/flatMockupPreview";
-import { resolveFlatBlankColorId, resolveFlatPlacementGeometryKey } from "@/components/designer/FlatProductPlacer/lib/flatAssets";
+import { resolveFlatBlankColorId, resolveFlatPlacementGeometryKey, resolveFlatBlank, normalizeFlatColorKey } from "@/components/designer/FlatProductPlacer/lib/flatAssets";
 import { STOREFRONT_FREE_GENERATION_LIMIT, storefrontArtworksRemaining } from "@shared/storefront-credits";
+import {
+  frameColorsRedundantWithSizes,
+  isLandscapeSizeAspect,
+  resolveFrameColorForSize,
+  resolveSizeAspectRatio,
+} from "@shared/productVariantOptions";
+import { resolveFabricWeaveTexture } from "@shared/fabricWeave";
+import {
+  filterStylePresetsForPage,
+  dedupeStylePresets,
+  parseCustomizerPageStyleConfig,
+  selectableCategoriesForDesignerType,
+  styleMatchesSelectableCategories,
+  type CustomizerPageStyleConfig,
+} from "@shared/customizerPageStyles";
 import {
   isAllowedCentralAuthOrigin,
   isStorefrontGoogleAuthMessage,
@@ -177,7 +192,7 @@ interface ProductTypeConfig {
   designerType?: DesignerType;
   printShape?: PrintShape;
   canvasConfig?: CanvasConfig;
-  sizes: Array<{ id: string; name: string; width: number; height: number }>;
+  sizes: Array<{ id: string; name: string; width: number; height: number; aspectRatio?: string }>;
   frameColors: Array<{ id: string; name: string; hex: string; variantAvailable?: boolean }>;
   variantMap?: Record<string, { printifyVariantId?: number | string; providerId?: number }>;
   hasPrintifyMockups?: boolean;
@@ -210,6 +225,8 @@ interface ProductTypeConfig {
   panelFlatLayImages?: Record<string, string>;
   colorLabel?: string;
   printifyBlueprintId?: number;
+  /** Admin override for woven fabric texture on flat mockups (null = blueprint default). */
+  fabricWeaveTexture?: boolean | null;
   sizeChart?: NormalizedSizeChart | null;
 }
 
@@ -850,9 +867,15 @@ if (typeof window !== 'undefined' && !(window as any).__APP_AI_EMBED_PINGED__) {
  *   Renders the IDENTICAL customizer UI but sources data from the admin-authenticated /api/* endpoints
  *   (no shop param, no storefront identity/cart/checkout/shadow-SKU). Lets the Generator Tester always
  *   stay in sync with the live customizer without maintaining a separate copy.
+ * - merchant-studio: Hosted in-process inside the merchant admin "My Designs" studio. Unlike admin-tester,
+ *   this uses the SAME storefront endpoints (config, generate, mockups, save-design, my-designs) as real
+ *   customers so output and save behaviour are identical — but identity comes from the merchant's own
+ *   admin session (not an anonymous localStorage id), and the generate call omits customerId so billing
+ *   stays on the shop's plan quota rather than the 10-free-generation customer bucket. Cart/checkout/
+ *   shadow-SKU UI is hidden — merchants are designing a permanent product, not shopping.
  * - standalone: Direct access without Shopify context. Uses standard auth.
  */
-type RuntimeMode = 'storefront' | 'admin-embedded' | 'admin-tester' | 'standalone';
+type RuntimeMode = 'storefront' | 'admin-embedded' | 'admin-tester' | 'merchant-studio' | 'standalone';
 
 function detectRuntimeMode(params: URLSearchParams): RuntimeMode {
   const path = window.location.pathname;
@@ -956,10 +979,17 @@ function ProductInfoSections({
  * When omitted (storefront, /s/designer, standalone) the component behaves exactly as before.
  */
 export interface EmbedDesignProps {
-  embeddedContext?: {
-    mode: 'admin-tester';
-    productTypeId: string | number;
-  };
+  embeddedContext?:
+    | {
+        mode: 'admin-tester';
+        productTypeId: string | number;
+      }
+    | {
+        mode: 'merchant-studio';
+        productTypeId: string | number;
+        /** Merchant's connected shop domain ({handle}.myshopify.com) — resolved server-side, not guessed from URL/referrer. */
+        shop: string;
+      };
 }
 
 /**
@@ -985,24 +1015,106 @@ function hasStoredLoggedInIdentity(): boolean {
   return false;
 }
 
+/** Dedupe carousel/mockup URLs by origin+pathname (ignore query strings). */
+function mockupImageUrlKey(url: string): string {
+  try {
+    const u = new URL(url, "https://example.com");
+    return `${u.origin}${u.pathname}`.toLowerCase();
+  } catch {
+    return url.split(/[?#]/)[0].toLowerCase();
+  }
+}
+
+type PostGenGalleryItem =
+  | { kind: "artwork"; label: string }
+  | { kind: "mockup"; url: string; label: string }
+  | { kind: "catalog"; url: string; label: string };
+
+function formatPostGenMockupLabel(raw: string, fallback: string): string {
+  const l = raw.toLowerCase();
+  if (l === "front" || l === "mockup 1") return "Front";
+  if (l === "back" || l === "mockup 2") return "Back";
+  return raw || fallback;
+}
+
+/** Artwork + Printify mockups + merchant catalog extras (deduped). */
+function buildPostGenGalleryItems(
+  catalogPreviewImages: string[],
+  printifyMockupImages: Array<{ url: string; label: string }>,
+  printifyMockups: string[],
+): PostGenGalleryItem[] {
+  const items: PostGenGalleryItem[] = [{ kind: "artwork", label: "Artwork" }];
+  const seen = new Set<string>();
+
+  const printifyEntries =
+    printifyMockupImages.length > 0
+      ? printifyMockupImages.slice(0, 3).map((img, i) => ({
+          url: img.url,
+          label: formatPostGenMockupLabel(img.label, `View ${i + 1}`),
+        }))
+      : printifyMockups.slice(0, 3).map((url, i) => ({
+          url,
+          label: formatPostGenMockupLabel("", i === 0 ? "Front" : i === 1 ? "Back" : `View ${i + 1}`),
+        }));
+
+  for (const entry of printifyEntries) {
+    if (!entry.url) continue;
+    const key = mockupImageUrlKey(entry.url);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    items.push({ kind: "mockup", url: entry.url, label: entry.label });
+  }
+
+  for (let i = 0; i < catalogPreviewImages.length; i++) {
+    const url = catalogPreviewImages[i];
+    if (!url) continue;
+    const key = mockupImageUrlKey(url);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    items.push({
+      kind: "catalog",
+      url,
+      label: i === 0 ? "Primary" : `View ${i + 1}`,
+    });
+  }
+
+  return items;
+}
+
+function resolvePostGenMockupUrl(
+  index: number,
+  items: PostGenGalleryItem[],
+  preferredMockupUrl: string,
+): string | null {
+  const item = items[index];
+  if (!item) return null;
+  if (item.kind === "mockup" || item.kind === "catalog") return item.url;
+  const hasMockupSlots = items.some((i) => i.kind === "mockup");
+  if (!hasMockupSlots && preferredMockupUrl) return preferredMockupUrl;
+  return null;
+}
+
 export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) {
   const searchParams = new URLSearchParams(window.location.search);
 
-  // Detect runtime mode. When hosted in-process by the admin tester, the prop forces
-  // 'admin-tester' regardless of the surrounding admin URL/path.
+  // Detect runtime mode. When hosted in-process by the admin tester or merchant design
+  // studio, the prop forces that mode regardless of the surrounding admin URL/path.
   const runtimeMode: RuntimeMode = embeddedContext?.mode === 'admin-tester'
     ? 'admin-tester'
-    : detectRuntimeMode(searchParams);
+    : embeddedContext?.mode === 'merchant-studio'
+      ? 'merchant-studio'
+      : detectRuntimeMode(searchParams);
 
-  const isStorefront = runtimeMode === 'storefront';
-  // admin-tester: merchant admin "Art Generator Tester" host. Behaves like standalone for
-  // endpoints (admin-authenticated /api/*), with storefront identity/cart/checkout/shadow-SKU
-  // left inert. Force isEmbedded off so it renders as a clean standalone designer surface.
   const isAdminTester = runtimeMode === 'admin-tester';
+  // merchant-studio: merchant admin "My Designs" studio. Uses the same storefront endpoints
+  // as real customers (see RuntimeMode doc above) — folded into isStorefront so config/
+  // generate/mockup/save-design/my-designs all pick the storefront API branch automatically.
+  const isMerchantStudio = runtimeMode === 'merchant-studio';
+  const isStorefront = runtimeMode === 'storefront' || isMerchantStudio;
   // Legacy params - kept for backwards compatibility
   // Storefront mode must override embedded Shopify mode: when both
   // storefront=true and shopify=true appear in the URL, storefront wins.
-  const isEmbedded = !isAdminTester && searchParams.get("embedded") === "true";
+  const isEmbedded = !isAdminTester && !isMerchantStudio && searchParams.get("embedded") === "true";
   const isShopify = !isStorefront && !isAdminTester && searchParams.get("shopify") === "true";
   // State (not a plain const) so it can react LIVE to the parent embed
   // script's `ai-art-studio:set-scroll-mode` message. Shopify's theme editor
@@ -1021,7 +1133,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // Anonymous session ID for storefront free-generation tracking.
   // Persisted in localStorage so it survives page refreshes.
   const [anonSessionId] = useState(() => {
-    if (!isStorefront) return '';
+    // merchant-studio has its own server-resolved identity (see identity bootstrap effect below)
+    // and must never mix into a real customer's anonymous session on the same browser.
+    if (!isStorefront || isMerchantStudio) return '';
     const key = 'appai_session';
     let id = localStorage.getItem(key);
     if (!id) {
@@ -1264,6 +1378,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   }, []);
 
   const [stylePresets, setStylePresets] = useState<StylePreset[]>([]);
+  const [pageStyleConfig, setPageStyleConfig] = useState<CustomizerPageStyleConfig | null>(null);
   const [productTypeConfig, setProductTypeConfig] = useState<ProductTypeConfig | null>(null);
   const [configLoading, setConfigLoading] = useState(true);
   const [isInAppProductSwitching, setIsInAppProductSwitching] = useState(false);
@@ -1280,9 +1395,21 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         name: s.name,
         width: s.width,
         height: s.height,
-        aspectRatio: productTypeConfig?.aspectRatio || "3:4",
+        aspectRatio:
+          s.aspectRatio ||
+          resolveSizeAspectRatio(s, productTypeConfig?.aspectRatio),
       })),
     [productTypeConfig],
+  );
+
+  const frameOptionsRedundantWithSizes = useMemo(
+    () =>
+      frameColorsRedundantWithSizes(
+        printSizes,
+        productTypeConfig?.frameColors || [],
+        productTypeConfig?.colorLabel,
+      ),
+    [printSizes, productTypeConfig?.frameColors, productTypeConfig?.colorLabel],
   );
 
   const frameColorObjects: FrameColor[] = useMemo(
@@ -1295,9 +1422,49 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     [productTypeConfig],
   );
 
+  const showFrameColorSelector =
+    frameColorObjects.length > 0 && !frameOptionsRedundantWithSizes;
+
+  /** Flat/mesh on-the-fly preview — respects merchant `storefrontMockupMode` override. */
+  const usesFlatOnTheFlyPreview = useMemo(() => {
+    const hasFlatAssets = !!(
+      (productTypeConfig?.onTheFlyTier === "flat" ||
+        productTypeConfig?.onTheFlyTier === "mesh") &&
+      productTypeConfig?.flatCalibration
+    );
+    const mode = productTypeConfig?.effectiveStorefrontMockupMode;
+    if (mode === "printify" || mode === "aop") return false;
+    if (mode === "flat") return hasFlatAssets;
+    return hasFlatAssets;
+  }, [
+    productTypeConfig?.effectiveStorefrontMockupMode,
+    productTypeConfig?.onTheFlyTier,
+    productTypeConfig?.flatCalibration,
+  ]);
+
+  // When OPTION duplicates SIZE (tapestry orientations), keep frameColor aligned for variantMap.
+  useEffect(() => {
+    if (!frameOptionsRedundantWithSizes || !selectedSize) return;
+    const sizeConfig = printSizes.find((s) => s.id === selectedSize);
+    const matched = resolveFrameColorForSize(sizeConfig, frameColorObjects);
+    if (matched && matched !== selectedFrameColor) {
+      setSelectedFrameColor(matched);
+    }
+  }, [
+    frameOptionsRedundantWithSizes,
+    selectedSize,
+    printSizes,
+    frameColorObjects,
+    selectedFrameColor,
+  ]);
+
   // Resolve shop domain - try URL param first, then try to extract from referrer
   // This handles cases where the theme extension hasn't been redeployed with the latest changes
   const resolveShopDomain = (): string => {
+    // merchant-studio runs in-process inside the admin app — there is no theme iframe or
+    // referrer to inspect, so the shop domain is resolved server-side and passed explicitly.
+    if (embeddedContext?.mode === 'merchant-studio') return embeddedContext.shop;
+
     // URL param is set by the theme embed (?shop=…). It is often the short handle only
     // (same as window.Shopify.shop), but /api/storefront/* must use *.myshopify.com
     // to match OAuth rows in the database.
@@ -1326,6 +1493,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   
   // Get the myshopify.com domain specifically for API calls that require it
   const getMyShopifyDomain = (): string | null => {
+    if (embeddedContext?.mode === 'merchant-studio') return embeddedContext.shop;
+
     const shopParam = searchParams.get("shop") || "";
     
     // If already has .myshopify.com suffix, use it
@@ -1396,7 +1565,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   });
 
   useEffect(() => {
-    if (!isStorefront || !shopDomain || !anonSessionId) return;
+    if (!isStorefront || isMerchantStudio || !shopDomain || !anonSessionId) return;
     const shopifyCustomerId = searchParams.get("customerId") || null;
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (storefrontIdentityToken) headers.Authorization = `Bearer ${storefrontIdentityToken}`;
@@ -1438,7 +1607,27 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       })
       .catch((err) => console.warn('[EmbedDesign] identity bootstrap failed', err));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isStorefront, shopDomain, anonSessionId]);
+  }, [isStorefront, isMerchantStudio, shopDomain, anonSessionId]);
+
+  // merchant-studio identity: resolve/create a dedicated "merchant" customer record via the
+  // admin-authenticated session (App Bridge token / admin cookie), instead of the anonymous
+  // localStorage flow above. Treated as already logged in — no OTP tray needed. `customer`
+  // (credits/freeGenerationsUsed) is deliberately left unset so the client-side
+  // "insufficient credits" gate never fires here; the server enforces the real limit
+  // (shop plan quota) on /api/storefront/generate.
+  useEffect(() => {
+    if (!isMerchantStudio || !shopDomain) return;
+    safeFetch(`${API_BASE}/api/appai/design-studio/identity?shop=${encodeURIComponent(shopDomain)}`, {
+      credentials: 'include',
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!data?.customerId) return;
+        setStorefrontCustomerId(data.customerId);
+        setGalleryLimit(data.savedLimit || 30);
+      })
+      .catch((err) => console.warn('[EmbedDesign] merchant-studio identity bootstrap failed', err));
+  }, [isMerchantStudio, shopDomain]);
 
   const completeStorefrontLogin = useCallback((data: {
     customerId: string;
@@ -1742,11 +1931,18 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const flatDecorMode = !!(
     productTypeConfig?.flatCalibration &&
     !flatEdgeWrapMode &&
+    !isApparel &&
     (productTypeConfig.flatCalibration.decorPerSize ||
-      productTypeConfig.designerType === "framed-print")
+      productTypeConfig.designerType === "framed-print" ||
+      productTypeConfig.designerType === "pillow")
   );
+  const flatFabricWeave = resolveFabricWeaveTexture({
+    fabricWeaveTexture: productTypeConfig?.fabricWeaveTexture,
+    printifyBlueprintId: productTypeConfig?.printifyBlueprintId,
+  });
   const flatBlankColorId = useMemo(() => {
     if (!productTypeConfig?.flatCalibration) return selectedFrameColor || selectedSize || "";
+    if (frameOptionsRedundantWithSizes && selectedSize) return selectedSize;
     return resolveFlatBlankColorId(productTypeConfig.flatCalibration, {
       sizeId: selectedSize || undefined,
       frameColorId: selectedFrameColor || undefined,
@@ -1757,7 +1953,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     selectedSize,
     selectedFrameColor,
     isApparel,
+    frameOptionsRedundantWithSizes,
   ]);
+
+  const flatCalibrationBlankUrl = useMemo(() => {
+    if (!usesFlatOnTheFlyPreview || !productTypeConfig?.flatCalibration || !flatBlankColorId) {
+      return null;
+    }
+    const blank = resolveFlatBlank(productTypeConfig.flatCalibration, flatBlankColorId);
+    return blank?.front || null;
+  }, [usesFlatOnTheFlyPreview, productTypeConfig?.flatCalibration, flatBlankColorId]);
+
   const flatPlacerGeometryKey = useMemo(() => {
     if (!productTypeConfig?.flatCalibration) return flatBlankColorId;
     return resolveFlatPlacementGeometryKey(productTypeConfig.flatCalibration, {
@@ -1772,8 +1978,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     selectedFrameColor,
     isApparel,
   ]);
-  const useAopCustomizer =
-    productTypeConfig?.useAopCustomizer ?? !!productTypeConfig?.isAllOverPrint;
+  const useAopCustomizer = !!(
+    (productTypeConfig?.useAopCustomizer ?? !!productTypeConfig?.isAllOverPrint) &&
+    // Flat/mesh on-the-fly products must never also open PatternCustomizer —
+    // both button bars used to render when isAllOverPrint + flatCalibration coexisted.
+    productTypeConfig?.onTheFlyTier !== "flat" &&
+    productTypeConfig?.onTheFlyTier !== "mesh"
+  );
   /** Drag-to-scale artwork overlay — Printify mockup products only (not AOP/flat/mesh). */
   const printifyTransformEligible = !!(
     productTypeConfig?.hasPrintifyMockups &&
@@ -1796,17 +2007,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
     const seen = new Set<string>();
     const out: string[] = [];
-    const urlKey = (url: string) => {
-      try {
-        const u = new URL(url, 'https://example.com');
-        return `${u.origin}${u.pathname}`.toLowerCase();
-      } catch {
-        return url.split(/[?#]/)[0].toLowerCase();
-      }
-    };
     const add = (url: string | null | undefined) => {
       if (!url || typeof url !== 'string') return;
-      const key = urlKey(url);
+      const key = mockupImageUrlKey(url);
       if (seen.has(key)) return;
       seen.add(key);
       out.push(url);
@@ -1814,20 +2017,63 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
     // Merchant-curated placeholders only (Customizer Pages primary + gallery picks).
     // `available` is the full Printify catalog pool for admin picker — not storefront carousel.
+    // Do not add legacy `lifestyle` or deselected `custom` — editor saves are primary+gallery only.
     const primary = imgs.primary || imgs.front || null;
     add(primary);
     for (const url of Array.isArray(imgs.gallery) ? imgs.gallery : []) add(url);
-    for (const url of Array.isArray((imgs as { custom?: string[] }).custom)
-      ? (imgs as { custom?: string[] }).custom!
-      : []) {
-      add(url);
-    }
     return out.slice(0, 5);
   }, [productTypeConfig?.baseMockupImages]);
+
+  const flatLandscapeOrientation = useMemo(() => {
+    const sizeConfig = printSizes.find((s) => s.id === selectedSize);
+    if (!sizeConfig) return false;
+    const ar =
+      sizeConfig.aspectRatio ||
+      resolveSizeAspectRatio(sizeConfig, productTypeConfig?.aspectRatio);
+    return isLandscapeSizeAspect(ar);
+  }, [printSizes, selectedSize, productTypeConfig?.aspectRatio]);
+
+  const orientationBlankOverride = useMemo(() => {
+    if (!frameOptionsRedundantWithSizes || !flatLandscapeOrientation || !selectedSize) return null;
+    const manifest = productTypeConfig?.flatCalibration;
+    if (!manifest?.blanks) return null;
+    const sizeNorm = normalizeFlatColorKey(selectedSize);
+    const hasOrientationBlank = Object.keys(manifest.blanks).some((k) => {
+      if (k === "default") return false;
+      return k === selectedSize || normalizeFlatColorKey(k) === sizeNorm;
+    });
+    if (hasOrientationBlank) return null;
+    return catalogPreviewImages.length > 1 ? catalogPreviewImages[1] : null;
+  }, [
+    frameOptionsRedundantWithSizes,
+    flatLandscapeOrientation,
+    selectedSize,
+    productTypeConfig?.flatCalibration,
+    catalogPreviewImages,
+  ]);
 
   useEffect(() => {
     setCatalogPreviewIndex(0);
   }, [productTypeConfig?.id, catalogPreviewImages.join("|")]);
+
+  const postGenGalleryItems = useMemo(
+    () =>
+      generatedDesign?.imageUrl
+        ? buildPostGenGalleryItems(
+            catalogPreviewImages,
+            printifyMockupImages,
+            printifyMockups,
+          )
+        : [],
+    [generatedDesign?.imageUrl, catalogPreviewImages, printifyMockupImages, printifyMockups],
+  );
+
+  useEffect(() => {
+    if (!generatedDesign?.imageUrl) return;
+    setSelectedMockupIndex((prev) =>
+      prev >= postGenGalleryItems.length ? 0 : prev,
+    );
+  }, [generatedDesign?.imageUrl, postGenGalleryItems.length]);
 
   // Storefront / theme iframe: land on the product preview box after hard refresh.
   // The parent page often restores scroll at the footer once the iframe auto-resizes.
@@ -1880,30 +2126,20 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
   }, [productTypeConfig, supportsPrintPlacementSelection, printPlacement]);
 
-  // Filter styles based on designerType
-  // - framed-print, pillow, mug -> "decor" category (full-bleed artwork)
-  // - apparel -> "apparel" category (centered graphics)
-  // - generic -> show all styles
+  // Filter styles based on designerType and per-page styleConfig
   const filteredStylePresets = useMemo(() => {
-    if (!productTypeConfig?.designerType) return stylePresets;
-    
-    const designerType = productTypeConfig.designerType;
-    let targetCategory: "decor" | "apparel" | null = null;
-    
-    if (designerType === "framed-print" || designerType === "pillow" || designerType === "mug") {
-      targetCategory = "decor";
-    } else if (designerType === "apparel") {
-      targetCategory = "apparel";
+    const deduped = dedupeStylePresets(stylePresets);
+    if (pageStyleConfig) {
+      return filterStylePresetsForPage(
+        deduped,
+        pageStyleConfig,
+        productTypeConfig?.designerType,
+      );
     }
-    // For "generic" or unknown types, show all styles
-    
-    if (!targetCategory) return stylePresets;
-    
-    // Return styles that match the category or are "all" (universal styles)
-    return stylePresets.filter(s => 
-      s.category === targetCategory || s.category === "all" || !s.category
-    );
-  }, [stylePresets, productTypeConfig]);
+    const selectable = selectableCategoriesForDesignerType(productTypeConfig?.designerType);
+    if (selectable === "all") return deduped;
+    return deduped.filter((s) => styleMatchesSelectableCategories(s, selectable));
+  }, [stylePresets, productTypeConfig, pageStyleConfig]);
 
   useEffect(() => {
     const blueprintId = productTypeConfig?.printifyBlueprintId;
@@ -2005,6 +2241,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       panelFlatLayImages: dc.panelFlatLayImages || {},
       colorLabel: dc.colorLabel || "Color",
       printifyBlueprintId: dc.printifyBlueprintId,
+      fabricWeaveTexture: dc.fabricWeaveTexture ?? null,
       sizeChart: dc.sizeChart || null,
     });
     if (dc.sizeChart) {
@@ -2355,6 +2592,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             panelFlatLayImages: designerConfig.panelFlatLayImages || {},
             colorLabel: designerConfig.colorLabel || "Color",
             printifyBlueprintId: designerConfig.printifyBlueprintId,
+            fabricWeaveTexture: designerConfig.fabricWeaveTexture ?? null,
             sizeChart: designerConfig.sizeChart || null,
           });
 
@@ -2647,9 +2885,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
       if (durableMockups.length > 0) {
         setPrintifyMockups(durableMockups);
-        const isFlatTier =
-          productTypeConfig?.onTheFlyTier === "flat" ||
-          productTypeConfig?.onTheFlyTier === "mesh";
+        const isFlatTier = usesFlatOnTheFlyPreview;
         setPrintifyMockupImages(
           durableMockups.map((url: string, i: number) => ({
             url,
@@ -2879,6 +3115,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (Array.isArray(config.stylePresets)) {
       setStylePresets(config.stylePresets);
     }
+    setPageStyleConfig(parseCustomizerPageStyleConfig(config.styleConfig));
     setConfigLoading(false);
 
     try {
@@ -3579,10 +3816,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
         setAopPatternUrl(null);
         setShowPatternStep(true);
-      } else if (
-        (productTypeConfig.onTheFlyTier === "flat" || productTypeConfig.onTheFlyTier === "mesh") &&
-        productTypeConfig.flatCalibration
-      ) {
+      } else if (usesFlatOnTheFlyPreview) {
         setFlatPlacerEditOpen(true);
       } else {
         fetchPrintifyMockups(
@@ -3596,7 +3830,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         );
       }
     }
-  }, [isSharedDesign, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, mockupLoading, mockupFailed, transform, fetchPrintifyMockups]);
+  }, [isSharedDesign, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, mockupLoading, mockupFailed, transform, fetchPrintifyMockups, useAopCustomizer, usesFlatOnTheFlyPreview]);
 
   // Fallback: trigger mockups if generation completed but productTypeConfig wasn't ready during onSuccess.
   // Also handles session restore. For AOP: show Pattern Customizer instead of auto-fetching mockups.
@@ -3620,10 +3854,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       return;
     }
 
-    if (
-      (productTypeConfig.onTheFlyTier === "flat" || productTypeConfig.onTheFlyTier === "mesh") &&
-      productTypeConfig.flatCalibration
-    ) {
+    if (usesFlatOnTheFlyPreview) {
       setFlatPlacerEditOpen(true);
       return;
     }
@@ -3643,11 +3874,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // Mark mockups as stale when transform changes and mockups already exist
   useEffect(() => {
     if (!printifyTransformEligible) return;
-    if (
-      (productTypeConfig?.onTheFlyTier === "flat" ||
-        productTypeConfig?.onTheFlyTier === "mesh") &&
-      productTypeConfig?.flatCalibration
-    ) {
+    if (usesFlatOnTheFlyPreview) {
       return;
     }
     if (suppressMockupStaleRef.current) {
@@ -3678,11 +3905,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   // When frame color changes, swap mockups from the per-color cache or auto-refetch
   useEffect(() => {
-    if (
-      (productTypeConfig?.onTheFlyTier === "flat" ||
-        productTypeConfig?.onTheFlyTier === "mesh") &&
-      productTypeConfig?.flatCalibration
-    ) {
+    if (usesFlatOnTheFlyPreview) {
       return;
     }
 
@@ -3726,11 +3949,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   // When size changes, swap mockups from size+color cache or mark stale / refetch
   useEffect(() => {
-    if (
-      (productTypeConfig?.onTheFlyTier === "flat" ||
-        productTypeConfig?.onTheFlyTier === "mesh") &&
-      productTypeConfig?.flatCalibration
-    ) {
+    if (usesFlatOnTheFlyPreview) {
       return;
     }
 
@@ -3887,27 +4106,29 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   /** Color-accurate garment photo from Shopify variant catalog (falls back to catalog placeholder). */
   const colorAwareBlankUrl = useMemo(() => {
-    if (productTypeConfig?.designerType !== "apparel" || !selectedSize) return null;
     const catalog = shopifyVariants.length > 0 ? shopifyVariants : variants;
-    if (catalog.length === 0) return null;
+    if (catalog.length === 0 || !selectedSize) return null;
     const sizeName = printSizes.find((s) => s.id === selectedSize)?.name ?? selectedSize;
     const frameName =
       frameColorObjects.find((f) => f.id === selectedFrameColor)?.name ?? selectedFrameColor ?? "";
+    const needsColorForVariantMatch =
+      showFrameColorSelector || frameOptionsRedundantWithSizes;
     return resolveVariantImageForSelection(
       catalog,
       sizeName,
       frameName,
-      frameColorObjects.length > 0,
+      needsColorForVariantMatch,
       selectedFrameColor || undefined,
     );
   }, [
-    productTypeConfig?.designerType,
     selectedSize,
     selectedFrameColor,
     shopifyVariants,
     variants,
     printSizes,
     frameColorObjects,
+    showFrameColorSelector,
+    frameOptionsRedundantWithSizes,
   ]);
 
   const getPreferredMockupUrl = useCallback((opts?: { cartSafeOnly?: boolean }): string => {
@@ -3992,9 +4213,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
 
     const flatOnTheFlyEligible = !!(
-      (productTypeConfig?.onTheFlyTier === "flat" ||
-        productTypeConfig?.onTheFlyTier === "mesh") &&
-      productTypeConfig?.flatCalibration &&
+      usesFlatOnTheFlyPreview &&
       generatedDesign?.imageUrl &&
       !flatRenderFailed
     );
@@ -4006,14 +4225,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       properties['_mockup_url'] = mockupFullUrl;
     }
     if (selectedSize) properties['Size'] = selectedSize;
-    if (frameColorObjects.length > 0 && selectedFrameColor) {
+    if (showFrameColorSelector && selectedFrameColor) {
       properties['Color'] = selectedFrameColor;
     }
 
     const flatPlacerOn = !!(
-      (productTypeConfig?.onTheFlyTier === "flat" ||
-        productTypeConfig?.onTheFlyTier === "mesh") &&
-      productTypeConfig?.flatCalibration &&
+      usesFlatOnTheFlyPreview &&
       generatedDesign?.imageUrl &&
       !flatRenderFailed &&
       flatPlacerEditOpen
@@ -4361,10 +4578,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           setAopPendingMotifUrl(toAbsoluteImageUrl(imageUrl));
           setAopPatternUrl(null);
           setShowPatternStep(true);
-        } else if (
-          (productTypeConfig?.onTheFlyTier === "flat" || productTypeConfig?.onTheFlyTier === "mesh") &&
-          productTypeConfig?.flatCalibration
-        ) {
+        } else if (usesFlatOnTheFlyPreview) {
           setFlatPlacerEditOpen(true);
         } else {
           console.log('[Mockups] Triggering mockup generation');
@@ -4594,7 +4808,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         sessionToken: (isShopify && !isStorefront) ? sessionToken || undefined : undefined,
         productTypeId: productTypeConfig?.id ? String(productTypeConfig.id) : productTypeId,
         sessionId: isStorefront ? anonSessionId : undefined,
-        customerId: storefrontCustomerId || undefined,
+        // merchant-studio omits customerId so billing stays in "merchant" mode (shop plan
+        // quota) instead of the 10-free-generation customer bucket. The job is still linked
+        // to the merchant's identity afterward via the auto-save-on-success save-design call
+        // (see saveCustomerId fallback to storefrontCustomerId below).
+        customerId: isMerchantStudio ? undefined : (storefrontCustomerId || undefined),
       });
       scrollArtworkIntoViewOnMobile(50);
     } catch (err: any) {
@@ -4724,10 +4942,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           setAopPendingMotifUrl(toAbsoluteImageUrl(importedImageUrl));
           setAopPatternUrl(null);
           setShowPatternStep(true);
-        } else if (
-          (productTypeConfig.onTheFlyTier === "flat" || productTypeConfig.onTheFlyTier === "mesh") &&
-          productTypeConfig.flatCalibration
-        ) {
+        } else if (usesFlatOnTheFlyPreview) {
           setFlatPlacerEditOpen(true);
         } else {
           fetchPrintifyMockups(toAbsoluteImageUrl(importedImageUrl), productTypeConfig.id, selectedSize, selectedFrameColor || 'default', zoomDefault, 50, 50);
@@ -4791,7 +5006,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       return;
     }
 
-    const needsColorOptions = (productTypeConfig?.frameColors?.length ?? 0) > 0;
+    const needsColorOptions = showFrameColorSelector;
     const catalogUsable =
       variantCatalogIsUsable(shopifyVariants.length > 0 ? shopifyVariants : variants, needsColorOptions);
     if (variantsLoadedKeyRef.current === fetchKey && catalogUsable) {
@@ -4853,7 +5068,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const findVariantId = (): string | null => {
     if (!isShopify && !isStorefront) return null;
 
-    const hasColors = frameColorObjects.length > 0;
+    const hasColors = showFrameColorSelector;
     const sizeName = printSizes.find(s => s.id === selectedSize)?.name ?? selectedSize ?? "";
     const frameName =
       frameColorObjects.find(f => f.id === selectedFrameColor)?.name ?? selectedFrameColor ?? "";
@@ -5050,9 +5265,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (isAddingToCart) return; // double-click guard
 
     const flatEditorOpen = !!(
-      (productTypeConfig?.onTheFlyTier === "flat" ||
-        productTypeConfig?.onTheFlyTier === "mesh") &&
-      productTypeConfig?.flatCalibration &&
+      usesFlatOnTheFlyPreview &&
       generatedDesign?.imageUrl &&
       !flatRenderFailed &&
       flatPlacerEditOpen
@@ -5068,9 +5281,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
     if (mockupsStale) {
       const flatOnTheFly = !!(
-        (productTypeConfig?.onTheFlyTier === "flat" ||
-          productTypeConfig?.onTheFlyTier === "mesh") &&
-        productTypeConfig?.flatCalibration &&
+        usesFlatOnTheFlyPreview &&
         generatedDesign?.imageUrl &&
         !flatRenderFailed
       );
@@ -5083,7 +5294,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     const variantId = findVariantId();
 
     if (!variantId) {
-      const hasColors = frameColorObjects.length > 0;
+      const hasColors = showFrameColorSelector;
       const errorMsg = hasColors
         ? "Unable to find matching product variant. Please select a valid size and color combination."
         : "Unable to find matching product variant. Please select a valid size.";
@@ -5104,12 +5315,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     // re-run handleAddToCart once mockups are ready via the atcWaitingForMockups path.
     const hasMockupProduct = !!(productTypeConfig?.hasPrintifyMockups);
     const hasMockups = printifyMockups.length > 0 || printifyMockupImages.length > 0;
-    const flatOnTheFlyCart = !!(
-      (productTypeConfig?.onTheFlyTier === "flat" ||
-        productTypeConfig?.onTheFlyTier === "mesh") &&
-      productTypeConfig?.flatCalibration &&
-      !flatRenderFailed
-    );
+    const flatOnTheFlyCart = !!(usesFlatOnTheFlyPreview && !flatRenderFailed);
     if (
       hasMockupProduct &&
       !hasMockups &&
@@ -5214,7 +5420,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       properties['_mockup_url'] = mockupFullUrl;
     }
     if (selectedSize) properties['Size'] = selectedSize;
-    if (frameColorObjects.length > 0 && selectedFrameColor) {
+    if (showFrameColorSelector && selectedFrameColor) {
       properties['Color'] = selectedFrameColor;
     }
 
@@ -5847,6 +6053,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         if (Array.isArray(event.data.stylePresets)) {
           setStylePresets(event.data.stylePresets);
         }
+        if (event.data.styleConfig !== undefined) {
+          setPageStyleConfig(parseCustomizerPageStyleConfig(event.data.styleConfig));
+        }
         setConfigLoading(false);
       }
 
@@ -5948,7 +6157,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           const safePrimaryFg = ensureContrastingForeground(btnBgHSL, btnFgHSL);
           if (safePrimaryFg) root.setProperty('--primary-foreground', safePrimaryFg);
         } else if (btnFgHSL) {
-          root.setProperty('--primary-foreground', btnFgHSL);
+          // btn bg missing but fg extracted — still guard against default dark primary.
+          const safePrimaryFg = ensureContrastingForeground('0 0% 9%', btnFgHSL);
+          if (safePrimaryFg) root.setProperty('--primary-foreground', safePrimaryFg);
         }
         if (t.buttonRadius) {
           // Shopify buttons may have e.g. "4px" or "24px"; map to --radius
@@ -6009,6 +6220,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         const accentHSL = cssColorToHSL(t.accentColor);
         if (accentHSL) {
           root.setProperty('--accent', accentHSL);
+          const safeAccentFg = ensureContrastingForeground(accentHSL, fgHSL);
+          if (safeAccentFg) root.setProperty('--accent-foreground', safeAccentFg);
         }
 
         // -- Derived secondary/muted colors from background --
@@ -6018,8 +6231,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           root.setProperty('--secondary-border', adjustHSLLightness(bgHSL, -14));
           // Muted is a subtle mid-tone
           root.setProperty('--muted', adjustHSLLightness(bgHSL, -8));
-          // Card backgrounds
-          root.setProperty('--popover', adjustHSLLightness(bgHSL, -3));
+          // Dropdown surfaces — must set foreground too or Radix Select items
+          // inherit default dark text on a dark extracted popover (black-on-black).
+          const popoverHSL = adjustHSLLightness(bgHSL, -3);
+          root.setProperty('--popover', popoverHSL);
+          const safePopoverFg = ensureContrastingForeground(popoverHSL, fgHSL);
+          if (safePopoverFg) root.setProperty('--popover-foreground', safePopoverFg);
         }
         if (fgHSL) {
           // Muted foreground is a lighter version of the text color, but still
@@ -6595,9 +6812,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const selectedFrameColorConfig = frameColorObjects.find((f) => f.id === selectedFrameColor) || null;
 
   const flatPlacerEligible = !!(
-    (productTypeConfig?.onTheFlyTier === "flat" ||
-      productTypeConfig?.onTheFlyTier === "mesh") &&
-    productTypeConfig?.flatCalibration &&
+    usesFlatOnTheFlyPreview &&
     generatedDesign?.imageUrl &&
     !flatRenderFailed
   );
@@ -6607,7 +6822,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flatPlacerActive && flatApplyStatus === "saving"
   );
 
-  const flatMockupBlankKey = `${flatBlankColorId}::${selectedSize ?? ""}::pc10`;
+  const flatMockupBlankKey = `${flatBlankColorId}::${selectedSize ?? ""}::${flatFabricWeave ? "weave" : "plain"}`;
 
   // Force mockup re-raster when the harvested blank key changes (shirt colour swap).
   useEffect(() => {
@@ -6641,6 +6856,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               flatPlacerState?.enabled?.back ??
               (printPlacement === "back" || printPlacement === "both"),
           },
+          linkSides: flatPlacerState?.linkSides ?? true,
           artworkUrl,
         };
         const views = flatViewsForColor(manifest, flatBlankColorId);
@@ -6658,6 +6874,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             stateForRender,
             view,
             artworkUrl,
+            { decorMode: flatDecorMode, fabricWeave: flatFabricWeave },
           );
           if (cancelled || !dataUrl) continue;
           let hostedUrl = dataUrl;
@@ -6703,6 +6920,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flatMockupBlankKey,
     selectedSize,
     printPlacement,
+    flatDecorMode,
+    flatFabricWeave,
     persistFlatMockupsForGallery,
   ]);
 
@@ -6717,7 +6936,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     const priceMap: Record<string, number> = {};
     if (!shopifyVariants || shopifyVariants.length === 0) return priceMap;
 
-    const hasColors = frameColorObjects.length > 0;
+    const hasColors = showFrameColorSelector;
     const frameName =
       frameColorObjects.find((f) => f.id === selectedFrameColor)?.name ??
       selectedFrameColor ??
@@ -6752,7 +6971,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
 
     return priceMap;
-  }, [shopifyVariants, printSizes, frameColorObjects, selectedFrameColor])
+  }, [shopifyVariants, printSizes, frameColorObjects, selectedFrameColor, showFrameColorSelector])
 
   // Auto-resolve the Shopify variant that matches the currently selected size + frame color.
   // Runs whenever size, frame color, or the variants list changes.
@@ -6767,7 +6986,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       shopifyVariants,
       sizeName,
       frameName,
-      frameColorObjects.length > 0,
+      showFrameColorSelector,
       selectedFrameColor || undefined,
     );
 
@@ -6980,13 +7199,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   );
   const atcFlatOnTheFly = flatPlacerEligible;
   const atcMockupsStaleBlocks = mockupsStale && !atcFlatOnTheFly;
-  const galleryMockupCount =
-    printifyMockupImages.length > 0 ? printifyMockupImages.length : printifyMockups.length;
   const showingMockupAtArtworkSlot = !!(
-    isStorefront &&
+    (isShopify || isStorefront) &&
+    generatedDesign?.imageUrl &&
     selectedMockupIndex === 0 &&
-    galleryMockupCount === 0 &&
-    getPreferredMockupUrl()
+    resolvePostGenMockupUrl(0, postGenGalleryItems, getPreferredMockupUrl())
   );
   const canShowDragHint = !!(
     printifyTransformEligible &&
@@ -7000,7 +7217,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
     return (
       <div className={`flex-1 min-w-0 ${className}`}>
-        {(isShopify || isStorefront) && generatedDesign ? (
+        {(isShopify || isStorefront) && !isMerchantStudio && generatedDesign ? (
           addedToCart ? (
             <Button
               className="w-full h-11 text-base font-medium bg-green-600 hover:bg-green-700 text-white"
@@ -7865,7 +8082,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               <div className="flex flex-col sm:flex-row gap-2">
                 {/* Primary action button — left, wider: Generate OR Add to Cart */}
                 <div className="hidden md:block flex-1 min-w-0">
-                  {(isShopify || isStorefront) && generatedDesign ? (
+                  {(isShopify || isStorefront) && !isMerchantStudio && generatedDesign ? (
                     /* ── Add to Cart state ── */
                     addedToCart ? (
                       <Button
@@ -8162,12 +8379,36 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       sizes={printSizes}
                       selectedSize={selectedSize}
                       onSizeChange={(sizeId) => {
+                        const prevSize = printSizes.find((s) => s.id === selectedSize);
+                        const nextSize = printSizes.find((s) => s.id === sizeId);
+                        if (
+                          generatedDesign?.imageUrl &&
+                          prevSize &&
+                          nextSize &&
+                          prevSize.id !== nextSize.id
+                        ) {
+                          const prevAr = resolveSizeAspectRatio(
+                            prevSize,
+                            productTypeConfig?.aspectRatio,
+                          );
+                          const nextAr = resolveSizeAspectRatio(
+                            nextSize,
+                            productTypeConfig?.aspectRatio,
+                          );
+                          if (prevAr !== nextAr) {
+                            toast({
+                              title: "Size proportions changed",
+                              description:
+                                "Generate new artwork so it matches this size's aspect ratio.",
+                            });
+                          }
+                        }
                         setSelectedSize(sizeId);
-                        const flatOnTheFly = !!(
-                          (productTypeConfig?.onTheFlyTier === "flat" ||
-                            productTypeConfig?.onTheFlyTier === "mesh") &&
-                          productTypeConfig?.flatCalibration
-                        );
+                        if (frameOptionsRedundantWithSizes) {
+                          const matched = resolveFrameColorForSize(nextSize, frameColorObjects);
+                          if (matched) setSelectedFrameColor(matched);
+                        }
+                        const flatOnTheFly = usesFlatOnTheFlyPreview;
                         if (!flatOnTheFly) {
                           setTransform({ scale: defaultZoom, x: 50, y: 50 });
                         }
@@ -8180,10 +8421,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   </div>
                 )}
 
-                {(frameColorObjects.length > 0 || supportsPrintPlacementSelection) && (
+                {(showFrameColorSelector || supportsPrintPlacementSelection) && (
                   <div className={showPresetsParam && filteredStylePresets.length > 0 && printSizes.length > 0 ? "sm:col-span-2" : ""}>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {frameColorObjects.length > 0 && (
+                      {showFrameColorSelector && (
                         <FrameColorSelector
                           frameColors={frameColorObjects}
                           selectedFrameColor={selectedFrameColor}
@@ -8206,11 +8447,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                               if (!generatedDesign?.imageUrl || !productTypeConfig || !selectedSize || useAopCustomizer) {
                                 return;
                               }
-                              const flatOnTheFly = !!(
-                                (productTypeConfig.onTheFlyTier === "flat" ||
-                                  productTypeConfig.onTheFlyTier === "mesh") &&
-                                productTypeConfig.flatCalibration
-                              );
+                              const flatOnTheFly = usesFlatOnTheFlyPreview;
                               if (flatOnTheFly) {
                                 setFlatPlacerState((prev) => ({
                                   view: prev?.view ?? "front",
@@ -8675,6 +8912,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   onAssetsFailed={handleFlatAssetsFailed}
                   edgeWrapMode={flatEdgeWrapMode}
                   decorMode={flatDecorMode}
+                  fabricWeave={flatFabricWeave}
+                  landscapeOrientation={flatLandscapeOrientation}
+                  blankUrlOverride={orientationBlankOverride}
                   skipInitialAutoApply={!!flatPlacerState}
                 />
               </div>
@@ -8692,6 +8932,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   // For product types with dimensional sizes (width/height > 0), use those
                   if (selectedSizeConfig && selectedSizeConfig.width > 0 && selectedSizeConfig.height > 0) {
                     return `${selectedSizeConfig.width}/${selectedSizeConfig.height}`;
+                  }
+                  if (selectedSizeConfig?.aspectRatio) {
+                    return selectedSizeConfig.aspectRatio.replace(":", "/");
                   }
                   // Square / double-sided pillows: DB aspectRatio is often 2:1 (both faces)
                   // but each printable face is 1:1 — keep the placeholder square before size pick.
@@ -8747,23 +8990,20 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     : (isGeneratingMockups || isAopReapplying) ? "mockups"
                     : null;
 
-                  // Resolve which mockup URL to show based on gallery selection.
-                  // selectedMockupIndex 0 = raw artwork; 1+ = mockup at that index.
-                  const galleryMockups: string[] =
-                    printifyMockupImages.length > 0
-                      ? printifyMockupImages.map(img => img.url)
-                      : printifyMockups;
-                  const selectedMockupUrl =
-                    isStorefront && selectedMockupIndex > 0 && galleryMockups.length >= selectedMockupIndex
-                      ? galleryMockups[selectedMockupIndex - 1]
-                      : isStorefront && selectedMockupIndex === 0 && galleryMockups.length === 0
-                        ? (getPreferredMockupUrl() || null)
-                        : null;
+                  // Unified post-gen gallery: artwork + Printify mockups + merchant catalog extras.
+                  const selectedPreviewMockupUrl =
+                    (isShopify || isStorefront) && generatedDesign?.imageUrl
+                      ? resolvePostGenMockupUrl(
+                          selectedMockupIndex,
+                          postGenGalleryItems,
+                          getPreferredMockupUrl(),
+                        )
+                      : null;
 
                   return (
                     <ProductMockup
                       imageUrl={generatedDesign?.imageUrl}
-                      mockupUrl={selectedMockupUrl}
+                      mockupUrl={selectedPreviewMockupUrl}
                       isLoading={isGeneratingArtwork || isGeneratingMockups || isAopReapplying || isLoadingSaved}
                       loadingStage={loadingStage}
                       // Paint the gallery's mockup instantly while a saved
@@ -8775,17 +9015,37 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       selectedFrameColor={selectedFrameColorConfig}
                       transform={transform}
                       onTransformChange={setTransform}
-                      enableDrag={!!generatedDesign?.imageUrl && selectedMockupIndex === 0 && printifyTransformEligible}
+                      enableDrag={
+                        !!generatedDesign?.imageUrl &&
+                        selectedMockupIndex === 0 &&
+                        !selectedPreviewMockupUrl &&
+                        printifyTransformEligible
+                      }
                       designerType={productTypeConfig?.designerType || "generic"}
                       printShape={productTypeConfig?.printShape || "rectangle"}
                       canvasConfig={productTypeConfig?.canvasConfig}
-                      blankImageUrl={
-                        colorAwareBlankUrl ||
-                        catalogPreviewImages[catalogPreviewIndex] ||
-                        catalogPreviewImages[0] ||
-                        null
+                      blankImageUrl={(() => {
+                        // Catalog carousel (Primary / View 2 / …) must win while
+                        // browsing placeholders — size-accurate blanks otherwise
+                        // pin every slide to the same flat/Shopify photo.
+                        const browsingCatalog =
+                          !generatedDesign?.imageUrl && catalogPreviewImages.length > 1;
+                        if (browsingCatalog && catalogPreviewIndex > 0) {
+                          return catalogPreviewImages[catalogPreviewIndex] || null;
+                        }
+                        return (
+                          orientationBlankOverride ||
+                          flatCalibrationBlankUrl ||
+                          colorAwareBlankUrl ||
+                          catalogPreviewImages[catalogPreviewIndex] ||
+                          catalogPreviewImages[0] ||
+                          null
+                        );
+                      })()}
+                      aspectRatio={
+                        selectedSizeConfig?.aspectRatio ||
+                        productTypeConfig?.aspectRatio
                       }
-                      aspectRatio={productTypeConfig?.aspectRatio}
                       mockupFit={flatEdgeWrapMode ? "contain" : "cover"}
                     />
                   );
@@ -8820,34 +9080,33 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 </>
               )}
 
-              {/* Left/right arrow navigation — only when mockups are available */}
-              {isStorefront && generatedDesign?.imageUrl && (() => {
-                const galleryMockupCount = printifyMockupImages.length > 0
-                  ? printifyMockupImages.slice(0, 3).length
-                  : printifyMockups.slice(0, 3).length;
-                const totalItems = 1 + galleryMockupCount;
-                if (totalItems <= 1) return null;
-                return (
-                  <>
-                    <button
-                      type="button"
-                      aria-label="Previous"
-                      onClick={() => setSelectedMockupIndex(i => (i - 1 + totalItems) % totalItems)}
-                      className="absolute left-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
-                    >
-                      <ChevronLeft className="w-5 h-5" />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Next"
-                      onClick={() => setSelectedMockupIndex(i => (i + 1) % totalItems)}
-                      className="absolute right-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
-                    >
-                      <ChevronRight className="w-5 h-5" />
-                    </button>
-                  </>
-                );
-              })()}
+              {/* Left/right arrow navigation — after artwork exists */}
+              {(isShopify || isStorefront) && generatedDesign?.imageUrl && postGenGalleryItems.length > 1 && (
+                <>
+                  <button
+                    type="button"
+                    aria-label="Previous"
+                    onClick={() =>
+                      setSelectedMockupIndex(
+                        (i) => (i - 1 + postGenGalleryItems.length) % postGenGalleryItems.length,
+                      )
+                    }
+                    className="absolute left-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
+                  >
+                    <ChevronLeft className="w-5 h-5" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Next"
+                    onClick={() =>
+                      setSelectedMockupIndex((i) => (i + 1) % postGenGalleryItems.length)
+                    }
+                    className="absolute right-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
+                  >
+                    <ChevronRight className="w-5 h-5" />
+                  </button>
+                </>
+              )}
 
               {/* Stale mockups overlay */}
               {atcHasMockups && atcMockupsStaleBlocks && !mockupLoading && generatedDesign?.imageUrl && (
@@ -8891,47 +9150,37 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               </div>
             )}
 
-            {/* Carousel indicators with labels — directly under image */}
-            {(isShopify || isStorefront) && productTypeConfig?.hasPrintifyMockups && generatedDesign?.imageUrl && (() => {
-              const galleryMockups: Array<{ url: string; label: string }> =
-                printifyMockupImages.length > 0
-                  ? printifyMockupImages
-                  : printifyMockups.map((url, i) => ({ url, label: i === 0 ? "Front" : i === 1 ? "Back" : `View ${i + 1}` }));
-              const hasMockups = galleryMockups.length > 0;
-              if (!hasMockups) return null;
-              const totalItems = 1 + galleryMockups.slice(0, 3).length;
-              const getLabel = (idx: number) => {
-                if (idx === 0) return "Artwork";
-                const raw = (galleryMockups[idx - 1]?.label || "").toLowerCase();
-                if (raw === "front" || raw === "mockup 1") return "Front";
-                if (raw === "back" || raw === "mockup 2") return "Back";
-                return galleryMockups[idx - 1]?.label || `View ${idx}`;
-              };
-              return (
-                <div className="flex justify-center gap-3 mt-1">
-                  {Array.from({ length: totalItems }).map((_, idx) => (
-                    <button
-                      key={idx}
-                      type="button"
-                      onClick={() => setSelectedMockupIndex(idx)}
-                      aria-label={getLabel(idx)}
-                      className={`flex flex-col items-center gap-0.5 transition-all duration-200 ${
-                        selectedMockupIndex === idx ? "opacity-100" : "opacity-40 hover:opacity-70"
-                      }`}
-                    >
-                      <span className={`rounded-full transition-all duration-200 ${
+            {/* Post-generation carousel indicators — artwork, mockups, merchant gallery */}
+            {(isShopify || isStorefront) && generatedDesign?.imageUrl && postGenGalleryItems.length > 1 && (
+              <div className="flex justify-center gap-3 mt-1">
+                {postGenGalleryItems.map((item, idx) => (
+                  <button
+                    key={`${item.kind}-${idx}`}
+                    type="button"
+                    onClick={() => setSelectedMockupIndex(idx)}
+                    aria-label={item.label}
+                    className={`flex flex-col items-center gap-0.5 transition-all duration-200 ${
+                      selectedMockupIndex === idx ? "opacity-100" : "opacity-40 hover:opacity-70"
+                    }`}
+                  >
+                    <span
+                      className={`rounded-full transition-all duration-200 ${
                         selectedMockupIndex === idx
                           ? "w-4 h-2 bg-foreground"
                           : "w-2 h-2 bg-foreground/60"
-                      }`} />
-                      <span className={`text-[10px] leading-tight font-medium ${
+                      }`}
+                    />
+                    <span
+                      className={`text-[10px] leading-tight font-medium ${
                         selectedMockupIndex === idx ? "text-foreground" : "text-muted-foreground"
-                      }`}>{getLabel(idx)}</span>
-                    </button>
-                  ))}
-                </div>
-              );
-            })()}
+                      }`}
+                    >
+                      {item.label}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
 
             {generatedDesign?.imageUrl && !useAopCustomizer && !flatPlacerEligible && (
               <ZoomControls
@@ -9060,8 +9309,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               </div>
             )}
 
-            {/* AOP-only bottom bar: Edit Pattern + Share — hidden while pattern overlay is open (same actions live under Apply). */}
-            {generatedDesign?.imageUrl && useAopCustomizer && !showPatternStep && (
+            {/* AOP-only bottom bar: Edit Pattern + Share — hidden while pattern overlay is open (same actions live under Apply).
+                Mutually exclusive with flat placer — never show both editor entry points. */}
+            {generatedDesign?.imageUrl && useAopCustomizer && !flatPlacerEligible && !showPatternStep && (
               <div className="flex items-center justify-between pt-2 border-t gap-2">
                 <Button
                   variant="outline"
