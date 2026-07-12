@@ -126,10 +126,11 @@ export default function DesignsPage() {
     },
     onSuccess: (data) => {
       toast({
-        title: data?.status === "inactive" ? "Saved as a draft product" : "Design listed as a product",
-        description: data?.status === "inactive"
-          ? `You're at your plan's active product design limit — activate it from Shopify or upgrade your plan.`
-          : (data?.shopifyAdminUrl ? "Open it in Shopify to review before it goes live." : undefined),
+        title: "Created as a draft — review it in Shopify",
+        description: [
+          data?.printifyWarning ? `Printify: ${data.printifyWarning}` : null,
+          "Check the title, description, and images, then activate it here when you're ready to sell it.",
+        ].filter(Boolean).join(" "),
       });
       queryClient.invalidateQueries({ queryKey: ["/api/appai/design-products"] });
     },

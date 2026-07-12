@@ -144,17 +144,30 @@ const PROMPT_MAX_LENGTH = 900;
  * For apparel: strips the verbose block and prepends a compact chroma-key constraint.
  * For non-apparel (wall art / decor): strips and prepends a compact full-bleed constraint.
  */
+/**
+ * Remove every verbose requirements block a route handler may have injected,
+ * regardless of which product path built the prompt. Leaving any of them in
+ * blows past PROMPT_MAX_LENGTH and the hard truncate then chops off the user's
+ * description at the end (symptom: generations follow only the style, ignoring
+ * what the user typed).
+ */
+function stripVerboseRequirementBlocks(raw: string): string {
+  return raw
+    .replace(
+      /\n*MANDATORY IMAGE REQUIREMENTS FOR (?:ALL-OVER PRINT \(AOP\)|APPAREL PRINTING)[\s\S]*?(?==== ARTWORK DESCRIPTION|$)/,
+      ""
+    )
+    .replace(/=== CRITICAL CANVAS REQUIREMENTS[\s\S]*?(?==== ARTWORK DESCRIPTION|=== IMAGE CONTENT|$)/, "")
+    .replace(/=== IMAGE CONTENT REQUIREMENTS ===[\s\S]*?(?=\n\n|=== ARTWORK DESCRIPTION|$)/g, "")
+    .replace(/=== ARTWORK DESCRIPTION ===\s*/g, "")
+    .trim();
+}
+
 function compressPrompt(raw: string, isApparel: boolean, isAllOverPrint?: boolean): string {
   let compressed: string;
 
   if (isApparel && isAllOverPrint) {
-    // Strip the verbose AOP sizing block
-    compressed = raw.replace(
-      /\n*MANDATORY IMAGE REQUIREMENTS FOR ALL-OVER PRINT \(AOP\)[\s\S]*?(?==== ARTWORK DESCRIPTION|$)/,
-      ""
-    );
-    compressed = compressed.replace(/=== ARTWORK DESCRIPTION ===\s*/g, "");
-    compressed = compressed.trim();
+    compressed = stripVerboseRequirementBlocks(raw);
 
     // Compact AOP constraint: isolated motif on a chroma-key background so the
     // server can reliably remove it before building AOP mockup tiles.
@@ -167,13 +180,7 @@ function compressPrompt(raw: string, isApparel: boolean, isAllOverPrint?: boolea
       "Do NOT add any text, words, slogans, or labels unless the user explicitly requested them. ";
     compressed = shortAopConstraints + compressed;
   } else if (isApparel) {
-    // Strip the verbose apparel sizing block
-    compressed = raw.replace(
-      /\n*MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING[\s\S]*?(?==== ARTWORK DESCRIPTION|$)/,
-      ""
-    );
-    compressed = compressed.replace(/=== ARTWORK DESCRIPTION ===\s*/g, "");
-    compressed = compressed.trim();
+    compressed = stripVerboseRequirementBlocks(raw);
 
     // Compact apparel constraint with chroma key background + no-added-text rule
     const shortApparelConstraints =
@@ -185,13 +192,7 @@ function compressPrompt(raw: string, isApparel: boolean, isAllOverPrint?: boolea
       "Do NOT add any text, words, slogans, or labels unless the user explicitly requested them. ";
     compressed = shortApparelConstraints + compressed;
   } else {
-    compressed = raw.replace(
-      /=== CRITICAL CANVAS REQUIREMENTS[\s\S]*?(?==== ARTWORK DESCRIPTION|=== IMAGE CONTENT|$)/,
-      ""
-    );
-    compressed = compressed.replace(/=== ARTWORK DESCRIPTION ===\s*/g, "");
-    compressed = compressed.replace(/=== IMAGE CONTENT REQUIREMENTS ===[\s\S]*?(?=\n\n|$)/g, "");
-    compressed = compressed.trim();
+    compressed = stripVerboseRequirementBlocks(raw);
 
     const shortConstraints =
       "Full-bleed, edge-to-edge, no borders, no blank margins. " +
