@@ -435,7 +435,7 @@ export async function resolveDesignForOrderLine(
         return {
           ok: false,
           skip: true,
-          reason: `AOP design ${designId} has no saved print panels (open it in the designer and apply the pattern once)`,
+          reason: `AOP design ${designId} has no saved print panels yet — they upload in the background a few seconds after each change. Wait a moment and try again (or re-apply the design once).`,
         };
       }
       if (!productType.merchantId) {

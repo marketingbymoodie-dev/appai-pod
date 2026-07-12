@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -7,10 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { FlaskConical, Package } from "lucide-react";
+import { FlaskConical, Loader2, Package } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
-import EmbedDesign from "@/pages/embed-design";
+import EmbedDesign, { type TesterDesignStatus } from "@/pages/embed-design";
 import type { ProductType } from "@shared/schema";
+
+/** How long the Send button will wait for an in-flight print-panel upload before ordering anyway. */
+const PANEL_SAVE_WAIT_MS = 90_000;
 
 export default function AdminCreateProduct() {
   const { toast } = useToast();
@@ -25,12 +28,33 @@ export default function AdminCreateProduct() {
     queryKey: ["/api/product-types"],
   });
 
-  // Send a DRAFT test order to Printify — bakes/collects the print file for the
-  // latest design on this product type so you can verify, in Printify, that it
-  // matches the mockup shown here. Never sent to production, never charges.
+  // Live status of the design on screen, reported by the embedded customizer:
+  // which generation job it is + whether its AOP print panels are still uploading.
+  // Ref (not state) — updates arrive mid-edit and shouldn't rerender the page.
+  const testerStatusRef = useRef<TesterDesignStatus>({ jobId: null, aopPanels: "none" });
+  const handleTesterDesignStatus = useCallback((status: TesterDesignStatus) => {
+    testerStatusRef.current = status;
+  }, []);
+
+  // Send a DRAFT test order to Printify — targets the design currently on screen
+  // (falls back to the latest saved design when nothing was generated this session).
+  // Waits for an in-flight print-panel upload so the order matches what's on screen.
+  // Never sent to production, never charges.
   const testOrderMutation = useMutation({
     mutationFn: async (id: number) => {
-      const response = await apiRequest("POST", `/api/admin/product-types/${id}/test-printify-order`);
+      const waitStart = Date.now();
+      while (
+        testerStatusRef.current.aopPanels === "saving" &&
+        Date.now() - waitStart < PANEL_SAVE_WAIT_MS
+      ) {
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      const jobId = testerStatusRef.current.jobId;
+      const response = await apiRequest(
+        "POST",
+        `/api/admin/product-types/${id}/test-printify-order`,
+        jobId ? { designId: jobId } : undefined,
+      );
       return response.json();
     },
     onSuccess: (data) => {
@@ -71,8 +95,12 @@ export default function AdminCreateProduct() {
                 disabled={testOrderMutation.isPending}
                 data-testid="button-send-test-order"
               >
-                <FlaskConical className={`h-4 w-4 mr-2 ${testOrderMutation.isPending ? "animate-pulse" : ""}`} />
-                Send a Test Order to Printify
+                {testOrderMutation.isPending ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <FlaskConical className="h-4 w-4 mr-2" />
+                )}
+                {testOrderMutation.isPending ? "Sending Test Order…" : "Send a Test Order to Printify"}
               </Button>
             </div>
           )}
@@ -86,7 +114,12 @@ export default function AdminCreateProduct() {
           ) : (
             <Select
               value={selectedProductTypeId?.toString() || ""}
-              onValueChange={(v) => setSelectedProductTypeId(parseInt(v))}
+              onValueChange={(v) => {
+                // Switching products remounts the customizer — the previous design's
+                // job id no longer describes what's on screen.
+                testerStatusRef.current = { jobId: null, aopPanels: "none" };
+                setSelectedProductTypeId(parseInt(v));
+              }}
             >
               <SelectTrigger data-testid="select-product-type">
                 <SelectValue placeholder="Select a product type" />
@@ -113,7 +146,11 @@ export default function AdminCreateProduct() {
             <CardContent className="p-0">
               <EmbedDesign
                 key={selectedProductTypeId}
-                embeddedContext={{ mode: "admin-tester", productTypeId: selectedProductTypeId }}
+                embeddedContext={{
+                  mode: "admin-tester",
+                  productTypeId: selectedProductTypeId,
+                  onTesterDesignStatus: handleTesterDesignStatus,
+                }}
               />
             </CardContent>
           </Card>

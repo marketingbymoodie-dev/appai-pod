@@ -978,11 +978,28 @@ function ProductInfoSections({
  *      /api/mockup/generate authenticate. A nested iframe has no App Bridge → 401.
  * When omitted (storefront, /s/designer, standalone) the component behaves exactly as before.
  */
+/** Fulfillment-panel capture status reported to the admin tester host page. */
+export type TesterDesignStatus = {
+  /** Generation job id of the design currently on screen (null before first generation). */
+  jobId: string | null;
+  /**
+   * AOP print-panel persistence for that job:
+   *   none   — no capture started yet (or non-AOP product)
+   *   saving — a capture is uploading; a test order sent now would miss it
+   *   saved  — latest apply's panels are on the job
+   *   error  — the latest capture failed (check console)
+   */
+  aopPanels: 'none' | 'saving' | 'saved' | 'error';
+};
+
 export interface EmbedDesignProps {
   embeddedContext?:
     | {
         mode: 'admin-tester';
         productTypeId: string | number;
+        /** Fired whenever the on-screen design's job id or panel-capture status changes,
+         *  so the tester page can target test orders at the design on screen. */
+        onTesterDesignStatus?: (status: TesterDesignStatus) => void;
       }
     | {
         mode: 'merchant-studio';
@@ -1907,6 +1924,21 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // admin-tester has no shop URL param — the admin generate endpoint returns the job's
   // shop so applied AOP panels can be persisted for "Send a Test Order to Printify".
   const savedJobShopRef = useRef<string | null>(null);
+  // Monotonic sequence for AOP print-panel captures. Each apply bumps it; a capture
+  // whose sequence is no longer current aborts before writing, so a slow earlier
+  // upload can never overwrite the panels from a newer apply (last-apply-wins).
+  const aopPanelPersistSeqRef = useRef(0);
+  // Last status reported to the admin tester host (see TesterDesignStatus).
+  const testerDesignStatusRef = useRef<TesterDesignStatus>({ jobId: null, aopPanels: 'none' });
+  const emitTesterDesignStatus = useCallback(
+    (patch: Partial<TesterDesignStatus>) => {
+      testerDesignStatusRef.current = { ...testerDesignStatusRef.current, ...patch };
+      if (embeddedContext?.mode === 'admin-tester') {
+        embeddedContext.onTesterDesignStatus?.({ ...testerDesignStatusRef.current });
+      }
+    },
+    [embeddedContext],
+  );
   const bgRemovedLoadedDesignsRef = useRef<Set<string>>(new Set());
   const creditsReturnHandledRef = useRef(false);
   // Stores the per-panel rasters from the most recent Place/Pattern Apply so Retry can reproduce them.
@@ -4511,6 +4543,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       // Store jobId for mockup saving after fetchPrintifyMockups completes
       if (data.jobId) savedJobIdRef.current = data.jobId;
       savedJobShopRef.current = data.jobShop || null;
+      // New design → previous panel captures no longer describe what's on screen.
+      emitTesterDesignStatus({ jobId: data.jobId || null, aopPanels: 'none' });
       lastFlatGalleryMockupKeyRef.current = "";
       // Reset pre-created shadow variant for this new design
       setPreShadowVariantId(null);
@@ -5679,16 +5713,23 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       const panelSaveShop = shopDomain || savedJobShopRef.current;
       if ((isStorefront || isAdminTester) && savedJobIdRef.current && panelSaveShop) {
         const panelJobId = savedJobIdRef.current;
+        // Versioned capture: bump the sequence for this apply; if a newer apply
+        // starts while this one is still baking/uploading, abort before the write
+        // so stale panels can never overwrite the latest state.
+        const seq = ++aopPanelPersistSeqRef.current;
+        const isStale = () => seq !== aopPanelPersistSeqRef.current;
+        emitTesterDesignStatus({ jobId: panelJobId, aopPanels: 'saving' });
         void (async () => {
           try {
             const printPanels = result.renderPrintPanels();
-            if (!printPanels?.length) return;
+            if (!printPanels?.length || isStale()) return;
             const aopPrintPanelUrls = await Promise.all(
               printPanels.map(async ({ position, dataUrl }) => ({
                 position,
                 url: await ensureHostedUrl(dataUrl),
               })),
             );
+            if (isStale()) return;
             await safeFetch(`${API_BASE}/api/storefront/save-state`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -5703,8 +5744,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               panelJobId,
               aopPrintPanelUrls.map((p) => p.position).join(","),
             );
+            if (!isStale()) emitTesterDesignStatus({ aopPanels: 'saved' });
           } catch (e) {
             console.error("[HoodieAopApply] Failed to persist print panels:", e);
+            if (!isStale()) emitTesterDesignStatus({ aopPanels: 'error' });
           }
         })();
       }
@@ -5812,7 +5855,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       setMockupLoading(false);
       setMockupTriggered(false);
     }
-  }, [isStorefront, isAdminTester, shopDomain, storefrontCustomerId]);
+  }, [isStorefront, isAdminTester, shopDomain, storefrontCustomerId, emitTesterDesignStatus]);
 
   /** Persist flat on-the-fly preview rasters to the job + refresh Saved Designs gallery. */
   const persistFlatMockupsForGallery = useCallback(
@@ -8851,12 +8894,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   // submits the same print files a real order would.
                   const panelSaveShop = shopDomain || savedJobShopRef.current;
                   if ((isStorefront || isAdminTester) && savedJobIdRef.current && panelSaveShop) {
+                    const panelJobId = savedJobIdRef.current;
+                    // Versioned capture — see handleHoodieAopApply for the rationale.
+                    const seq = ++aopPanelPersistSeqRef.current;
+                    const isStale = () => seq !== aopPanelPersistSeqRef.current;
+                    emitTesterDesignStatus({ jobId: panelJobId, aopPanels: 'saving' });
                     void (async () => {
                       try {
                         const printPanels = (isMerchantStudio || isAdminTester) && options.getPrintPanelUrls
                           ? await options.getPrintPanelUrls()
                           : (options.printPanelUrls || options.panelUrls);
-                        if (!printPanels?.length) return;
+                        if (!printPanels?.length || isStale()) return;
 
                         const aopPrintPanelUrls = await Promise.all(
                           printPanels.map(async ({ position, dataUrl }) => ({
@@ -8864,12 +8912,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             url: await ensureHostedUrl(dataUrl),
                           }))
                         );
+                        if (isStale()) return;
 
                         await safeFetch(`${API_BASE}/api/storefront/save-state`, {
                           method: "POST",
                           headers: { "Content-Type": "application/json" },
                           body: JSON.stringify({
-                            jobId: savedJobIdRef.current,
+                            jobId: panelJobId,
                             shop: panelSaveShop,
                             designState: {
                               aopPrintPanelUrls,
@@ -8878,9 +8927,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             },
                           }),
                         });
-                        console.log("[AOP] Saved aopPrintPanelUrls on job", savedJobIdRef.current, aopPrintPanelUrls.length);
+                        console.log("[AOP] Saved aopPrintPanelUrls on job", panelJobId, aopPrintPanelUrls.length);
+                        if (!isStale()) emitTesterDesignStatus({ aopPanels: 'saved' });
                       } catch (e) {
                         console.error("[AOP] Failed to persist print panel URLs:", e);
+                        if (!isStale()) emitTesterDesignStatus({ aopPanels: 'error' });
                       }
                     })();
                   }
