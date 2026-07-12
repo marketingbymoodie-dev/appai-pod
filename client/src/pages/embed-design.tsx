@@ -5670,6 +5670,45 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       setMockupError(null);
       setMockupsStale(false);
 
+      // Persist the flat per-panel PRINT files on the job's designState
+      // (aopPrintPanelUrls). This is what order fulfillment, the admin
+      // test-order flow, and permanent design-product publishing submit to
+      // Printify as print_areas — without it a placer-designed AOP product
+      // can never be auto-fulfilled. Runs non-blocking so the mockup upload
+      // (which gates ATC) isn't delayed by the heavier panel bake.
+      const panelSaveShop = shopDomain || savedJobShopRef.current;
+      if ((isStorefront || isAdminTester) && savedJobIdRef.current && panelSaveShop) {
+        const panelJobId = savedJobIdRef.current;
+        void (async () => {
+          try {
+            const printPanels = result.renderPrintPanels();
+            if (!printPanels?.length) return;
+            const aopPrintPanelUrls = await Promise.all(
+              printPanels.map(async ({ position, dataUrl }) => ({
+                position,
+                url: await ensureHostedUrl(dataUrl),
+              })),
+            );
+            await safeFetch(`${API_BASE}/api/storefront/save-state`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                jobId: panelJobId,
+                shop: panelSaveShop,
+                designState: { aopPrintPanelUrls },
+              }),
+            });
+            console.log(
+              "[HoodieAopApply] Saved aopPrintPanelUrls on job",
+              panelJobId,
+              aopPrintPanelUrls.map((p) => p.position).join(","),
+            );
+          } catch (e) {
+            console.error("[HoodieAopApply] Failed to persist print panels:", e);
+          }
+        })();
+      }
+
       // Persist customer state + the rendered cart image on the saved
       // generation job so Edit-from-cart and reload-after-close both
       // resume the customer at exactly this point.
@@ -5773,7 +5812,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       setMockupLoading(false);
       setMockupTriggered(false);
     }
-  }, [isStorefront, shopDomain, storefrontCustomerId]);
+  }, [isStorefront, isAdminTester, shopDomain, storefrontCustomerId]);
 
   /** Persist flat on-the-fly preview rasters to the job + refresh Saved Designs gallery. */
   const persistFlatMockupsForGallery = useCallback(

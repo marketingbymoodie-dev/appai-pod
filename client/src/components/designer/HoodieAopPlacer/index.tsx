@@ -36,6 +36,7 @@ import {
 } from "@shared/hoodieTemplate";
 import {
   renderAopPreview,
+  renderFlatPrintPanels,
   computeGroupRects,
   DEFAULT_ARTWORK_PLACEMENT,
   type ArtworkPlacement,
@@ -187,6 +188,14 @@ export type HoodieAopPlacerApplyResult = {
   state: HoodieAopPlacerState;
   /** Returns a freshly-rendered front-view canvas at full mockup size. */
   renderView: (view: HoodieView) => HTMLCanvasElement | null;
+  /**
+   * Exports the flat per-panel print files for the current state — the
+   * images an order submits to Printify `print_areas`. Returns `null`
+   * until the template + artwork are loaded. Heavier than `renderView`
+   * (renders every panel above mockup resolution), so callers should
+   * invoke it lazily/deduped rather than on every preview repaint.
+   */
+  renderPrintPanels: () => Array<{ position: string; dataUrl: string }> | null;
 };
 
 /**
@@ -1240,10 +1249,43 @@ export default function HoodieAopPlacer({
     [data, state, mockups, artworkImg],
   );
 
+  // Flat per-panel print files for order fulfillment (Phase 5 production
+  // export). Same effective template/placements/toggles as the preview, so
+  // what Printify prints matches what the customer saw on the mockup.
+  const renderPrintPanelsToDataUrls = useCallback((): Array<{
+    position: string;
+    dataUrl: string;
+  }> | null => {
+    if (!data || !state || !artworkImg) return null;
+    const effective = buildEffectiveRenderConfig(data.template, state);
+    const panels = renderFlatPrintPanels({
+      template: effective.template,
+      artwork: artworkImg,
+      mode: state.mode === "pattern" ? "tile" : "single-sheet",
+      tileSettings: state.tileSettings,
+      pixelsPerInch: data.template.realWorldCalibration?.pixelsPerInch,
+      backgroundColor: state.backgroundColor,
+      groupPlacementOverrides: effective.placements,
+      groupEnabledOverrides: effective.enabled,
+      panelEnabledOverrides: buildPanelOverrides(state, data.template),
+      mockups,
+    });
+    // Panels are bg-filled (opaque), so JPEG is safe and 5-10× smaller than
+    // PNG — matters because a zip hoodie exports ~12 panels per save.
+    return panels.map((p) => ({
+      position: p.position,
+      dataUrl: p.canvas.toDataURL("image/jpeg", 0.92),
+    }));
+  }, [data, state, mockups, artworkImg]);
+
   const handleApply = useCallback(() => {
     if (!state) return;
-    onApply?.({ state, renderView: renderViewToCanvas });
-  }, [onApply, state, renderViewToCanvas]);
+    onApply?.({
+      state,
+      renderView: renderViewToCanvas,
+      renderPrintPanels: renderPrintPanelsToDataUrls,
+    });
+  }, [onApply, state, renderViewToCanvas, renderPrintPanelsToDataUrls]);
 
   // Debounced auto-apply: a *meaningful* change to placer state schedules
   // an apply 1.5 s later, collapsing rapid edits into a single upload.
@@ -1280,7 +1322,11 @@ export default function HoodieAopPlacer({
     const t = window.setTimeout(() => {
       setAutoApplyStatus("saving");
       try {
-        onApply({ state, renderView: renderViewToCanvas });
+        onApply({
+          state,
+          renderView: renderViewToCanvas,
+          renderPrintPanels: renderPrintPanelsToDataUrls,
+        });
         baselineSignatureRef.current = sig;
         // Optimistic — the parent's upload runs async; we flip to
         // "saved" after a short visual delay so the customer sees
@@ -1294,7 +1340,7 @@ export default function HoodieAopPlacer({
       }
     }, 1500);
     return () => window.clearTimeout(t);
-  }, [state, data, artworkImg, onApply, renderViewToCanvas, skipInitialAutoApply]);
+  }, [state, data, artworkImg, onApply, renderViewToCanvas, renderPrintPanelsToDataUrls, skipInitialAutoApply]);
 
   // ---------- Render guards ----------
   if (loading || !state) {

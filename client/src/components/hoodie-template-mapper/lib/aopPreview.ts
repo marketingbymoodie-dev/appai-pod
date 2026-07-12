@@ -48,6 +48,7 @@ import type {
 import {
   drawMockupImageInCanvas,
   findGroupForPanel,
+  hoodiePanelKeyToPrintifyPosition,
   layerRenderPriority,
   mockupDrawRect,
   SEAM_PAIR_PANELS,
@@ -822,6 +823,11 @@ export function renderHoodFlatPanel(
      *  coordinate system the mesh's targetPoints were calibrated
      *  against, so it's the right flat-panel size by construction. */
     fallbackSize?: { width: number; height: number };
+    /** Uniform multiplier applied to the output canvas dimensions.
+     *  Print export uses this to render above mockup resolution so
+     *  the artwork's native detail survives into the print file.
+     *  Geometry (slice, rotation, flips) is unaffected. Default 1. */
+    outputScale?: number;
   },
 ): HTMLCanvasElement | null {
   if (!frontLayer.mesh) return null;
@@ -846,6 +852,9 @@ export function renderHoodFlatPanel(
     flatW = Math.max(1, artwork.naturalWidth || artwork.width);
     flatH = Math.max(1, artwork.naturalHeight || artwork.height);
   }
+  const outputScale = Math.max(0.01, options?.outputScale ?? 1);
+  flatW = Math.max(1, Math.round(flatW * outputScale));
+  flatH = Math.max(1, Math.round(flatH * outputScale));
 
   const canvas = document.createElement("canvas");
   canvas.width = flatW;
@@ -1049,6 +1058,7 @@ function renderTiledFlatPanel(
   settings: TileSettings,
   pixelsPerInch: number,
   canvasW: number,
+  outputScale = 1,
 ): HTMLCanvasElement | null {
   if (!layer.mesh) return null;
 
@@ -1070,13 +1080,18 @@ function renderTiledFlatPanel(
     flatW = Math.max(1, Math.round(tb.width));
     flatH = Math.max(1, Math.round(tb.height));
   }
+  const scale = Math.max(0.01, outputScale);
+  flatW = Math.max(1, Math.round(flatW * scale));
+  flatH = Math.max(1, Math.round(flatH * scale));
 
   // Tile size in flat-canvas px. Because flatW/H matches the mesh's
   // projected area in mockup px, a tile that's `tilePxMockup` flat-px
   // wide will render at the same `tilePxMockup` mockup-px wide on
   // screen (modulo per-triangle deformation from fabric drape).
+  // `outputScale` multiplies both the canvas and the tile so the
+  // pattern geometry is unchanged — just rendered at higher density.
   const tilePxMockup = Math.max(1, settings.tileSizeInches * pixelsPerInch);
-  const tilePxFlat = tilePxMockup;
+  const tilePxFlat = tilePxMockup * scale;
   const aw = artwork.naturalWidth || artwork.width;
   const ah = artwork.naturalHeight || artwork.height;
   const tileHFlat = tilePxFlat * (ah / Math.max(1, aw));
@@ -1809,4 +1824,296 @@ export function renderAopPreviewToCanvas(params: AopPreviewParams): HTMLCanvasEl
   if (!ctx) return canvas;
   renderAopPreview(ctx, params);
   return canvas;
+}
+
+// ---------------------------------------------------------------------------
+// Flat print-panel export (order fulfillment)
+// ---------------------------------------------------------------------------
+
+/** Target long edge for artwork-bearing print panels. The flat-panel coordinate
+ *  system is mockup-resolution (~1024px), far below print needs, so panels are
+ *  upscaled toward this target. Detail is bounded by the artwork's own
+ *  resolution — going higher than this just inflates upload bytes. */
+const PRINT_PANEL_TARGET_LONG_EDGE_PX = 3200;
+/** Hard cap on exported panel long edge (memory / upload safety). */
+const PRINT_PANEL_MAX_LONG_EDGE_PX = 4800;
+/** Solid background-only panels compress to almost nothing; Printify scales
+ *  the image to the placeholder, so a small aspect-correct fill is enough. */
+const SOLID_PRINT_PANEL_LONG_EDGE_PX = 160;
+
+export type FlatPrintPanelExport = {
+  /** Printify placeholder position (e.g. `front_left`, `left_cuff_panel`). */
+  position: string;
+  panelKey: HoodiePanelKey;
+  canvas: HTMLCanvasElement;
+};
+
+export type RenderFlatPrintPanelsParams = {
+  template: HoodieTemplate;
+  artwork: HTMLImageElement | null;
+  /** "single-sheet" = Place-on-item, "tile" = repeating Pattern mode. */
+  mode: "single-sheet" | "tile";
+  tileSettings?: TileSettings | null;
+  pixelsPerInch?: number;
+  /** Fabric colour baked under the artwork across the whole panel. AOP print
+   *  files need full coverage, so `null` falls back to white. */
+  backgroundColor?: string | null;
+  groupPlacementOverrides?: Record<string, Record<HoodieView, ArtworkPlacement>>;
+  groupSeamOverrides?: Record<string, number>;
+  groupEnabledOverrides?: Record<string, boolean>;
+  panelEnabledOverrides?: Partial<Record<string, boolean>>;
+  /** Loaded view mockups — used only to derive each view's canvas width for
+   *  tile-mode seam anchoring. Optional; falls back to template geometry. */
+  mockups?: Partial<Record<HoodieView, HTMLImageElement | null>>;
+};
+
+/** Canvas width for a view without requiring the mockup image (mirrors
+ *  resolveAopPreviewCanvasBounds' extents using stored template geometry). */
+function viewCanvasWidth(
+  template: HoodieTemplate,
+  view: HoodieView,
+  mockup?: HTMLImageElement | null,
+): number {
+  if (mockup) {
+    return resolveAopPreviewCanvasBounds(template, view, mockup).width;
+  }
+  const viewState = template.views[view];
+  let maxX = 0;
+  const asset = viewState?.mockup;
+  if (asset) {
+    const dr = mockupDrawRect(asset);
+    maxX = Math.max(maxX, dr.x + dr.renderWidth);
+  }
+  for (const layer of viewState?.layers ?? []) {
+    const bb = aabbOf(svgPathToAnchors(layer.maskPath));
+    if (bb) maxX = Math.max(maxX, bb.x + bb.width);
+  }
+  return Math.max(1, Math.round(maxX));
+}
+
+/** Base (unscaled) flat-panel dims for a layer: calibrated sourceRect first,
+ *  then the mesh's projected bbox, then the polygon bbox. */
+function flatPanelBaseDims(layer: MaskLayer): { width: number; height: number } | null {
+  const src = layer.mesh?.sourceRect;
+  if (src && src.width > 0 && src.height > 0) {
+    return { width: Math.round(src.width), height: Math.round(src.height) };
+  }
+  if (layer.mesh) {
+    const tb = meshTargetBbox(layer.mesh);
+    if (tb) return { width: Math.round(tb.width), height: Math.round(tb.height) };
+  }
+  const bb = aabbOf(svgPathToAnchors(layer.maskPath));
+  if (bb && bb.width > 0 && bb.height > 0) {
+    return { width: Math.round(bb.width), height: Math.round(bb.height) };
+  }
+  return null;
+}
+
+function solidPanelCanvas(
+  dims: { width: number; height: number },
+  fill: string,
+): HTMLCanvasElement | null {
+  const long = Math.max(dims.width, dims.height, 1);
+  const s = SOLID_PRINT_PANEL_LONG_EDGE_PX / long;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(dims.width * s));
+  canvas.height = Math.max(1, Math.round(dims.height * s));
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.fillStyle = fill;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+
+/**
+ * Export the flat per-panel print files for a template + customer state —
+ * the "Phase 5 production export" counterpart of `renderAopPreview`. These
+ * are the images submitted to Printify order `print_areas` (one per
+ * placeholder position, `{ scale: 1, x: 0.5, y: 0.5 }`), so each panel is:
+ *
+ *   1. Filled edge-to-edge with the garment background colour (AOP panels
+ *      must have full coverage — transparent regions would print white).
+ *   2. Overlaid with the artwork slice (Place mode, seam-aware — the exact
+ *      geometry `renderHoodFlatPanel` feeds the mockup warp) or the tile
+ *      sheet (Pattern mode, same grid `renderTiledFlatPanel` previews).
+ *
+ * Muted panels (customer toggles, disabled groups) export as solid
+ * background fills so Printify still receives full panel coverage.
+ *
+ * Front-view layers win when a panel exists in both views (hood/sleeves are
+ * one fabric piece bridged from the front); back-only panels (back body)
+ * export from the back view with the back-view placement.
+ */
+export function renderFlatPrintPanels(
+  params: RenderFlatPrintPanelsParams,
+): FlatPrintPanelExport[] {
+  const {
+    template,
+    artwork,
+    mode,
+    backgroundColor,
+    groupPlacementOverrides,
+    groupSeamOverrides,
+    groupEnabledOverrides,
+    panelEnabledOverrides,
+    mockups,
+  } = params;
+  const bg = backgroundColor || DEFAULT_GARMENT_BACKGROUND;
+  const tileSettings = params.tileSettings ?? template.tileSettings ?? null;
+  const ppi =
+    params.pixelsPerInch ??
+    template.realWorldCalibration?.pixelsPerInch ??
+    1024 / 24;
+  const artworkLongEdge = artwork
+    ? Math.max(artwork.naturalWidth || artwork.width, artwork.naturalHeight || artwork.height, 1)
+    : 1;
+
+  const out: FlatPrintPanelExport[] = [];
+  const seenPositions = new Set<string>();
+
+  for (const view of ["front", "back"] as HoodieView[]) {
+    const layers = (template.views[view]?.layers ?? []).filter(
+      (l) => l.visible && !l.isExclusion && l.panelKey,
+    );
+    if (layers.length === 0) continue;
+
+    const rects =
+      mode === "single-sheet"
+        ? computeGroupRects(template, view, artwork, {
+            placementOverrides: groupPlacementOverrides,
+            seamOverrides: groupSeamOverrides,
+            enabledOverrides: groupEnabledOverrides,
+          })
+        : new Map<string, DesignRectInfo>();
+    const canvasW = viewCanvasWidth(template, view, mockups?.[view]);
+
+    for (const layer of layers) {
+      const panelKey = layer.panelKey as HoodiePanelKey;
+      const position = hoodiePanelKeyToPrintifyPosition(panelKey);
+      if (seenPositions.has(position)) continue;
+
+      const dims = flatPanelBaseDims(layer);
+      if (!dims) continue;
+
+      const group = findGroupForPanel(template.designGroups, panelKey);
+      const rect = group
+        ? rects.get(group.id) ?? null
+        : rects.get("__legacy__") ?? rects.get("__ungrouped__") ?? null;
+      // Mirror renderAopPreview's skipArtwork semantics exactly so the print
+      // file matches the preview: single-sheet honours the group rect's
+      // enabled flag; tile mode has no group rects (group toggles don't mute
+      // there) — only customer-level panel overrides do.
+      const groupEnabled = mode === "single-sheet" && rect ? rect.enabled : true;
+      const muted =
+        panelEnabledOverrides?.[panelKey] === false || !groupEnabled;
+
+      if (muted || !artwork || (mode === "tile" && !tileSettings)) {
+        const solid = solidPanelCanvas(dims, bg);
+        if (solid) {
+          seenPositions.add(position);
+          out.push({ position, panelKey, canvas: solid });
+        }
+        continue;
+      }
+
+      const longEdge = Math.max(dims.width, dims.height, 1);
+      let artCanvas: HTMLCanvasElement | null = null;
+
+      if (mode === "tile" && tileSettings) {
+        // Density target: one tile ≈ the artwork's native resolution, capped
+        // by the max canvas edge. Below-1 scales are clamped (never shrink).
+        const tilePxBase = Math.max(1, tileSettings.tileSizeInches * ppi);
+        const wanted = artworkLongEdge / tilePxBase;
+        const capped = Math.min(wanted, PRINT_PANEL_MAX_LONG_EDGE_PX / longEdge);
+        const outputScale = Math.max(1, capped);
+        artCanvas = layer.mesh
+          ? renderTiledFlatPanel(layer, artwork, tileSettings, ppi, canvasW, outputScale)
+          : null;
+        if (!artCanvas) {
+          // No mesh — tile straight into an upscaled polygon-bbox canvas.
+          const c = document.createElement("canvas");
+          c.width = Math.max(1, Math.round(dims.width * outputScale));
+          c.height = Math.max(1, Math.round(dims.height * outputScale));
+          const cctx = c.getContext("2d");
+          if (cctx) {
+            const bb = { x: 0, y: 0, width: c.width, height: c.height };
+            drawTileFlat(cctx, artwork, bb, tileSettings, ppi * outputScale, {
+              x: c.width / 2,
+              y: c.height / 2,
+            });
+            artCanvas = c;
+          }
+        }
+      } else if (rect && rect.effective.width > 0 && rect.effective.height > 0) {
+        const outputScale = Math.min(
+          Math.max(1, PRINT_PANEL_TARGET_LONG_EDGE_PX / longEdge),
+          PRINT_PANEL_MAX_LONG_EDGE_PX / longEdge,
+        );
+        if (layer.mesh) {
+          artCanvas = renderHoodFlatPanel(layer, artwork, rect, {
+            fallbackSize: dims,
+            outputScale,
+          });
+        } else {
+          // No mesh — draw the seam-aware artwork slice straight into the
+          // polygon-bbox canvas (same slice the flat-stretch preview uses).
+          const bb = aabbOf(svgPathToAnchors(layer.maskPath));
+          if (bb) {
+            const aw = artwork.naturalWidth || artwork.width;
+            const ah = artwork.naturalHeight || artwork.height;
+            const side: "left" | "right" | "none" = SEAM_PAIR_PANELS.left.includes(panelKey)
+              ? "left"
+              : SEAM_PAIR_PANELS.right.includes(panelKey)
+                ? "right"
+                : "none";
+            const slice = synthesiseSeamAwareSourceRect(bb, rect, aw, ah, side);
+            if (slice.width > 0 && slice.height > 0) {
+              const c = document.createElement("canvas");
+              c.width = Math.max(1, Math.round(dims.width * outputScale));
+              c.height = Math.max(1, Math.round(dims.height * outputScale));
+              const cctx = c.getContext("2d");
+              if (cctx) {
+                cctx.drawImage(
+                  artwork,
+                  slice.x,
+                  slice.y,
+                  slice.width,
+                  slice.height,
+                  0,
+                  0,
+                  c.width,
+                  c.height,
+                );
+                artCanvas = c;
+              }
+            }
+          }
+        }
+      }
+
+      if (!artCanvas) {
+        const solid = solidPanelCanvas(dims, bg);
+        if (solid) {
+          seenPositions.add(position);
+          out.push({ position, panelKey, canvas: solid });
+        }
+        continue;
+      }
+
+      // Composite: opaque background colour under the artwork.
+      const panel = document.createElement("canvas");
+      panel.width = artCanvas.width;
+      panel.height = artCanvas.height;
+      const pctx = panel.getContext("2d");
+      if (!pctx) continue;
+      pctx.fillStyle = bg;
+      pctx.fillRect(0, 0, panel.width, panel.height);
+      pctx.drawImage(artCanvas, 0, 0);
+
+      seenPositions.add(position);
+      out.push({ position, panelKey, canvas: panel });
+    }
+  }
+
+  return out;
 }
