@@ -16309,21 +16309,76 @@ ${textEdgeRestrictions}
       .replace(/javascript:/gi, "");
   }
 
+  /** Mirrors client/src/components/SizeChartTable.tsx's inch→cm conversion so the standalone
+   *  product description shows the same numbers as the customizer's metric toggle. */
+  function sizeChartLabelUsesInches(label: string): boolean {
+    return /,\s*in\b/i.test(label);
+  }
+  function sizeChartRowValuesAreNumeric(values: string[]): boolean {
+    return values.length > 0 && values.every((v) => !v?.trim() || !Number.isNaN(Number(v)));
+  }
+  function convertSizeChartInchesToCm(value: string): string {
+    if (!value?.trim()) return value;
+    const num = Number(value);
+    return Number.isNaN(num) ? value : (num * 2.54).toFixed(1);
+  }
+  function convertSizeChartLabelToMetric(label: string): string {
+    return label.replace(/,\s*in\b/i, ", cm");
+  }
+
   function buildDesignProductSizeChartHtml(chart: Record<string, any> | null): string {
     if (!chart || !Array.isArray(chart.sizes) || !Array.isArray(chart.rows) || chart.rows.length === 0) return "";
-    const headerCells = ["", ...chart.sizes]
-      .map((h: string) => `<th style="padding:6px 10px;border:1px solid #ddd;text-align:left;">${escapeDesignProductHtml(String(h ?? ""))}</th>`)
-      .join("");
-    const bodyRows = chart.rows
-      .map((row: { label: string; values: string[] }) => {
-        const cells = [row.label, ...row.values]
-          .map((v, idx) => `<td style="padding:6px 10px;border:1px solid #ddd;${idx === 0 ? "font-weight:600;" : ""}">${escapeDesignProductHtml(String(v ?? ""))}</td>`)
-          .join("");
-        return `<tr>${cells}</tr>`;
-      })
-      .join("");
+
+    const renderTable = (rows: Array<{ label: string; values: string[] }>) => {
+      const headerCells = ["", ...chart.sizes]
+        .map((h: string) => `<th style="padding:6px 10px;border:1px solid #ddd;text-align:left;">${escapeDesignProductHtml(String(h ?? ""))}</th>`)
+        .join("");
+      const bodyRows = rows
+        .map((row) => {
+          const cells = [row.label, ...row.values]
+            .map((v, idx) => `<td style="padding:6px 10px;border:1px solid #ddd;${idx === 0 ? "font-weight:600;" : ""}">${escapeDesignProductHtml(String(v ?? ""))}</td>`)
+            .join("");
+          return `<tr>${cells}</tr>`;
+        })
+        .join("");
+      return `<table style="border-collapse:collapse;width:100%;max-width:640px;margin-top:8px;"><thead><tr>${headerCells}</tr></thead><tbody>${bodyRows}</tbody></table>`;
+    };
+
+    const hasImperialRows = chart.rows.some((row: { label: string }) => sizeChartLabelUsesInches(row.label));
     const unitSuffix = chart.unit ? ` (${escapeDesignProductHtml(String(chart.unit))})` : "";
-    return `<h4>Size Chart${unitSuffix}</h4><table style="border-collapse:collapse;width:100%;max-width:640px;margin-top:8px;"><thead><tr>${headerCells}</tr></thead><tbody>${bodyRows}</tbody></table>`;
+
+    if (!hasImperialRows) {
+      // Data isn't in the "<label>, in" format we know how to convert — show as-is (rare).
+      return `<h4>Size Chart${unitSuffix}</h4>${renderTable(chart.rows)}`;
+    }
+
+    const metricRows = chart.rows.map((row: { label: string; values: string[] }) => {
+      if (sizeChartLabelUsesInches(row.label) && sizeChartRowValuesAreNumeric(row.values)) {
+        return { label: convertSizeChartLabelToMetric(row.label), values: row.values.map(convertSizeChartInchesToCm) };
+      }
+      return row;
+    });
+
+    // Random suffix keeps IDs unique if a theme renders this description more than once on a
+    // page (e.g. quick-view + main product template both hydrated at once).
+    const scopeId = `aiart-sc-${Math.random().toString(36).slice(2, 10)}`;
+
+    return `<div class="${scopeId}">
+<h4 style="margin-bottom:6px;">Size Chart</h4>
+<input type="radio" id="${scopeId}-imp" name="${scopeId}-unit" class="${scopeId}-r" checked>
+<input type="radio" id="${scopeId}-met" name="${scopeId}-unit" class="${scopeId}-r">
+<div style="margin-bottom:8px;font-size:13px;">
+<label for="${scopeId}-imp" style="margin-right:14px;cursor:pointer;">Imperial (in)</label>
+<label for="${scopeId}-met" style="cursor:pointer;">Metric (cm)</label>
+</div>
+<div class="${scopeId}-imperial">${renderTable(chart.rows)}</div>
+<div class="${scopeId}-metric" style="display:none;">${renderTable(metricRows)}</div>
+<style>
+.${scopeId}-r{display:none;}
+#${scopeId}-met:checked ~ .${scopeId}-imperial{display:none;}
+#${scopeId}-met:checked ~ .${scopeId}-metric{display:block;}
+</style>
+</div>`;
   }
 
   /** Printify's marketing paragraphs (sanitized) + an appended size-chart table when available. */
@@ -16438,6 +16493,14 @@ ${textEdgeRestrictions}
     const shopifyProductId = String(created.product.id);
     const shopifyHandle = created.product.handle as string;
     const createdVariants: any[] = created.product.variants || [];
+
+    // Default publications to Online Store only (draft stays invisible until activated, but
+    // the merchant's "Manage publishing" panel shouldn't show Point of Sale on for these).
+    try {
+      await ensureProductPublishedToOnlineStore(shop, installation.accessToken, Number(shopifyProductId), { hideFromSearch: false });
+    } catch (e: any) {
+      console.warn("[design-products] Failed to set default sales channel:", e?.message);
+    }
 
     const variantMapOut: Record<string, { sizeId: string; colorId: string }> = {};
     createdVariants.forEach((v: any, idx: number) => {
@@ -16661,7 +16724,9 @@ ${textEdgeRestrictions}
           }),
         });
         if (status === "active") {
-          await ensureProductPublishedToOnlineStore(shop, installation.accessToken, Number(row.shopifyProductId));
+          // Standalone design products should stay discoverable in search/collections —
+          // only the shadow checkout SKUs use hideFromSearch (the default).
+          await ensureProductPublishedToOnlineStore(shop, installation.accessToken, Number(row.shopifyProductId), { hideFromSearch: false });
         }
       } catch (e: any) {
         console.warn("[design-products] Shopify status update failed:", e.message);
@@ -17944,7 +18009,13 @@ ${textEdgeRestrictions}
    * Tries GraphQL publishablePublish first (requires write_publications scope),
    * then always falls back to REST published_at (uses write_products scope).
    */
-  async function ensureProductPublishedToOnlineStore(shop: string, accessToken: string, productId: number) {
+  async function ensureProductPublishedToOnlineStore(
+    shop: string,
+    accessToken: string,
+    productId: number,
+    opts: { hideFromSearch?: boolean } = {},
+  ) {
+    const hideFromSearch = opts.hideFromSearch !== false;
     const gqlEndpoint = `https://${shop}/admin/api/2025-10/graphql.json`;
     const gqlHeaders = { "X-Shopify-Access-Token": accessToken, "Content-Type": "application/json" };
     const productGid = `gid://shopify/Product/${productId}`;
@@ -18029,32 +18100,35 @@ ${textEdgeRestrictions}
         }
       }
 
-      // Step 4: Set seo.hidden=1 metafield to make it "Unlisted" (hidden from search/collections)
-      try {
-        console.log(`[ensurePublished] Setting seo.hidden=1 for product ${productId}`);
-        const metafieldRes = await fetch(
-          `https://${shop}/admin/api/2025-10/products/${productId}/metafields.json`,
-          {
-            method: "POST",
-            headers: { "X-Shopify-Access-Token": accessToken, "Content-Type": "application/json" },
-            body: JSON.stringify({
-              metafield: {
-                namespace: "seo",
-                key: "hidden",
-                value: 1,
-                type: "integer"
-              }
-            }),
+      // Step 4: Set seo.hidden=1 metafield to make it "Unlisted" (hidden from search/collections).
+      // Skipped for standalone design products, which should stay discoverable.
+      if (hideFromSearch) {
+        try {
+          console.log(`[ensurePublished] Setting seo.hidden=1 for product ${productId}`);
+          const metafieldRes = await fetch(
+            `https://${shop}/admin/api/2025-10/products/${productId}/metafields.json`,
+            {
+              method: "POST",
+              headers: { "X-Shopify-Access-Token": accessToken, "Content-Type": "application/json" },
+              body: JSON.stringify({
+                metafield: {
+                  namespace: "seo",
+                  key: "hidden",
+                  value: 1,
+                  type: "integer"
+                }
+              }),
+            }
+          );
+          if (metafieldRes.ok) {
+            console.log(`[ensurePublished] Successfully set seo.hidden=1 for product ${productId}`);
+          } else {
+            const errText = await metafieldRes.text().catch(() => "");
+            console.warn(`[ensurePublished] Failed to set seo.hidden: ${metafieldRes.status} ${errText.slice(0, 200)}`);
           }
-        );
-        if (metafieldRes.ok) {
-          console.log(`[ensurePublished] Successfully set seo.hidden=1 for product ${productId}`);
-        } else {
-          const errText = await metafieldRes.text().catch(() => "");
-          console.warn(`[ensurePublished] Failed to set seo.hidden: ${metafieldRes.status} ${errText.slice(0, 200)}`);
+        } catch (metaErr: any) {
+          console.warn(`[ensurePublished] Metafield error: ${metaErr.message}`);
         }
-      } catch (metaErr: any) {
-        console.warn(`[ensurePublished] Metafield error: ${metaErr.message}`);
       }
 
     } catch (err: any) {

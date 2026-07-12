@@ -420,6 +420,42 @@ describe("cleanupFlatGraphicAlpha", () => {
   });
 });
 
+describe("cleanupFlatGraphicAlpha — magenta fringe", () => {
+  it("removes darkened/desaturated pink fringe connected to background while preserving enclosed purple", async () => {
+    const src = await rgbaBuffer(100, 100, (x, y, row, o) => {
+      const dist = Math.sqrt((x - 50) ** 2 + (y - 50) ** 2);
+      const inPurpleAccent = x >= 44 && x <= 52 && y >= 44 && y <= 52;
+      const inCore = dist <= 18;
+      const inHalo = dist > 18 && dist <= 22;
+      if (inPurpleAccent) {
+        // Enclosed by the teal core — never touches the removed background, must survive.
+        row[o] = 190;
+        row[o + 1] = 50;
+        row[o + 2] = 200;
+      } else if (inCore) {
+        row[o] = 40;
+        row[o + 1] = 120;
+        row[o + 2] = 160;
+      } else if (inHalo) {
+        // Darkened/desaturated pink anti-alias ring: Manhattan distance to #FF00FF is
+        // |140-255|+|10-0|+|140-255| = 240, far past even the expanded (55) tolerance, but
+        // the hue is unmistakably chroma-pink (~300deg) and it's connected to the already
+        // background (alpha 0) region below.
+        row[o] = 140;
+        row[o + 1] = 10;
+        row[o + 2] = 140;
+      } else {
+        row[o + 3] = 0; // already-keyed background
+      }
+    });
+
+    const cleaned = await cleanupFlatGraphicAlpha(src);
+    expect(await alphaAt(cleaned, 50, 70)).toBe(0); // halo ring (dist 20) removed
+    expect(await alphaAt(cleaned, 50, 35)).toBeGreaterThan(200); // teal core (dist 15) kept
+    expect(await alphaAt(cleaned, 48, 48)).toBeGreaterThan(200); // enclosed purple accent kept
+  });
+});
+
 describe("processApparelMotif", () => {
   it("does not use ML fallback on full white canvas", async () => {
     const src = await rgbaBuffer(64, 64, (x, y, row, o) => {

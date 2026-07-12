@@ -41,6 +41,10 @@ export type AlphaQualityMetrics = {
   largestComponentFillRatio: number;
   opaquePixelCount: number;
   totalPixels: number;
+  /** Share of opaque pixels that are still magenta/pink-hued (any shade) — leftover chroma
+   *  fringe that the fixed-distance-to-#FF00FF passes miss because Manhattan distance grows
+   *  fast with brightness even when the hue is identical. */
+  residualMagentaOpaqueRatio: number;
 };
 
 export type ChromaKeyResult = {
@@ -242,6 +246,98 @@ function colorDistance(
   tb: number,
 ): number {
   return Math.abs(r - tr) + Math.abs(g - tg) + Math.abs(b - tb);
+}
+
+/** Hue (deg), saturation and lightness (0–1) — used for hue-family matching independent of brightness. */
+function rgbToHsl(r: number, g: number, b: number): { h: number; s: number; l: number } {
+  const rn = r / 255;
+  const gn = g / 255;
+  const bn = b / 255;
+  const max = Math.max(rn, gn, bn);
+  const min = Math.min(rn, gn, bn);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d === 0) return { h: 0, s: 0, l };
+  const s = d / (1 - Math.abs(2 * l - 1));
+  let h: number;
+  if (max === rn) h = ((gn - bn) / d) % 6;
+  else if (max === gn) h = (bn - rn) / d + 2;
+  else h = (rn - gn) / d + 4;
+  h *= 60;
+  if (h < 0) h += 360;
+  return { h, s, l };
+}
+
+/**
+ * True for ANY shade/tint of the #FF00FF chroma hue (dark, desaturated, or pale pink) — not
+ * just colors close to pure magenta by RGB distance. Anti-aliased fringe pixels blend the
+ * design edge color into the pink canvas and often end up as a darker or muddier pink that
+ * survives every fixed-tolerance distance-to-key check even though the hue is unmistakably
+ * chroma-pink. Bounds exclude near-black/near-white and low-saturation greys so real dark
+ * edge colors and neutral tones are never misclassified.
+ */
+function isMagentaHueFamily(r: number, g: number, b: number): boolean {
+  const { h, s, l } = rgbToHsl(r, g, b);
+  if (l < 0.05 || l > 0.97) return false;
+  if (s < 0.22) return false;
+  return h >= 280 && h <= 335;
+}
+
+/**
+ * Flood-fill magenta-hue-family pixels connected to already-transparent regions (border or
+ * previously chroma-keyed background). This mirrors applyBorderFloodFillChromaMat's
+ * connectivity-only approach but classifies by hue instead of RGB distance to a fixed color,
+ * so it catches darkened/desaturated pink fringe those passes miss — while never touching
+ * magenta/purple pixels fully enclosed by the subject (not connected to the removed background).
+ */
+function applyMagentaFringeFloodFill(
+  pixels: Uint8Array,
+  width: number,
+  height: number,
+  channels: number,
+): number {
+  const total = width * height;
+  const visited = new Uint8Array(total);
+  const queue: number[] = [];
+  let removed = 0;
+
+  for (let p = 0; p < total; p++) {
+    if (pixels[p * channels + 3] === 0) {
+      visited[p] = 1;
+      queue.push(p);
+    }
+  }
+
+  while (queue.length > 0) {
+    const p = queue.pop()!;
+    const x = p % width;
+    const y = Math.floor(p / width);
+    for (const [dx, dy] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ] as const) {
+      const nx = x + dx;
+      const ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+      const np = ny * width + nx;
+      if (visited[np]) continue;
+      const idx = np * channels;
+      if (pixels[idx + 3] === 0) {
+        visited[np] = 1;
+        queue.push(np);
+        continue;
+      }
+      if (!isMagentaHueFamily(pixels[idx], pixels[idx + 1], pixels[idx + 2])) continue;
+      visited[np] = 1;
+      pixels[idx + 3] = 0;
+      removed++;
+      queue.push(np);
+    }
+  }
+
+  return removed;
 }
 
 function isMatColor(
@@ -741,6 +837,10 @@ export async function cleanupFlatGraphicAlpha(
 
   const px = new Uint8Array(data);
   await despillEdgeColors(px, ch);
+  const fringeRemoved = applyMagentaFringeFloodFill(px, info.width, info.height, ch);
+  if (fringeRemoved > 0) {
+    console.log(`[Apparel Matting] Magenta hue-family fringe pass removed ${fringeRemoved} px`);
+  }
 
   // Binarize alpha for hard vector-like edges
   for (let i = 0; i < px.length; i += ch) {
@@ -783,6 +883,7 @@ export async function analyzeAlphaQuality(buffer: Buffer): Promise<AlphaQualityM
   let opaqueCount = 0;
   let cornerOpaque = 0;
   let cornerTotal = 0;
+  let residualMagentaOpaque = 0;
   const cornerSize = 5;
 
   for (let y = 0; y < height; y++) {
@@ -790,7 +891,10 @@ export async function analyzeAlphaQuality(buffer: Buffer): Promise<AlphaQualityM
       const idx = (y * width + x) * channels;
       const a = pixels[idx + 3];
       if (a > 0 && a < 255) softAlpha++;
-      if (a > 128) opaqueCount++;
+      if (a > 128) {
+        opaqueCount++;
+        if (isMagentaHueFamily(pixels[idx], pixels[idx + 1], pixels[idx + 2])) residualMagentaOpaque++;
+      }
 
       const inCorner =
         x < cornerSize ||
@@ -813,6 +917,7 @@ export async function analyzeAlphaQuality(buffer: Buffer): Promise<AlphaQualityM
     largestComponentFillRatio,
     opaquePixelCount: opaqueCount,
     totalPixels: total,
+    residualMagentaOpaqueRatio: opaqueCount > 0 ? residualMagentaOpaque / opaqueCount : 0,
   };
 }
 
@@ -1026,6 +1131,11 @@ function logQaWarnings(qa: AlphaQualityMetrics, chromaRemovedPct: number): void 
       `[Apparel Matting QA] Single blob fills ${(qa.largestComponentFillRatio * 100).toFixed(1)}% — possible matting failure`,
     );
   }
+  if (qa.residualMagentaOpaqueRatio > 0.01) {
+    console.warn(
+      `[Apparel Matting QA] Residual magenta fringe ${(qa.residualMagentaOpaqueRatio * 100).toFixed(2)}% of opaque pixels`,
+    );
+  }
 }
 
 /**
@@ -1136,6 +1246,14 @@ export async function processApparelMotif(
       erodeAfterCleanup: false,
     });
   }
+
+  // NOTE: no automatic retry on residual magenta here (unlike the corner-opaque safety net
+  // above). The flood-fill inside cleanupFlatGraphicAlpha already removes every fringe pixel
+  // connected to transparency in one pass — anything still magenta-hued afterward is, by
+  // construction, NOT connected to background, i.e. legitimate enclosed purple/magenta art.
+  // Re-running cleanup (with its erosion step) risks thinning the margin around such enclosed
+  // pixels on a second pass until they become newly "connected" and get wrongly deleted.
+  // residualMagentaOpaqueRatio is logged via logQaWarnings() below for monitoring only.
 
   buffer = await trimTransparentBounds(buffer, 8, usedMlFallback ? 4 : 8);
 
