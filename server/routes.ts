@@ -2777,9 +2777,44 @@ console.log("[api/shopify/generate] saved image", result);
         });
       }
 
+      // Generator Tester test-order support: test orders resolve print files from
+      // generation_jobs.designState (AOP panels / flat placements saved on apply via
+      // /api/storefront/save-state). The tester renders the same designer client, so
+      // give it a completed job row (+ shop) to land those saves on.
+      let testerJobId: string | undefined;
+      let testerJobShop: string | undefined;
+      if (productType && genShopDomain) {
+        try {
+          const jobShop = genShopDomain.toLowerCase().replace(/^https?:\/\//, "");
+          const testerJob = await storage.createGenerationJob({
+            shop: jobShop,
+            sessionId: null,
+            customerId: null,
+            status: "complete",
+            prompt,
+            userPrompt: rawUserPromptAdmin ?? null,
+            stylePreset: stylePreset ?? null,
+            size: size ?? null,
+            frameColor: frameColor ?? null,
+            productTypeId: String(productType.id),
+            referenceImageUrl: null,
+            designImageUrl: generatedImageUrl,
+            thumbnailUrl: thumbnailImageUrl ?? null,
+            billingMode: "merchant",
+            expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          });
+          testerJobId = testerJob.id;
+          testerJobShop = jobShop;
+        } catch (jobErr) {
+          console.warn("[/api/generate] Failed to create tester generation job (test orders from this generation won't work):", jobErr);
+        }
+      }
+
       res.json({
         design,
         creditsRemaining: isOwner ? 999999 : customer.credits - 1,
+        jobId: testerJobId,
+        jobShop: testerJobShop,
       });
     } catch (error: any) {
       console.error("Error generating artwork:", error);
@@ -16372,9 +16407,10 @@ ${textEdgeRestrictions}
 <label for="${scopeId}-met" style="cursor:pointer;">Metric (cm)</label>
 </div>
 <div class="${scopeId}-imperial">${renderTable(chart.rows)}</div>
-<div class="${scopeId}-metric" style="display:none;">${renderTable(metricRows)}</div>
+<div class="${scopeId}-metric">${renderTable(metricRows)}</div>
 <style>
 .${scopeId}-r{display:none;}
+.${scopeId}-metric{display:none;}
 #${scopeId}-met:checked ~ .${scopeId}-imperial{display:none;}
 #${scopeId}-met:checked ~ .${scopeId}-metric{display:block;}
 </style>
@@ -16450,11 +16486,13 @@ ${textEdgeRestrictions}
       return res.status(400).json({ error: `Too many variants (${shopifyVariants.length}). Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}.` });
     }
 
-    const imageUrl: string | null =
-      (Array.isArray(job.mockupUrls) && (job.mockupUrls as string[])[0]) ||
-      (job as any).thumbnailUrl ||
-      job.designImageUrl ||
-      null;
+    // All saved mockup views (front, back, …) become the listing's images, deduped by URL.
+    const jobMockupUrls: string[] = Array.isArray(job.mockupUrls)
+      ? Array.from(new Set((job.mockupUrls as string[]).filter((u) => typeof u === "string" && u.startsWith("http"))))
+      : [];
+    const productImageUrls: string[] = jobMockupUrls.length > 0
+      ? jobMockupUrls
+      : [((job as any).thumbnailUrl || job.designImageUrl) as string].filter(Boolean);
     const cleanTitle = ((titleOverride && titleOverride.trim()) || buildDefaultDesignProductTitle(job.userPrompt, productType.name)).slice(0, 250);
 
     const sizeChart = productType.printifyBlueprintId
@@ -16475,7 +16513,9 @@ ${textEdgeRestrictions}
         tags: ["ai-art-studio-design", "design-product"],
         options: productOptions.length > 0 ? productOptions : undefined,
         variants: shopifyVariants,
-        images: imageUrl ? [{ src: imageUrl, alt: cleanTitle }] : undefined,
+        images: productImageUrls.length > 0
+          ? productImageUrls.map((src, i) => ({ src, alt: cleanTitle, position: i + 1 }))
+          : undefined,
       },
     };
 
@@ -16547,7 +16587,7 @@ ${textEdgeRestrictions}
         title: cleanTitle,
         status: "inactive",
         variantMap: variantMapOut,
-        mockupUrls: imageUrl ? [imageUrl] : [],
+        mockupUrls: productImageUrls,
       })
       .returning();
 

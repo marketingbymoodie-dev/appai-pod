@@ -256,6 +256,40 @@ describe("removeChromaKeyBackground", () => {
     expect(await alphaAt(buffer, 30, 18)).toBeGreaterThan(200);
   });
 
+  it("removes enclosed off-pink canvas pockets on magenta canvas while keeping enclosed purple art", async () => {
+    const src = await rgbaBuffer(100, 100, (x, y, row, o) => {
+      const inSubject = (x - 50) ** 2 + (y - 50) ** 2 <= 24 ** 2;
+      // Enclosed pocket of leaked canvas pink, drifted past the tight tolerance
+      // (Manhattan distance 40 from #FF00FF — outside Pass A's 28, inside expanded 55)
+      const inPinkPocket = (x - 42) ** 2 + (y - 46) ** 2 <= 4 ** 2;
+      // Enclosed purple design accent — far from the key (~170), must survive
+      const inPurpleAccent = (x - 58) ** 2 + (y - 54) ** 2 <= 4 ** 2;
+      if (inPinkPocket) {
+        row[o] = 250;
+        row[o + 1] = 30;
+        row[o + 2] = 250;
+      } else if (inPurpleAccent) {
+        row[o] = 180;
+        row[o + 1] = 40;
+        row[o + 2] = 200;
+      } else if (inSubject) {
+        row[o] = 40;
+        row[o + 1] = 130;
+        row[o + 2] = 90;
+      } else {
+        row[o] = CHROMA_KEY.r;
+        row[o + 1] = CHROMA_KEY.g;
+        row[o + 2] = CHROMA_KEY.b;
+      }
+    });
+
+    const { buffer } = await removeChromaKeyBackground(src);
+    expect(await alphaAt(buffer, 5, 5)).toBe(0); // canvas removed
+    expect(await alphaAt(buffer, 42, 46)).toBe(0); // enclosed off-pink pocket removed
+    expect(await alphaAt(buffer, 58, 54)).toBeGreaterThan(200); // enclosed purple kept
+    expect(await alphaAt(buffer, 50, 30)).toBeGreaterThan(200); // subject kept
+  });
+
   it("removes full white canvas while keeping colored subject", async () => {
     const src = await rgbaBuffer(80, 80, (x, y, row, o) => {
       const inBear = (x - 40) ** 2 + (y - 40) ** 2 <= 14 ** 2;

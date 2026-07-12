@@ -628,8 +628,35 @@ export async function removeChromaKeyBackground(
   const chromaRemovedPct = (pinkRemoved / total) * 100;
   console.log(`[Chroma Key] Pink pass: ${chromaRemovedPct.toFixed(1)}%`);
 
-  // Pass B: corner-detected background — only when AI used a white/grey canvas (not hot pink)
   const { avgR, avgG, avgB } = corners;
+
+  // Pass A2: when the corners confirm a magenta chroma canvas, run one GLOBAL pass at the
+  // expanded tolerance against both the pure key and the SAMPLED canvas color. This removes
+  // enclosed canvas pockets (truck windows, gaps between tree branches) whose pink drifted
+  // past the tight Pass A tolerance — they're the same leaked canvas color, so they sit close
+  // to the sample, while legitimate purple design colors (e.g. rgb(180,40,200), Manhattan
+  // distance ~170 from the key) stay far outside the expanded tolerance.
+  let sampledCanvasRemoved = 0;
+  if (cornerIsMagentaCanvas) {
+    for (let i = 0; i < pixels.length; i += channels) {
+      if (pixels[i + 3] === 0) continue;
+      const r = pixels[i];
+      const g = pixels[i + 1];
+      const b = pixels[i + 2];
+      if (
+        isChromaBackgroundColor(r, g, b, EXPANDED_CHROMA_TOLERANCE) ||
+        colorDistance(r, g, b, avgR, avgG, avgB) <= EXPANDED_CHROMA_TOLERANCE
+      ) {
+        pixels[i + 3] = 0;
+        sampledCanvasRemoved++;
+      }
+    }
+    console.log(
+      `[Chroma Key] Sampled-canvas global pass (rgb ${avgR},${avgG},${avgB}): ${((sampledCanvasRemoved / total) * 100).toFixed(1)}%`,
+    );
+  }
+
+  // Pass B: corner-detected background — only when AI used a white/grey canvas (not hot pink)
 
   let cornerRemoved = 0;
   if (cornerIsLightCanvas) {
@@ -1047,21 +1074,36 @@ async function acceptVectorizedOrFallback(
   const width = meta.width ?? 1024;
   const height = meta.height ?? 1024;
 
+  // Only enforce the white-retention QA when the source has a design-significant
+  // white region (eye/teeth scale — ≥0.02% of the canvas). Tiny white areas
+  // (specular highlights, anti-aliased edge pixels) make the retention ratio pure
+  // noise: tracer spline smoothing shifts a handful of pixels past the near-white
+  // threshold and the ratio collapses, falsely rejecting good SVGs. The old fixed
+  // 24px floor rejected nearly every design that had any white at all.
   const sourceWhites = await countNearWhiteOpaquePixels(sourcePng);
-  if (sourceWhites < 24) {
+  const significanceFloor = Math.max(300, Math.round(width * height * 0.0002));
+  if (sourceWhites < significanceFloor) {
+    console.log(
+      `[Apparel Matting] Vectorize white QA skipped (${sourceWhites}px white < ${significanceFloor}px floor) — SVG accepted`,
+    );
     return { buffer: svg, mimeType: "image/svg+xml" };
   }
 
   const raster = await rasterizeSvgBuffer(svg, width, height);
   const tracedWhites = await countNearWhiteOpaquePixels(raster);
   const ratio = tracedWhites / sourceWhites;
-  if (ratio < 0.65) {
+  // Genuine failures (interior whites traced as holes) drop retention to near zero;
+  // benign tracer drift (smoothed edges, slightly off-white fills) stays well above 0.5.
+  if (ratio < 0.5) {
     console.warn(
       `[Apparel Matting] Vectorize dropped interior white (${(ratio * 100).toFixed(0)}% retained, ${tracedWhites}/${sourceWhites}px) — keeping PNG`,
     );
     return { buffer: sourcePng, mimeType: "image/png" };
   }
 
+  console.log(
+    `[Apparel Matting] Vectorize white QA passed (${(ratio * 100).toFixed(0)}% retained, ${tracedWhites}/${sourceWhites}px) — SVG accepted`,
+  );
   return { buffer: svg, mimeType: "image/svg+xml" };
 }
 

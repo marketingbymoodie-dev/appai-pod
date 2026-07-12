@@ -1904,6 +1904,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // and mockups in the same batch; we don't want that to mark the freshly-loaded mockups as stale)
   const suppressMockupStaleRef = useRef(false);
   const savedJobIdRef = useRef<string | null>(null); // tracks the jobId of the most recently generated design
+  // admin-tester has no shop URL param — the admin generate endpoint returns the job's
+  // shop so applied AOP panels can be persisted for "Send a Test Order to Printify".
+  const savedJobShopRef = useRef<string | null>(null);
   const bgRemovedLoadedDesignsRef = useRef<Set<string>>(new Set());
   const creditsReturnHandledRef = useRef(false);
   // Stores the per-panel rasters from the most recent Place/Pattern Apply so Retry can reproduce them.
@@ -4507,6 +4510,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       const saveShop = variables.shop || shopDomain;
       // Store jobId for mockup saving after fetchPrintifyMockups completes
       if (data.jobId) savedJobIdRef.current = data.jobId;
+      savedJobShopRef.current = data.jobShop || null;
       lastFlatGalleryMockupKeyRef.current = "";
       // Reset pre-created shadow variant for this new design
       setPreShadowVariantId(null);
@@ -8803,10 +8807,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   // Merchant studio designs are the source of a permanent Printify product's
                   // print files, so they lazily build print-resolution (9000px) panels instead
                   // — the extra render only happens once per apply, off the mockup request path.
-                  if (isStorefront && savedJobIdRef.current && shopDomain) {
+                  // The admin Generator Tester also persists print-resolution panels (its job
+                  // shop comes from the generate response) so "Send a Test Order to Printify"
+                  // submits the same print files a real order would.
+                  const panelSaveShop = shopDomain || savedJobShopRef.current;
+                  if ((isStorefront || isAdminTester) && savedJobIdRef.current && panelSaveShop) {
                     void (async () => {
                       try {
-                        const printPanels = isMerchantStudio && options.getPrintPanelUrls
+                        const printPanels = (isMerchantStudio || isAdminTester) && options.getPrintPanelUrls
                           ? await options.getPrintPanelUrls()
                           : (options.printPanelUrls || options.panelUrls);
                         if (!printPanels?.length) return;
@@ -8823,7 +8831,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                           headers: { "Content-Type": "application/json" },
                           body: JSON.stringify({
                             jobId: savedJobIdRef.current,
-                            shop: shopDomain,
+                            shop: panelSaveShop,
                             designState: {
                               aopPrintPanelUrls,
                               aopPlacementSettings: nextPlacement,
