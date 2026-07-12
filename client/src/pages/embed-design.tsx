@@ -4268,7 +4268,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       prompt: string;
       userPrompt?: string;
       size: string;
-      frameColor: string;
+      frameColor?: string;
       stylePreset?: string;
       referenceImages?: string[];
       baseImageUrl?: string;
@@ -4800,7 +4800,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         prompt: fullPrompt,
         userPrompt: prompt, // raw user text — stored separately so it can be restored cleanly
         size: selectedSize,
-        frameColor: selectedFrameColor || "black",
+        // Only fall back to "black" when the product actually has color options —
+        // size-only / AOP products have none, and sending a bogus colour leaked into
+        // design-product SKUs and the Printify-mockup addon's variant lookup.
+        frameColor: selectedFrameColor || (productTypeConfig?.frameColors?.length ? "black" : undefined),
         stylePreset: selectedPreset && selectedPreset !== "" ? selectedPreset : undefined,
         referenceImages: referenceImagesBase64.length > 0 ? referenceImagesBase64 : undefined,
         baseImageUrl: resolvedBaseImageUrl || undefined,
@@ -8785,13 +8788,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     options.panelUrls
                   );
 
-                  // Persist the same panel rasters used for the mockup. The previous
-                  // high-res background render could exceed the upload body limit and
-                  // compete with the active Printify mockup request.
+                  // Persist panel rasters for fulfillment. Customer storefront flow keeps the
+                  // same mockup-resolution rasters used for the live preview (fast applies).
+                  // Merchant studio designs are the source of a permanent Printify product's
+                  // print files, so they lazily build print-resolution (9000px) panels instead
+                  // — the extra render only happens once per apply, off the mockup request path.
                   if (isStorefront && savedJobIdRef.current && shopDomain) {
                     void (async () => {
                       try {
-                        const printPanels = options.printPanelUrls || options.panelUrls;
+                        const printPanels = isMerchantStudio && options.getPrintPanelUrls
+                          ? await options.getPrintPanelUrls()
+                          : (options.printPanelUrls || options.panelUrls);
                         if (!printPanels?.length) return;
 
                         const aopPrintPanelUrls = await Promise.all(

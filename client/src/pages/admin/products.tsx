@@ -75,7 +75,9 @@ function productSupportsTestPrintifyOrder(pt: ProductType): boolean {
   return (
     pt.onTheFlyTier === "flat" ||
     pt.onTheFlyTier === "mesh" ||
-    productUsesToteFolded(pt)
+    productUsesToteFolded(pt) ||
+    // AOP: captured per-panel print files are submitted directly as print_areas
+    !!pt.isAllOverPrint
   );
 }
 

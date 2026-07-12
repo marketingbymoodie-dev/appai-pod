@@ -698,6 +698,10 @@ export const designProducts = pgTable("design_products", {
   jobId: varchar("job_id").notNull(),              // generationJobs.id — source artwork + placement
   productTypeId: integer("product_type_id"),
   shopifyProductId: text("shopify_product_id"),
+  /** Persistent Printify product (NOT a temp/deleted one) — holds the print-ready artwork in
+   *  the merchant's own Printify account and is the order-time fulfillment target. Null if
+   *  Printify product creation failed at publish time (listing still exists as a Shopify draft). */
+  printifyProductId: text("printify_product_id"),
   handle: text("handle"),
   title: text("title").notNull(),
   status: text("status").notNull().default("active"), // active | inactive

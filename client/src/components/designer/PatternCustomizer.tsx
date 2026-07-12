@@ -251,21 +251,27 @@ function canvasToUploadDataUrl(
   maxDim = MAX_PANEL_MOCKUP_PX,
   mockupFlattenColor = "#ffffff",
   preserveExactColor = false,
+  bakePrintBackground = true,
 ): string {
   let w = canvas.width;
   let h = canvas.height;
   const isPrintAsset = maxDim > MAX_PANEL_MOCKUP_PX;
+  // Print-res assets (used for the persistent Printify fulfillment product) are flattened
+  // onto the background colour ONLY when the user explicitly picked one (bakePrintBackground).
+  // Without a picked bgColor the print PNG keeps its real alpha — on coloured blanks the
+  // garment must show through the chroma-keyed transparency, not a baked white box.
+  // Mockup JPEGs always flatten (JPEG has no alpha channel).
   const encode = (source: HTMLCanvasElement) => {
-    if (isPrintAsset) return source.toDataURL("image/png");
+    if (isPrintAsset && !bakePrintBackground) return source.toDataURL("image/png");
     const flattened = document.createElement("canvas");
     flattened.width = source.width;
     flattened.height = source.height;
     const fctx = flattened.getContext("2d");
-    if (!fctx) return source.toDataURL("image/jpeg", 0.92);
+    if (!fctx) return source.toDataURL(isPrintAsset ? "image/png" : "image/jpeg", isPrintAsset ? undefined : 0.92);
     fctx.fillStyle = mockupFlattenColor;
     fctx.fillRect(0, 0, flattened.width, flattened.height);
     fctx.drawImage(source, 0, 0);
-    if (preserveExactColor) return flattened.toDataURL("image/png");
+    if (isPrintAsset || preserveExactColor) return flattened.toDataURL("image/png");
     return flattened.toDataURL("image/jpeg", 0.92);
   };
   if (w <= 0 || h <= 0) return encode(canvas);
@@ -1699,20 +1705,26 @@ export function PatternCustomizer({
     (bgColor && bgColor !== "transparent") ||
     (productKind === "hoodie" && garmentColorHex),
   );
+  // Print-res PNGs only bake a background when the user explicitly picked one.
+  // Otherwise the print file keeps its chroma-keyed transparency so coloured
+  // blanks (blue hoodie, black tote, …) show through instead of a white box.
+  const bakePrintBackground = Boolean(bgColor && bgColor !== "transparent");
   const getInactivePanelFillColor = useCallback(
-    (position: string): string | undefined => {
+    (position: string): string => {
       // User-picked background colour wins for ALL inactive panels (front,
       // sleeves, waistband, cuffs, hood, …). Without this, hoodie non-trim
       // panels were omitted entirely and trim panels rendered as the garment
       // colour, so a picked bgColor only appeared on the panels that had
       // active artwork (back / hood) and was missing on every inactive panel.
       if (bgColor && bgColor !== "transparent") return bgColor;
-      // No bgColor picked → fall back to garment colour for hoodie trim only,
-      // so trim doesn't render as white over a coloured hoodie.
-      if (productKind === "hoodie") {
-        return isHoodieTrimPanel(position) ? garmentColorHex || undefined : undefined;
+      // No bgColor picked → fall back to garment colour for hoodie trim, so
+      // trim doesn't render as white over a coloured hoodie.
+      if (productKind === "hoodie" && isHoodieTrimPanel(position) && garmentColorHex) {
+        return garmentColorHex;
       }
-      return undefined;
+      // Never drop a panel outright — an omitted placeholder can leave print
+      // areas without colour at fulfillment time. Default to white.
+      return "#ffffff";
     },
     [bgColor, garmentColorHex, productKind],
   );
@@ -2866,10 +2878,10 @@ export function PatternCustomizer({
       fx.translate(outW, 0);
       fx.scale(-1, 1);
       fx.drawImage(canvas, 0, 0);
-      return canvasToUploadDataUrl(flipped, pixelCap, mockupFlattenColor, preserveExactPanelColor);
+      return canvasToUploadDataUrl(flipped, pixelCap, mockupFlattenColor, preserveExactPanelColor, bakePrintBackground);
     }
 
-    return canvasToUploadDataUrl(canvas, pixelCap, mockupFlattenColor, preserveExactPanelColor);
+    return canvasToUploadDataUrl(canvas, pixelCap, mockupFlattenColor, preserveExactPanelColor, bakePrintBackground);
   }
 
   function buildSolidPanelDataUrl(
@@ -3040,16 +3052,16 @@ export function PatternCustomizer({
                   const cropR = document.createElement("canvas");
                   cropR.width = outWR; cropR.height = outHR;
                   cropR.getContext("2d")!.drawImage(comp, 0, 0, outWR, outHR, 0, 0, outWR, outHR);
-                  urls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(flipCanvas(cropR, outWR, outHR), pixelCap, mockupFlattenColor, preserveExactPanelColor) });
+                  urls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(flipCanvas(cropR, outWR, outHR), pixelCap, mockupFlattenColor, preserveExactPanelColor, bakePrintBackground) });
 
                   const cropL = document.createElement("canvas");
                   cropL.width = outWL; cropL.height = outHL;
                   cropL.getContext("2d")!.drawImage(comp, outWR, 0, outWL, outHL, 0, 0, outWL, outHL);
-                  urls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(flipCanvas(cropL, outWL, outHL), pixelCap, mockupFlattenColor, preserveExactPanelColor) });
+                  urls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(flipCanvas(cropL, outWL, outHL), pixelCap, mockupFlattenColor, preserveExactPanelColor, bakePrintBackground) });
                 } else {
                   const rightExport = renderPanel(outWR, outHR, true);
-                  urls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(rightExport, pixelCap, mockupFlattenColor, preserveExactPanelColor) });
-                  urls.push({ position: leftPos,  dataUrl: canvasToUploadDataUrl(flipCanvas(rightExport, outWL, outHL), pixelCap, mockupFlattenColor, preserveExactPanelColor) });
+                  urls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(rightExport, pixelCap, mockupFlattenColor, preserveExactPanelColor, bakePrintBackground) });
+                  urls.push({ position: leftPos,  dataUrl: canvasToUploadDataUrl(flipCanvas(rightExport, outWL, outHL), pixelCap, mockupFlattenColor, preserveExactPanelColor, bakePrintBackground) });
                 }
 
                 patternCompositeCovered.add(rightPos);
@@ -3174,7 +3186,7 @@ export function PatternCustomizer({
                 fx.drawImage(canvas, 0, 0);
                 outForUpload = flipped;
               }
-              urls.push({ position: p.position, dataUrl: canvasToUploadDataUrl(outForUpload, pixelCap, mockupFlattenColor, preserveExactPanelColor) });
+              urls.push({ position: p.position, dataUrl: canvasToUploadDataUrl(outForUpload, pixelCap, mockupFlattenColor, preserveExactPanelColor, bakePrintBackground) });
             }
             return urls;
           };
@@ -3227,7 +3239,7 @@ export function PatternCustomizer({
           ctx.fillRect(0, 0, TILE_OUT, TILE_OUT);
         }
         drawTiledMotifInRect(ctx, motifImage, 0, 0, TILE_OUT, TILE_OUT, tileInches, patternType, PRINT_DPI);
-        const tiledDataUrl = canvasToUploadDataUrl(canvas, 4096, mockupFlattenColor, preserveExactPanelColor);
+        const tiledDataUrl = canvasToUploadDataUrl(canvas, 4096, mockupFlattenColor, preserveExactPanelColor, bakePrintBackground);
         await onApply(tiledDataUrl, {
           mode,
           patternType,
@@ -3340,7 +3352,7 @@ export function PatternCustomizer({
           cropRight.width  = cRW;
           cropRight.height = cH;
           cropRight.getContext("2d")!.drawImage(compositeCanvas, 0, 0, cRW, cH, 0, 0, cRW, cH);
-          panelUrls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(cropRight, pixelCap, mockupFlattenColor, preserveExactPanelColor) });
+          panelUrls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(cropRight, pixelCap, mockupFlattenColor, preserveExactPanelColor, bakePrintBackground) });
 
           // Crop left panel (or mirror-flip if mirrorMode)
           const cropLeft = document.createElement("canvas");
@@ -3356,7 +3368,7 @@ export function PatternCustomizer({
           } else {
             ctxL.drawImage(compositeCanvas, cRW, 0, cLW, cH, 0, 0, cLW, cH);
           }
-          panelUrls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(cropLeft, pixelCap, mockupFlattenColor, preserveExactPanelColor) });
+          panelUrls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(cropLeft, pixelCap, mockupFlattenColor, preserveExactPanelColor, bakePrintBackground) });
 
           compositeCovered.add(rightPos);
           compositeCovered.add(leftPos);
@@ -3426,7 +3438,7 @@ export function PatternCustomizer({
           const frCtx = flipR.getContext("2d")!;
           frCtx.translate(cRW, 0); frCtx.scale(-1, 1);
           frCtx.drawImage(cropR, 0, 0);
-          panelUrls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(flipR, pixelCap, mockupFlattenColor, preserveExactPanelColor) });
+          panelUrls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(flipR, pixelCap, mockupFlattenColor, preserveExactPanelColor, bakePrintBackground) });
 
           // Left panel: handle all three modes explicitly.
           if (mirrorMode) {
@@ -3445,7 +3457,7 @@ export function PatternCustomizer({
             // applies the leg-slot flip only once, which breaks Mirror mode when
             // seam bleed routes leggings through this composite export path.
             mCtx.drawImage(cropR, 0, 0, cLW, cH);
-            panelUrls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(mirrorCanvas, pixelCap, mockupFlattenColor, preserveExactPanelColor) });
+            panelUrls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(mirrorCanvas, pixelCap, mockupFlattenColor, preserveExactPanelColor, bakePrintBackground) });
           } else if (syncSidesMode) {
             const symT: PanelTransform = { ...tRight, dxPx: -tRight.dxPx };
             const dataUrl = await exportPanelImage(leftDef, motifImage, symT, pixelCap);
@@ -3524,7 +3536,7 @@ export function PatternCustomizer({
               mCtx.fillRect(0, 0, outW, outH);
             }
             drawArtworkInSlot(mCtx, motifImage, 0, 0, outW, outH, mirrorDrawT, false);
-            panelUrls.push({ position: p.position, dataUrl: canvasToUploadDataUrl(mirrorCanvas, pixelCap, mockupFlattenColor, preserveExactPanelColor) });
+            panelUrls.push({ position: p.position, dataUrl: canvasToUploadDataUrl(mirrorCanvas, pixelCap, mockupFlattenColor, preserveExactPanelColor, bakePrintBackground) });
             continue;
           }
         }
@@ -3594,7 +3606,7 @@ export function PatternCustomizer({
       setApplyLoading(false);
     }
   }, [mode, motifImage, motifUrl, panelPositions, patternType, tileInches, bgColor,
-      perPanelTransforms, panelRenderConfig, mirrorMode, syncSidesMode, seamBleedPx, hoodieSeamBleedPx, patternOffsetX, hoodiePatternSpecs, applyAllover, getPatternSpecForPanel, getPatternSpecForView, getSeamBleedForPanel, getInactivePanelFillColor, svgImages, productKind, aopTemplateId, onApply, previewPx, panelFillColor, mockupFlattenColor, preserveExactPanelColor, shouldRenderPanelArtwork, shouldRenderPanelArtworkForMode]); // eslint-disable-line react-hooks/exhaustive-deps
+      perPanelTransforms, panelRenderConfig, mirrorMode, syncSidesMode, seamBleedPx, hoodieSeamBleedPx, patternOffsetX, hoodiePatternSpecs, applyAllover, getPatternSpecForPanel, getPatternSpecForView, getSeamBleedForPanel, getInactivePanelFillColor, svgImages, productKind, aopTemplateId, onApply, previewPx, panelFillColor, mockupFlattenColor, preserveExactPanelColor, bakePrintBackground, shouldRenderPanelArtwork, shouldRenderPanelArtworkForMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Panel list for controls ────────────────────────────────────────────────
 

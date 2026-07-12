@@ -302,7 +302,7 @@ async function getOrCreateSolidColorImageId(
   return result.id;
 }
 
-async function uploadImageToPrintify(
+export async function uploadImageToPrintify(
   imageUrlOrBuffer: string | Buffer,
   apiToken: string
 ): Promise<PrintifyImage | null> {
