@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import { API_BASE, PROXY_PREFIX, buildAppUrl } from "@/lib/urlBase";
 import { downloadImageFromUrl } from "@/lib/downloadImage";
 import { Button } from "@/components/ui/button";
@@ -4534,6 +4534,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   // Notify parent to refresh its gallery view
                   window.parent.postMessage({ type: 'APPAI_REFRESH_GALLERY' }, '*');
                 }
+                if (isMerchantStudio) {
+                  // The admin "My Designs" page caches this same query (staleTime: Infinity) —
+                  // without invalidating, a newly saved design won't appear until a hard refresh.
+                  queryClient.invalidateQueries({ queryKey: ["/api/storefront/customizer/my-designs"] });
+                  queryClient.invalidateQueries({ queryKey: ["/api/appai/design-studio/identity"] });
+                }
               })
               .catch(() => {}).finally(() => setSavedDesignsLoading(false));
           }
@@ -7973,6 +7979,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                                         setSavedDesigns(prev => prev.filter(x => x.id !== d.id));
                                         // Notify parent to refresh its gallery view
                                         window.parent.postMessage({ type: 'APPAI_REFRESH_GALLERY' }, '*');
+                                        if (isMerchantStudio) {
+                                          queryClient.invalidateQueries({ queryKey: ["/api/storefront/customizer/my-designs"] });
+                                          queryClient.invalidateQueries({ queryKey: ["/api/appai/design-studio/identity"] });
+                                        }
                                       }
                                     } catch {}
                                   }}
