@@ -87,6 +87,69 @@ describe("Recraft vectorizer client", () => {
     expect(cleaned).toContain('fill="none"');
     expect(cleaned).toContain('fill="#000"');
   });
+
+  it("prepareOpaquePlateForVectorize fills transparent areas with chroma plate", async () => {
+    const sharp = (await import("sharp")).default;
+    const { prepareOpaquePlateForVectorize } = await import("./replicate-vectorizer");
+
+    const src = await sharp({
+      create: {
+        width: 40,
+        height: 40,
+        channels: 4,
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      },
+    })
+      .composite([
+        {
+          input: await sharp({
+            create: { width: 10, height: 10, channels: 4, background: { r: 255, g: 255, b: 255, alpha: 255 } },
+          }).png().toBuffer(),
+          left: 15,
+          top: 15,
+        },
+      ])
+      .png()
+      .toBuffer();
+
+    const plate = await prepareOpaquePlateForVectorize(src);
+    const { data, info } = await sharp(plate).raw().toBuffer({ resolveWithObject: true });
+    expect(info.channels).toBe(3);
+
+    const cornerIdx = 0;
+    expect(data[cornerIdx]).toBe(255);
+    expect(data[cornerIdx + 1]).toBe(0);
+    expect(data[cornerIdx + 2]).toBe(255);
+
+    const centerIdx = ((20 * info.width) + 20) * info.channels;
+    expect(data[centerIdx]).toBe(255);
+    expect(data[centerIdx + 1]).toBe(255);
+    expect(data[centerIdx + 2]).toBe(255);
+  });
+
+  it("countNearWhiteOpaquePixels counts interior white fills", async () => {
+    const sharp = (await import("sharp")).default;
+    const { countNearWhiteOpaquePixels } = await import("./replicate-vectorizer");
+
+    const whitePatch = await sharp({
+      create: { width: 8, height: 8, channels: 4, background: { r: 255, g: 255, b: 255, alpha: 255 } },
+    }).png().toBuffer();
+
+    const src = await sharp({
+      create: {
+        width: 32,
+        height: 32,
+        channels: 4,
+        background: { r: 40, g: 80, b: 200, alpha: 255 },
+      },
+    })
+      .composite([{ input: whitePatch, left: 12, top: 12 }])
+      .png()
+      .toBuffer();
+
+    const count = await countNearWhiteOpaquePixels(src);
+    expect(count).toBeGreaterThanOrEqual(64);
+  });
 });
 
 function jsonResponse(body: unknown): Response {

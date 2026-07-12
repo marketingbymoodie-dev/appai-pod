@@ -9,7 +9,7 @@ import {
   bufferFromRemoveBgResult,
   type RemoveBgResult,
 } from "./replicate-bg-remover";
-import { sanitizeVectorSvg, vectorizeWithRecraft } from "./replicate-vectorizer";
+import { sanitizeVectorSvg, vectorizeWithRecraft, prepareOpaquePlateForVectorize, countNearWhiteOpaquePixels, rasterizeSvgBuffer } from "./replicate-vectorizer";
 import {
   APPAREL_CHROMA_STYLE_BY_NAME,
   APPAREL_DARK_TIER_PROMPTS,
@@ -918,11 +918,12 @@ export async function trimTransparentBounds(
 
 async function vectorizeWithNeplex(buffer: Buffer): Promise<Buffer> {
   const { vectorize, ColorMode, Hierarchical, PathSimplifyMode } = await import("@neplex/vectorizer");
+  const opaquePlate = await prepareOpaquePlateForVectorize(buffer);
 
-  const svg = await vectorize(buffer, {
+  const svg = await vectorize(opaquePlate, {
     colorMode: ColorMode.Color,
-    colorPrecision: 5,
-    filterSpeckle: 4,
+    colorPrecision: 6,
+    filterSpeckle: 2,
     cornerThreshold: 80,
     hierarchical: Hierarchical.Stacked,
     mode: PathSimplifyMode.Spline,
@@ -930,6 +931,33 @@ async function vectorizeWithNeplex(buffer: Buffer): Promise<Buffer> {
   });
 
   return sanitizeVectorSvg(Buffer.from(svg));
+}
+
+/** Reject SVG when interior whites (eyes, teeth) were lost during tracing. */
+async function acceptVectorizedOrFallback(
+  sourcePng: Buffer,
+  svg: Buffer,
+): Promise<VectorizeFlatGraphicResult> {
+  const meta = await sharp(sourcePng).metadata();
+  const width = meta.width ?? 1024;
+  const height = meta.height ?? 1024;
+
+  const sourceWhites = await countNearWhiteOpaquePixels(sourcePng);
+  if (sourceWhites < 24) {
+    return { buffer: svg, mimeType: "image/svg+xml" };
+  }
+
+  const raster = await rasterizeSvgBuffer(svg, width, height);
+  const tracedWhites = await countNearWhiteOpaquePixels(raster);
+  const ratio = tracedWhites / sourceWhites;
+  if (ratio < 0.65) {
+    console.warn(
+      `[Apparel Matting] Vectorize dropped interior white (${(ratio * 100).toFixed(0)}% retained, ${tracedWhites}/${sourceWhites}px) — keeping PNG`,
+    );
+    return { buffer: sourcePng, mimeType: "image/png" };
+  }
+
+  return { buffer: svg, mimeType: "image/svg+xml" };
 }
 
 export async function maybeVectorizeFlatGraphic(buffer: Buffer): Promise<VectorizeFlatGraphicResult> {
@@ -943,10 +971,11 @@ export async function maybeVectorizeFlatGraphic(buffer: Buffer): Promise<Vectori
   if (provider === "recraft" || provider === "") {
     try {
       const svg = await vectorizeWithRecraft({ imageBuffer: buffer });
+      const accepted = await acceptVectorizedOrFallback(buffer, svg);
       console.log(
-        `[Apparel Matting] Recraft vectorize complete (SVG retained) in ${Date.now() - startedAt}ms`,
+        `[Apparel Matting] Recraft vectorize complete (${accepted.mimeType === "image/svg+xml" ? "SVG retained" : "PNG fallback"}) in ${Date.now() - startedAt}ms`,
       );
-      return { buffer: svg, mimeType: "image/svg+xml" };
+      return accepted;
     } catch (err) {
       console.warn(
         `[Apparel Matting] Recraft vectorize failed after ${Date.now() - startedAt}ms, trying neplex:`,
@@ -959,10 +988,11 @@ export async function maybeVectorizeFlatGraphic(buffer: Buffer): Promise<Vectori
     try {
       const neplexStarted = Date.now();
       const svg = await vectorizeWithNeplex(buffer);
+      const accepted = await acceptVectorizedOrFallback(buffer, svg);
       console.log(
-        `[Apparel Matting] Neplex vectorize complete (SVG retained) in ${Date.now() - neplexStarted}ms (total ${Date.now() - startedAt}ms)`,
+        `[Apparel Matting] Neplex vectorize complete (${accepted.mimeType === "image/svg+xml" ? "SVG retained" : "PNG fallback"}) in ${Date.now() - neplexStarted}ms (total ${Date.now() - startedAt}ms)`,
       );
-      return { buffer: svg, mimeType: "image/svg+xml" };
+      return accepted;
     } catch (err) {
       console.warn("[Apparel Matting] Neplex vectorize skipped:", (err as Error).message);
     }

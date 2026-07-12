@@ -19,9 +19,56 @@ const RECRAFT_MAX_BYTES = 5 * 1024 * 1024;
 const RECRAFT_MAX_DIMENSION = 4096;
 const RECRAFT_MIN_DIMENSION = 256;
 
+/** Opaque plate behind transparent matted art so tracers keep interior whites (sclera, teeth). */
+const VECTORIZE_PLATE_CHROMA = { r: 255, g: 0, b: 255 } as const;
+
 export type RecraftVectorizeParams = {
   imageBuffer: Buffer;
 };
+
+/**
+ * Flatten matted RGBA onto an opaque chroma plate before vectorization.
+ * Transparent PNGs often cause tracers to treat white interior fills as holes.
+ */
+export async function prepareOpaquePlateForVectorize(source: Buffer): Promise<Buffer> {
+  const meta = await sharp(source).metadata();
+  const width = meta.width ?? 1024;
+  const height = meta.height ?? 1024;
+
+  return sharp({
+    create: {
+      width,
+      height,
+      channels: 3,
+      background: VECTORIZE_PLATE_CHROMA,
+    },
+  })
+    .composite([{ input: source, blend: "over" }])
+    .removeAlpha()
+    .png({ compressionLevel: 9 })
+    .toBuffer();
+}
+
+/** Count opaque near-white pixels — proxy for sclera/teeth/highlights in flat graphics. */
+export async function countNearWhiteOpaquePixels(buffer: Buffer): Promise<number> {
+  const { data, info } = await sharp(buffer)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  let count = 0;
+  for (let i = 0; i < data.length; i += info.channels) {
+    const a = data[i + 3];
+    if (a <= 128) continue;
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    const lum = (r + g + b) / 3;
+    const chroma = Math.max(r, g, b) - Math.min(r, g, b);
+    if (lum >= 230 && chroma <= 15) count++;
+  }
+  return count;
+}
 
 type ReplicatePrediction = {
   id: string;
@@ -87,7 +134,8 @@ export async function vectorizeWithRecraft(params: RecraftVectorizeParams): Prom
     throw new Error("REPLICATE_API_TOKEN environment variable is not set");
   }
 
-  const { apiBuffer } = await prepareBufferForRecraftVectorize(params.imageBuffer);
+  const opaquePlate = await prepareOpaquePlateForVectorize(params.imageBuffer);
+  const { apiBuffer } = await prepareBufferForRecraftVectorize(opaquePlate);
   const imageInput = `data:image/png;base64,${apiBuffer.toString("base64")}`;
 
   const prediction = await createReplicatePrediction(token, {
