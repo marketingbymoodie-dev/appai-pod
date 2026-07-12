@@ -157,22 +157,77 @@ export async function vectorizeWithRecraft(params: RecraftVectorizeParams): Prom
   return sanitizeVectorSvg(Buffer.from(await response.arrayBuffer()));
 }
 
+/** Parse a hex (#rgb / #rrggbb) or rgb()/rgba() SVG color value. */
+function parseSvgColor(value: string): { r: number; g: number; b: number } | null {
+  const v = value.trim().toLowerCase();
+  let m = v.match(/^#([0-9a-f]{3})$/);
+  if (m) {
+    const [r, g, b] = m[1].split("").map((c) => parseInt(c + c, 16));
+    return { r, g, b };
+  }
+  m = v.match(/^#([0-9a-f]{6})$/);
+  if (m) {
+    return {
+      r: parseInt(m[1].slice(0, 2), 16),
+      g: parseInt(m[1].slice(2, 4), 16),
+      b: parseInt(m[1].slice(4, 6), 16),
+    };
+  }
+  m = v.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+  if (m) return { r: Number(m[1]), g: Number(m[2]), b: Number(m[3]) };
+  if (v === "magenta" || v === "fuchsia") return { r: 255, g: 0, b: 255 };
+  return null;
+}
+
+/**
+ * True for the #FF00FF vectorize plate INCLUDING tracer color quantization — Neplex's
+ * colorPrecision:6 rounds 255 to 252 (#FC00FC) and Recraft can drift similarly, so an
+ * exact #FF00FF match misses the traced plate and it survives as a painted background.
+ * Bounds stay tight to the plate (both r and b near max, low green) so legitimate purples
+ * and violets in the artwork are never stripped.
+ */
+export function isChromaPlateRgb(r: number, g: number, b: number): boolean {
+  return r >= 220 && b >= 220 && g <= 90 && Math.abs(r - b) <= 50;
+}
+
+function isChromaPlateColorValue(value: string): boolean {
+  const c = parseSvgColor(value);
+  return !!c && isChromaPlateRgb(c.r, c.g, c.b);
+}
+
+/** Count opaque plate-magenta pixels — detects a traced plate that survived sanitizing. */
+export async function countChromaPlateOpaquePixels(buffer: Buffer): Promise<number> {
+  const { data, info } = await sharp(buffer)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  let count = 0;
+  for (let i = 0; i < data.length; i += info.channels) {
+    if (data[i + 3] <= 128) continue;
+    if (isChromaPlateRgb(data[i], data[i + 1], data[i + 2])) count++;
+  }
+  return count;
+}
+
 /** Strip chroma-key pink from traced SVG (fast string pass, no extra API latency). */
 export function sanitizeVectorSvg(svg: Buffer): Buffer {
   let text = svg.toString("utf8");
   if (!text.includes("<svg")) return svg;
 
-  const pinkFill =
-    /fill\s*=\s*["'](?:#ff00ff|#FF00FF|#f0f|#F0F|rgb\(\s*255\s*,\s*0\s*,\s*255\s*\)|rgba\(\s*255\s*,\s*0\s*,\s*255\s*,[^)]+\))["']/gi;
-  const pinkStroke =
-    /stroke\s*=\s*["'](?:#ff00ff|#FF00FF|#f0f|#F0F|rgb\(\s*255\s*,\s*0\s*,\s*255\s*\)|rgba\(\s*255\s*,\s*0\s*,\s*255\s*,[^)]+\))["']/gi;
-
-  text = text.replace(pinkFill, 'fill="none"');
-  text = text.replace(pinkStroke, 'stroke="none"');
   text = text.replace(
-    /style\s*=\s*["'][^"']*(?:fill|stroke)\s*:\s*(?:#ff00ff|#FF00FF|#f0f|#F0F|rgb\(\s*255\s*,\s*0\s*,\s*255\s*\))[^"']*["']/gi,
-    'style="display:none"',
+    /(fill|stroke)\s*=\s*(["'])([^"']*)\2/gi,
+    (match, attr: string, quote: string, value: string) =>
+      isChromaPlateColorValue(value) ? `${attr}=${quote}none${quote}` : match,
   );
+
+  text = text.replace(/style\s*=\s*(["'])([^"']*)\1/gi, (match, quote: string, css: string) => {
+    const paintDecls = css.match(/(?:fill|stroke)\s*:\s*[^;]+/gi) || [];
+    const hasPlatePaint = paintDecls.some((decl) =>
+      isChromaPlateColorValue(decl.split(":").slice(1).join(":")),
+    );
+    return hasPlatePaint ? `style=${quote}display:none${quote}` : match;
+  });
 
   return Buffer.from(text, "utf8");
 }

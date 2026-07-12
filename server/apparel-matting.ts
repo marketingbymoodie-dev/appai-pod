@@ -9,7 +9,7 @@ import {
   bufferFromRemoveBgResult,
   type RemoveBgResult,
 } from "./replicate-bg-remover";
-import { sanitizeVectorSvg, vectorizeWithRecraft, prepareOpaquePlateForVectorize, countNearWhiteOpaquePixels, rasterizeSvgBuffer } from "./replicate-vectorizer";
+import { sanitizeVectorSvg, vectorizeWithRecraft, prepareOpaquePlateForVectorize, countNearWhiteOpaquePixels, countChromaPlateOpaquePixels, rasterizeSvgBuffer } from "./replicate-vectorizer";
 import {
   APPAREL_CHROMA_STYLE_BY_NAME,
   APPAREL_DARK_TIER_PROMPTS,
@@ -1074,6 +1074,23 @@ async function acceptVectorizedOrFallback(
   const width = meta.width ?? 1024;
   const height = meta.height ?? 1024;
 
+  const raster = await rasterizeSvgBuffer(svg, width, height);
+
+  // Plate-residue QA: vectorization drops the matted art onto an opaque #FF00FF plate
+  // so tracers keep interior whites. sanitizeVectorSvg strips the traced plate paths,
+  // but if a tracer emits the plate in a form the sanitizer can't parse, the SVG renders
+  // with a solid magenta background. Any meaningful plate-magenta area that isn't in the
+  // source PNG means the plate survived — keep the clean PNG instead.
+  const sourcePlatePx = await countChromaPlateOpaquePixels(sourcePng);
+  const tracedPlatePx = await countChromaPlateOpaquePixels(raster);
+  const addedPlatePx = tracedPlatePx - sourcePlatePx;
+  if (addedPlatePx > width * height * 0.005) {
+    console.warn(
+      `[Apparel Matting] Vectorize plate residue detected (${tracedPlatePx}px magenta vs ${sourcePlatePx}px in source) — keeping PNG`,
+    );
+    return { buffer: sourcePng, mimeType: "image/png" };
+  }
+
   // Only enforce the white-retention QA when the source has a design-significant
   // white region (eye/teeth scale — ≥0.02% of the canvas). Tiny white areas
   // (specular highlights, anti-aliased edge pixels) make the retention ratio pure
@@ -1089,7 +1106,6 @@ async function acceptVectorizedOrFallback(
     return { buffer: svg, mimeType: "image/svg+xml" };
   }
 
-  const raster = await rasterizeSvgBuffer(svg, width, height);
   const tracedWhites = await countNearWhiteOpaquePixels(raster);
   const ratio = tracedWhites / sourceWhites;
   // Genuine failures (interior whites traced as holes) drop retention to near zero;

@@ -88,6 +88,52 @@ describe("Recraft vectorizer client", () => {
     expect(cleaned).toContain('fill="#000"');
   });
 
+  it("sanitizeVectorSvg strips tracer-quantized plate colors but keeps real purples", async () => {
+    const { sanitizeVectorSvg } = await import("./replicate-vectorizer");
+    const raw = Buffer.from(
+      '<svg>' +
+        '<path fill="#FC00FC" d="M0 0"/>' + // Neplex colorPrecision:6 plate (255→252)
+        '<path fill="rgb(250, 4, 248)" d="M1 1"/>' + // drifted plate
+        '<path stroke="#fc00fc" d="M2 2"/>' +
+        '<path style="fill:#FA00FA;stroke:#000" d="M3 3"/>' +
+        '<path fill="#800080" d="M4 4"/>' + // legit purple — keep
+        '<path fill="#C800FF" d="M5 5"/>' + // legit violet — keep
+        '</svg>',
+    );
+    const cleaned = sanitizeVectorSvg(raw).toString("utf8");
+    expect(cleaned).not.toContain("#FC00FC");
+    expect(cleaned).not.toContain("rgb(250, 4, 248)");
+    expect(cleaned).toContain('stroke="none"');
+    expect(cleaned).toContain('style="display:none"');
+    expect(cleaned).toContain('fill="#800080"');
+    expect(cleaned).toContain('fill="#C800FF"');
+  });
+
+  it("countChromaPlateOpaquePixels detects a surviving plate raster", async () => {
+    const sharp = (await import("sharp")).default;
+    const { countChromaPlateOpaquePixels } = await import("./replicate-vectorizer");
+
+    const platePatch = await sharp({
+      create: { width: 10, height: 10, channels: 4, background: { r: 252, g: 0, b: 252, alpha: 255 } },
+    }).png().toBuffer();
+
+    const src = await sharp({
+      create: {
+        width: 32,
+        height: 32,
+        channels: 4,
+        background: { r: 128, g: 0, b: 128, alpha: 255 }, // legit purple — not counted
+      },
+    })
+      .composite([{ input: platePatch, left: 10, top: 10 }])
+      .png()
+      .toBuffer();
+
+    const count = await countChromaPlateOpaquePixels(src);
+    expect(count).toBeGreaterThanOrEqual(100);
+    expect(count).toBeLessThan(150);
+  });
+
   it("prepareOpaquePlateForVectorize fills transparent areas with chroma plate", async () => {
     const sharp = (await import("sharp")).default;
     const { prepareOpaquePlateForVectorize } = await import("./replicate-vectorizer");
