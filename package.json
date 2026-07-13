@@ -15,7 +15,8 @@
     "aop:triangle:generate": "tsx scripts/generate-aop-triangle-calibration.ts",
     "aop:triangle:detect": "tsx scripts/detect-aop-triangle-calibration.ts",
     "aop:panel:calibrate": "tsx scripts/build-aop-panel-calibration.ts",
-    "publish:hoodie": "tsx scripts/publish-hoodie-template.ts"
+    "publish:hoodie": "tsx scripts/publish-hoodie-template.ts",
+    "import:hoodie-drafts": "tsx scripts/import-hoodie-drafts-to-supabase.ts"
   },
   "dependencies": {
     "@google-cloud/storage": "^7.18.0",
