@@ -154,7 +154,8 @@ export async function vectorizeWithRecraft(params: RecraftVectorizeParams): Prom
     throw new Error(`Failed to download Recraft SVG: HTTP ${response.status}`);
   }
 
-  return sanitizeVectorSvg(Buffer.from(await response.arrayBuffer()));
+  const rawSvg = Buffer.from(await response.arrayBuffer());
+  return sanitizeVectorSvgConnected(rawSvg, params.imageBuffer);
 }
 
 /** Parse a hex (#rgb / #rrggbb) or rgb()/rgba() SVG color value. */
@@ -210,26 +211,197 @@ export async function countChromaPlateOpaquePixels(buffer: Buffer): Promise<numb
   return count;
 }
 
-/** Strip chroma-key pink from traced SVG (fast string pass, no extra API latency). */
-export function sanitizeVectorSvg(svg: Buffer): Buffer {
+/**
+ * Strip chroma-key pink from traced SVG (fast string pass, no extra API latency).
+ *
+ * `isPlateValue` defaults to a blind hue-range match (`isChromaPlateColorValue`), which
+ * cannot tell the actual plate/background apart from legitimate enclosed design content in
+ * the same magenta/pink/fuchsia hue family (e.g. a hot-pink flower petal) — both satisfy the
+ * same RGB bounds. Callers that have done connectivity-based classification (see
+ * `classifyPlateColorsByConnectivity`) should pass a narrower predicate so only colors
+ * confirmed to be background-connected get stripped.
+ */
+export function sanitizeVectorSvg(
+  svg: Buffer,
+  isPlateValue: (value: string) => boolean = isChromaPlateColorValue,
+): Buffer {
   let text = svg.toString("utf8");
   if (!text.includes("<svg")) return svg;
 
   text = text.replace(
     /(fill|stroke)\s*=\s*(["'])([^"']*)\2/gi,
     (match, attr: string, quote: string, value: string) =>
-      isChromaPlateColorValue(value) ? `${attr}=${quote}none${quote}` : match,
+      isPlateValue(value) ? `${attr}=${quote}none${quote}` : match,
   );
 
   text = text.replace(/style\s*=\s*(["'])([^"']*)\1/gi, (match, quote: string, css: string) => {
     const paintDecls = css.match(/(?:fill|stroke)\s*:\s*[^;]+/gi) || [];
     const hasPlatePaint = paintDecls.some((decl) =>
-      isChromaPlateColorValue(decl.split(":").slice(1).join(":")),
+      isPlateValue(decl.split(":").slice(1).join(":")),
     );
     return hasPlatePaint ? `style=${quote}display:none${quote}` : match;
   });
 
   return Buffer.from(text, "utf8");
+}
+
+/** Collect distinct fill/stroke color strings in the SVG that fall in the plate hue range. */
+function collectCandidatePlateColorValues(svgText: string): string[] {
+  const values = new Set<string>();
+
+  const attrRe = /(?:fill|stroke)\s*=\s*(["'])([^"']*)\1/gi;
+  let m: RegExpExecArray | null;
+  while ((m = attrRe.exec(svgText))) {
+    const value = m[2].trim();
+    if (isChromaPlateColorValue(value)) values.add(value);
+  }
+
+  const styleRe = /style\s*=\s*(["'])([^"']*)\1/gi;
+  while ((m = styleRe.exec(svgText))) {
+    const decls = m[2].match(/(?:fill|stroke)\s*:\s*[^;]+/gi) || [];
+    for (const decl of decls) {
+      const value = decl.split(":").slice(1).join(":").trim();
+      if (isChromaPlateColorValue(value)) values.add(value);
+    }
+  }
+
+  return [...values];
+}
+
+/**
+ * Distinguish tracer-emitted plate/background paths from legitimate enclosed design content
+ * that happens to share the plate's magenta/pink/fuchsia hue family (e.g. a hot-pink flower
+ * petal on a floral design). A blind color-range match can't tell them apart — pixels of the
+ * exact same quantized color can be background in one path and real design fill in another.
+ *
+ * Mirrors the connectivity approach already used for raster chroma-key removal
+ * (`removeChromaKeyBackground` in apparel-matting.ts): rasterize the raw (unsanitized) trace,
+ * flood-fill plate-hued pixels connected to the canvas border, then classify each candidate
+ * fill/stroke color by whether its pixels in the raster are majority border-connected (plate)
+ * or majority enclosed (design). Only border-connected colors are returned for stripping.
+ */
+/**
+ * Manhattan distance to pure #FF00FF for the border-connectivity FLOOD ITSELF (not for
+ * choosing which SVG colors are worth classifying — that uses the much wider
+ * `isChromaPlateRgb`). This must stay tight: a hot-pink design fill and the plate both
+ * satisfy the wide hue-family bounds, so flooding on that wide predicate would just treat
+ * the whole hue family as one connected blob and swallow enclosed design shapes too. A tight
+ * distance-to-key bound (with headroom for tracer color quantization, e.g. Neplex rounding
+ * 255→252) still only connects genuine plate/background pixels.
+ */
+const PLATE_FLOOD_MANHATTAN_TOLERANCE = 60;
+
+function isPlateFloodPixelRgb(r: number, g: number, b: number): boolean {
+  return Math.abs(r - 255) + Math.abs(g - 0) + Math.abs(b - 255) <= PLATE_FLOOD_MANHATTAN_TOLERANCE;
+}
+
+export async function classifyPlateColorsByConnectivity(
+  rawTracedRaster: Buffer,
+  candidateColors: string[],
+): Promise<Set<string>> {
+  const parsed = candidateColors
+    .map((value) => ({ value, rgb: parseSvgColor(value) }))
+    .filter((c): c is { value: string; rgb: { r: number; g: number; b: number } } => !!c.rgb);
+  if (parsed.length === 0) return new Set();
+
+  const { data, info } = await sharp(rawTracedRaster)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const { width, height, channels } = info;
+  const total = width * height;
+
+  const isPlateHuePixel = (pixelIdx: number) =>
+    isPlateFloodPixelRgb(data[pixelIdx], data[pixelIdx + 1], data[pixelIdx + 2]);
+
+  // Border-connected flood over tight-tolerance plate pixels (see isPlateFloodPixelRgb) so
+  // tracer color quantization noise along the plate/subject boundary doesn't fragment the
+  // background, while a same-hue-family but clearly-distinct design color (hot pink, etc.)
+  // never gets swept in just because it shares the hue.
+  const connected = new Uint8Array(total);
+  const visited = new Uint8Array(total);
+  const queue: number[] = [];
+  const trySeed = (x: number, y: number) => {
+    const p = y * width + x;
+    if (visited[p]) return;
+    visited[p] = 1;
+    if (isPlateHuePixel(p * channels)) {
+      connected[p] = 1;
+      queue.push(p);
+    }
+  };
+  for (let x = 0; x < width; x++) {
+    trySeed(x, 0);
+    trySeed(x, height - 1);
+  }
+  for (let y = 0; y < height; y++) {
+    trySeed(0, y);
+    trySeed(width - 1, y);
+  }
+  while (queue.length > 0) {
+    const p = queue.pop()!;
+    const x = p % width;
+    const y = Math.floor(p / width);
+    for (const [dx, dy] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ] as const) {
+      const nx = x + dx;
+      const ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+      const np = ny * width + nx;
+      if (visited[np]) continue;
+      visited[np] = 1;
+      if (!isPlateHuePixel(np * channels)) continue;
+      connected[np] = 1;
+      queue.push(np);
+    }
+  }
+
+  const plateColorTolerance = 6;
+  const plateColors = new Set<string>();
+  for (const { value, rgb } of parsed) {
+    let matched = 0;
+    let matchedConnected = 0;
+    for (let p = 0; p < total; p++) {
+      const idx = p * channels;
+      if (
+        Math.abs(data[idx] - rgb.r) <= plateColorTolerance &&
+        Math.abs(data[idx + 1] - rgb.g) <= plateColorTolerance &&
+        Math.abs(data[idx + 2] - rgb.b) <= plateColorTolerance
+      ) {
+        matched++;
+        if (connected[p]) matchedConnected++;
+      }
+    }
+    // No matched pixels (anti-aliased away to nothing) is rare and low-risk either way;
+    // default to treating it as plate, matching prior (pre-connectivity) behavior.
+    if (matched === 0 || matchedConnected / matched >= 0.5) {
+      plateColors.add(value);
+    }
+  }
+  return plateColors;
+}
+
+/**
+ * Sanitize a raw traced SVG using connectivity-based plate classification instead of a blind
+ * hue-range match, so enclosed design content sharing the plate's hue (hot-pink/magenta
+ * flowers, accents, etc.) survives while the actual background plate is still stripped.
+ */
+export async function sanitizeVectorSvgConnected(rawSvg: Buffer, sourceForDims: Buffer): Promise<Buffer> {
+  const text = rawSvg.toString("utf8");
+  const candidates = collectCandidatePlateColorValues(text);
+  if (candidates.length === 0) return rawSvg;
+
+  const meta = await sharp(sourceForDims).metadata();
+  const width = meta.width ?? 1024;
+  const height = meta.height ?? 1024;
+  const raster = await rasterizeSvgBuffer(rawSvg, width, height);
+  const plateColors = await classifyPlateColorsByConnectivity(raster, candidates);
+
+  return sanitizeVectorSvg(rawSvg, (value) => plateColors.has(value.trim()));
 }
 
 export async function rasterizeSvgBuffer(

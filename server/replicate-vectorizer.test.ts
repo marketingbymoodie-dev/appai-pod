@@ -109,6 +109,63 @@ describe("Recraft vectorizer client", () => {
     expect(cleaned).toContain('fill="#C800FF"');
   });
 
+  it("classifyPlateColorsByConnectivity keeps enclosed hot-pink design fill but flags border-connected plate", async () => {
+    const sharp = (await import("sharp")).default;
+    const { classifyPlateColorsByConnectivity } = await import("./replicate-vectorizer");
+
+    const width = 60;
+    const height = 60;
+    const raw = new Uint8Array(width * height * 4);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = (y * width + x) * 4;
+        // Enclosed hot-pink "flower petal" — same plate hue family, never touches the border.
+        const inDesign = x >= 20 && x < 40 && y >= 20 && y < 40;
+        if (inDesign) {
+          raw[idx] = 230;
+          raw[idx + 1] = 20;
+          raw[idx + 2] = 225;
+        } else {
+          raw[idx] = 255;
+          raw[idx + 1] = 0;
+          raw[idx + 2] = 255;
+        }
+        raw[idx + 3] = 255;
+      }
+    }
+    const raster = await sharp(Buffer.from(raw), { raw: { width, height, channels: 4 } })
+      .png()
+      .toBuffer();
+
+    const plateColors = await classifyPlateColorsByConnectivity(raster, ["#FF00FF", "#E614E1"]);
+    expect(plateColors.has("#FF00FF")).toBe(true);
+    expect(plateColors.has("#E614E1")).toBe(false);
+  });
+
+  it("sanitizeVectorSvgConnected strips border-connected plate but keeps enclosed hot-pink design fill", async () => {
+    const sharp = (await import("sharp")).default;
+    const { sanitizeVectorSvgConnected } = await import("./replicate-vectorizer");
+
+    const width = 60;
+    const height = 60;
+    const rawSvg = Buffer.from(
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">` +
+        `<rect x="0" y="0" width="${width}" height="${height}" fill="#FF00FF"/>` +
+        `<rect x="20" y="20" width="20" height="20" fill="#E614E1"/>` +
+        `</svg>`,
+    );
+    const sourceForDims = await sharp({
+      create: { width, height, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+    })
+      .png()
+      .toBuffer();
+
+    const cleaned = (await sanitizeVectorSvgConnected(rawSvg, sourceForDims)).toString("utf8");
+    expect(cleaned).toContain('fill="none"');
+    expect(cleaned).toContain('fill="#E614E1"');
+    expect(cleaned).not.toContain('fill="#FF00FF"');
+  });
+
   it("countChromaPlateOpaquePixels detects a surviving plate raster", async () => {
     const sharp = (await import("sharp")).default;
     const { countChromaPlateOpaquePixels } = await import("./replicate-vectorizer");

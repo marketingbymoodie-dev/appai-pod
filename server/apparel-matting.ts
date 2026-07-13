@@ -9,7 +9,7 @@ import {
   bufferFromRemoveBgResult,
   type RemoveBgResult,
 } from "./replicate-bg-remover";
-import { sanitizeVectorSvg, vectorizeWithRecraft, prepareOpaquePlateForVectorize, countNearWhiteOpaquePixels, countChromaPlateOpaquePixels, rasterizeSvgBuffer } from "./replicate-vectorizer";
+import { sanitizeVectorSvgConnected, vectorizeWithRecraft, prepareOpaquePlateForVectorize, countNearWhiteOpaquePixels, countChromaPlateOpaquePixels, rasterizeSvgBuffer } from "./replicate-vectorizer";
 import {
   APPAREL_CHROMA_STYLE_BY_NAME,
   APPAREL_DARK_TIER_PROMPTS,
@@ -1062,7 +1062,7 @@ async function vectorizeWithNeplex(buffer: Buffer): Promise<Buffer> {
     pathPrecision: 4,
   });
 
-  return sanitizeVectorSvg(Buffer.from(svg));
+  return sanitizeVectorSvgConnected(Buffer.from(svg), buffer);
 }
 
 /** Reject SVG when interior whites (eyes, teeth) were lost during tracing. */
@@ -1089,6 +1089,24 @@ async function acceptVectorizedOrFallback(
       `[Apparel Matting] Vectorize plate residue detected (${tracedPlatePx}px magenta vs ${sourcePlatePx}px in source) — keeping PNG`,
     );
     return { buffer: sourcePng, mimeType: "image/png" };
+  }
+
+  // General coverage-regression QA: catches any internal color/section dropped during
+  // tracing or plate sanitization — not just whites (see white-retention check below).
+  // Connectivity-based plate classification (sanitizeVectorSvgConnected) already prevents
+  // most of this, but this stays as a defense-in-depth net for edge cases (e.g. a color with
+  // zero matched pixels in the classification raster, which conservatively defaults to plate).
+  const sourceOpaque = await analyzeAlphaQuality(sourcePng);
+  const tracedOpaque = await analyzeAlphaQuality(raster);
+  const coverageFloor = Math.max(500, Math.round(width * height * 0.005));
+  if (sourceOpaque.opaquePixelCount >= coverageFloor) {
+    const coverageRatio = tracedOpaque.opaquePixelCount / sourceOpaque.opaquePixelCount;
+    if (coverageRatio < 0.88) {
+      console.warn(
+        `[Apparel Matting] Vectorize dropped ${(100 - coverageRatio * 100).toFixed(0)}% of opaque art coverage (${tracedOpaque.opaquePixelCount}/${sourceOpaque.opaquePixelCount}px) — keeping PNG`,
+      );
+      return { buffer: sourcePng, mimeType: "image/png" };
+    }
   }
 
   // Only enforce the white-retention QA when the source has a design-significant
