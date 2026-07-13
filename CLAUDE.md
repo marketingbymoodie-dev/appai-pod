@@ -78,6 +78,21 @@ Before the customer generates artwork, `catalogPreviewImages` drives the blank m
 
 ---
 
+## SVG vectorization drops internal colors/sections — fixed 2026-07
+
+**Status: root-cause fixed. Re-verify with real Recraft/Neplex output before fully trusting on a wide multi-color launch batch (unit-tested with synthetic rasters only — see below).**
+
+Root cause: `sanitizeVectorSvg`'s plate-stripping used a blind hue-range match (`isChromaPlateRgb`: high red + high blue + low green) to decide which traced SVG fill/stroke colors were the `#FF00FF` chroma plate. That range is deliberately wide (to survive tracer color quantization drift, e.g. Neplex rounds 255→252), but it's *indistinguishable* from legitimate hot-pink/magenta/fuchsia **design** colors (common in floral designs, exactly what triggered the user report) — both satisfy the same RGB bounds, so any enclosed design shape in that hue got nulled out (`fill="none"`) right alongside the actual background plate.
+
+Fix (`server/replicate-vectorizer.ts`):
+- `classifyPlateColorsByConnectivity()` — rasterizes the **raw, unsanitized** trace, flood-fills only pixels within a **tight** Manhattan distance to pure `#FF00FF` (`isPlateFloodPixelRgb`, tolerance 60) starting from the canvas border, then classifies each candidate plate-range SVG color by whether its pixels are majority border-connected (→ strip) or majority enclosed (→ keep). Mirrors the connectivity philosophy `removeChromaKeyBackground` already uses for raster matting (tight flood ≠ wide hue-range candidate net).
+- `sanitizeVectorSvgConnected()` — orchestrates: collect wide-range candidate colors from the raw SVG text → rasterize → classify → sanitize using only the classified-as-plate set. Used by both `vectorizeWithRecraft` and `vectorizeWithNeplex` (`server/apparel-matting.ts`) instead of the old blind `sanitizeVectorSvg(svg)` call.
+- `apparel-matting.ts`'s `acceptVectorizedOrFallback` also gained a general opaque-coverage-regression QA check (source vs. traced opaque pixel count, <88% retained → fall back to the pre-vectorize PNG) as defense-in-depth for any remaining edge case.
+- Unit tests (`server/replicate-vectorizer.test.ts`) cover the exact bug shape: an enclosed hot-pink square inside a `#FF00FF` background must survive; the background must still be stripped.
+- Known residual risk: colors *very close* to pure `#FF00FF` itself (inside the tight flood tolerance) still can't be told apart from plate if enclosed — same accepted tradeoff raster matting already makes (see `removeChromaKeyBackground`'s Pass A comment). Only near-exact-key colors, not the broader pink/magenta family.
+
+---
+
 ## Phone cases (flat calibration) — active problem area
 
 ### What Printify expects
@@ -135,6 +150,7 @@ Before the customer generates artwork, `catalogPreviewImages` drives the blank m
 
 - **Garment color dropdown:** Radix scroll buttons blocked lower options; colors without `variantMap` entries now marked unavailable (`FrameColorSelector`, `shared/variantMapResolve.ts`).
 - **Framed posters:** blank key resolution order (`size:color` before `white`) — do not regress.
+- **Pullover hoodie kangaroo pocket artwork (2026-07):** toggling "Pockets" on in the customer placer never showed artwork for pullover hoodies (worked fine for zip hoodies). Root cause: `front_pocket` lived in the `trim` design group (`shared/hoodieTemplate.ts`), which `HoodieAopPlacer`'s `buildEffectiveRenderConfig` **always** force-disables (`trim: false`, waistband/cuffs must stay solid) — so the pocket panel inherited a disabled group no matter the toggle state. Zip hoodie's `pocket_left`/`pocket_right` were already in the enabled `front-body` group, which is why it worked there. Fix: moved `front_pocket` into `front-body` in `defaultPulloverDesignGroups()`, plus a `normalizeHoodieTemplate()` migration so already-persisted Supabase templates self-heal on load (no backfill script needed — same pattern as the existing legacy-sleeve-group migration in that function).
 
 ---
 

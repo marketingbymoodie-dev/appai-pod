@@ -49,7 +49,10 @@ describe("createFreshAopTemplate", () => {
   it("uses pullover defaults for bp 450", () => {
     const t = createFreshAopTemplate({ name: "pullover-hoodie-aop-L", blueprintId: 450 });
     expect(t.hoodieType).toBe("pullover-hoodie-aop");
-    expect(t.designGroups.find((g) => g.id === "front-body")?.panelKeys).toEqual(["front"]);
+    expect(t.designGroups.find((g) => g.id === "front-body")?.panelKeys).toEqual([
+      "front",
+      "front_pocket",
+    ]);
   });
 
   it("uses sweatshirt defaults for bp 449", () => {
@@ -196,15 +199,43 @@ describe("pullover hoodie panel keys (bp 450)", () => {
     expect(eligible).toContain("front_right");
   });
 
-  it("front-body design group is a single front panel", () => {
+  it("front-body design group is the front panel plus kangaroo pocket", () => {
     const groups = defaultPulloverDesignGroups();
     const frontBody = groups.find((g) => g.id === "front-body");
-    expect(frontBody?.panelKeys).toEqual(["front"]);
+    // Pocket rides with front-body (like zip hoodie pocket halves) so toggling
+    // Pockets on actually shows artwork — `trim` is always force-disabled.
+    expect(frontBody?.panelKeys).toEqual(["front", "front_pocket"]);
+    expect(groups.find((g) => g.id === "trim")?.panelKeys).toEqual(["waistband"]);
   });
 
   it("designGroupsForBlueprint picks pullover defaults for 450", () => {
     const groups = designGroupsForBlueprint(PULOVER_HOODIE_BLUEPRINT_ID);
-    expect(groups.find((g) => g.id === "front-body")?.panelKeys).toEqual(["front"]);
+    expect(groups.find((g) => g.id === "front-body")?.panelKeys).toEqual([
+      "front",
+      "front_pocket",
+    ]);
+  });
+
+  it("normalizeHoodieTemplate migrates stale pullover templates with front_pocket in trim", () => {
+    const raw = createFreshAopTemplate({
+      name: "pullover-pocket-migration-test",
+      blueprintId: PULOVER_HOODIE_BLUEPRINT_ID,
+    });
+    // Simulate a pre-fix persisted template: pocket still in `trim`.
+    const staleGroups = raw.designGroups!.map((g) => {
+      if (g.id === "front-body") return { ...g, panelKeys: ["front"] };
+      if (g.id === "trim") return { ...g, panelKeys: ["waistband", "front_pocket"] };
+      return g;
+    });
+    const stale = { ...raw, designGroups: staleGroups };
+    const normalized = normalizeHoodieTemplate(stale);
+    expect(normalized.designGroups?.find((g) => g.id === "front-body")?.panelKeys).toEqual([
+      "front",
+      "front_pocket",
+    ]);
+    expect(normalized.designGroups?.find((g) => g.id === "trim")?.panelKeys).toEqual([
+      "waistband",
+    ]);
   });
 
   it("mockupDrawRect applies x/y/scale", () => {

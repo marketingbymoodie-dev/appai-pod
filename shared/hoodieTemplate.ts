@@ -603,7 +603,11 @@ export function defaultPulloverDesignGroups(): DesignGroup[] {
     {
       id: "front-body",
       name: "Front body",
-      panelKeys: ["front"],
+      // Kangaroo pocket rides with the front body (like the zip hoodie's
+      // pocket halves) so toggling Pockets on actually enables artwork —
+      // `trim` is always force-disabled at render time (waistband/cuffs
+      // must stay solid), so a pocket left there could never show artwork.
+      panelKeys: ["front", "front_pocket"],
       placement: { front: { ...blank }, back: { ...blank } },
       seamAllowance: 0,
       lockedRatio: null,
@@ -639,7 +643,7 @@ export function defaultPulloverDesignGroups(): DesignGroup[] {
     {
       id: "trim",
       name: "Trim",
-      panelKeys: ["waistband", "front_pocket"],
+      panelKeys: ["waistband"],
       placement: { front: { ...blank }, back: { ...blank } },
       seamAllowance: 0,
       lockedRatio: null,
@@ -1102,6 +1106,31 @@ export function normalizeHoodieTemplate(template: HoodieTemplate): HoodieTemplat
         },
         ...designGroups.slice(legacyIdx + 1),
       ];
+    }
+  }
+  // Migrate stale pullover templates where `front_pocket` still lives in the
+  // always-disabled `trim` group (pre-fix persisted JSON). Without this,
+  // toggling "Pockets" on in the customer placer can never show artwork
+  // because `trim` is force-disabled at render time — see
+  // defaultPulloverDesignGroups() above for the current (fixed) default.
+  if (isPulloverHoodieBlueprint(template.blueprintId)) {
+    const frontBodyIdx = designGroups.findIndex((g) => g.id === "front-body");
+    const trimIdx = designGroups.findIndex((g) => g.id === "trim");
+    if (
+      frontBodyIdx >= 0 &&
+      trimIdx >= 0 &&
+      designGroups[trimIdx].panelKeys.includes("front_pocket") &&
+      !designGroups[frontBodyIdx].panelKeys.includes("front_pocket")
+    ) {
+      designGroups = designGroups.map((g, i) => {
+        if (i === frontBodyIdx) {
+          return { ...g, panelKeys: [...g.panelKeys, "front_pocket"] };
+        }
+        if (i === trimIdx) {
+          return { ...g, panelKeys: g.panelKeys.filter((k) => k !== "front_pocket") };
+        }
+        return g;
+      });
     }
   }
   const placerEditor = resolvePlacerEditor({ ...template, designGroups });
