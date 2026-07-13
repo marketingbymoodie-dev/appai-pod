@@ -3,6 +3,8 @@
  * Creates a temporary transparent-print product, polls mockups, downloads
  * front/back garment photos, and stores them as mapper mockup assets.
  */
+import fs from "node:fs";
+import path from "node:path";
 import {
   readTemplateText,
   writeAssetBuffer,
@@ -266,6 +268,15 @@ export async function fetchPrintifyBlankMockups(args: {
       const height = meta.height ?? 0;
       if (width <= 0 || height <= 0) continue;
       const filename = `${templateName}-${view}.png`;
+      // The blank harvest reuses the template's active mockup filename, so a
+      // custom-authored mockup would be silently destroyed here (this clobbered
+      // the zip hoodie's traced front mockup in June 2026). Keep a local
+      // timestamped backup of whatever we're about to overwrite.
+      const existing = path.join(MOCKUPS_DIR, filename);
+      if (fs.existsSync(existing)) {
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        fs.copyFileSync(existing, path.join(MOCKUPS_DIR, `${templateName}-${view}.${stamp}.bak`));
+      }
       await writeAssetBuffer("mockups", filename, buf);
       downloaded.push({
         view,
