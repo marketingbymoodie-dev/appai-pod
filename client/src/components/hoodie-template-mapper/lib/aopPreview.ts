@@ -615,19 +615,24 @@ export function resolveAopPreviewCanvasBounds(
 ): AopPreviewCanvasBounds {
   const viewState = template.views[view];
   const mockupAsset = viewState?.mockup ?? null;
-  const baseW = mockup.naturalWidth || mockup.width || 1;
-  const baseH = mockup.naturalHeight || mockup.height || 1;
   let minX = 0;
   let minY = 0;
-  let maxX = baseW;
-  let maxY = baseH;
+  let maxX: number;
+  let maxY: number;
 
   if (mockupAsset) {
+    // Use the template's stored draw rect, not the image's natural size: the
+    // blank is drawn at the stored width/height, so a source file whose pixel
+    // dimensions differ (e.g. a re-harvested 2048px blank on a 1024px-traced
+    // template) must not inflate the canvas and shrink the garment.
     const dr = mockupDrawRect(mockupAsset);
     minX = Math.min(minX, dr.x);
     minY = Math.min(minY, dr.y);
-    maxX = Math.max(maxX, dr.x + dr.renderWidth);
-    maxY = Math.max(maxY, dr.y + dr.renderHeight);
+    maxX = dr.x + dr.renderWidth;
+    maxY = dr.y + dr.renderHeight;
+  } else {
+    maxX = mockup.naturalWidth || mockup.width || 1;
+    maxY = mockup.naturalHeight || mockup.height || 1;
   }
 
   for (const layer of viewState?.layers ?? []) {
