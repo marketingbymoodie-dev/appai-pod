@@ -9,7 +9,7 @@ import {
   bufferFromRemoveBgResult,
   type RemoveBgResult,
 } from "./replicate-bg-remover";
-import { sanitizeVectorSvg, vectorizeWithRecraft } from "./replicate-vectorizer";
+import { sanitizeVectorSvg, vectorizeWithRecraft, prepareOpaquePlateForVectorize, countNearWhiteOpaquePixels, countChromaPlateOpaquePixels, rasterizeSvgBuffer } from "./replicate-vectorizer";
 import {
   APPAREL_CHROMA_STYLE_BY_NAME,
   APPAREL_DARK_TIER_PROMPTS,
@@ -41,6 +41,10 @@ export type AlphaQualityMetrics = {
   largestComponentFillRatio: number;
   opaquePixelCount: number;
   totalPixels: number;
+  /** Share of opaque pixels that are still magenta/pink-hued (any shade) — leftover chroma
+   *  fringe that the fixed-distance-to-#FF00FF passes miss because Manhattan distance grows
+   *  fast with brightness even when the hue is identical. */
+  residualMagentaOpaqueRatio: number;
 };
 
 export type ChromaKeyResult = {
@@ -242,6 +246,98 @@ function colorDistance(
   tb: number,
 ): number {
   return Math.abs(r - tr) + Math.abs(g - tg) + Math.abs(b - tb);
+}
+
+/** Hue (deg), saturation and lightness (0–1) — used for hue-family matching independent of brightness. */
+function rgbToHsl(r: number, g: number, b: number): { h: number; s: number; l: number } {
+  const rn = r / 255;
+  const gn = g / 255;
+  const bn = b / 255;
+  const max = Math.max(rn, gn, bn);
+  const min = Math.min(rn, gn, bn);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d === 0) return { h: 0, s: 0, l };
+  const s = d / (1 - Math.abs(2 * l - 1));
+  let h: number;
+  if (max === rn) h = ((gn - bn) / d) % 6;
+  else if (max === gn) h = (bn - rn) / d + 2;
+  else h = (rn - gn) / d + 4;
+  h *= 60;
+  if (h < 0) h += 360;
+  return { h, s, l };
+}
+
+/**
+ * True for ANY shade/tint of the #FF00FF chroma hue (dark, desaturated, or pale pink) — not
+ * just colors close to pure magenta by RGB distance. Anti-aliased fringe pixels blend the
+ * design edge color into the pink canvas and often end up as a darker or muddier pink that
+ * survives every fixed-tolerance distance-to-key check even though the hue is unmistakably
+ * chroma-pink. Bounds exclude near-black/near-white and low-saturation greys so real dark
+ * edge colors and neutral tones are never misclassified.
+ */
+function isMagentaHueFamily(r: number, g: number, b: number): boolean {
+  const { h, s, l } = rgbToHsl(r, g, b);
+  if (l < 0.05 || l > 0.97) return false;
+  if (s < 0.22) return false;
+  return h >= 280 && h <= 335;
+}
+
+/**
+ * Flood-fill magenta-hue-family pixels connected to already-transparent regions (border or
+ * previously chroma-keyed background). This mirrors applyBorderFloodFillChromaMat's
+ * connectivity-only approach but classifies by hue instead of RGB distance to a fixed color,
+ * so it catches darkened/desaturated pink fringe those passes miss — while never touching
+ * magenta/purple pixels fully enclosed by the subject (not connected to the removed background).
+ */
+function applyMagentaFringeFloodFill(
+  pixels: Uint8Array,
+  width: number,
+  height: number,
+  channels: number,
+): number {
+  const total = width * height;
+  const visited = new Uint8Array(total);
+  const queue: number[] = [];
+  let removed = 0;
+
+  for (let p = 0; p < total; p++) {
+    if (pixels[p * channels + 3] === 0) {
+      visited[p] = 1;
+      queue.push(p);
+    }
+  }
+
+  while (queue.length > 0) {
+    const p = queue.pop()!;
+    const x = p % width;
+    const y = Math.floor(p / width);
+    for (const [dx, dy] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ] as const) {
+      const nx = x + dx;
+      const ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+      const np = ny * width + nx;
+      if (visited[np]) continue;
+      const idx = np * channels;
+      if (pixels[idx + 3] === 0) {
+        visited[np] = 1;
+        queue.push(np);
+        continue;
+      }
+      if (!isMagentaHueFamily(pixels[idx], pixels[idx + 1], pixels[idx + 2])) continue;
+      visited[np] = 1;
+      pixels[idx + 3] = 0;
+      removed++;
+      queue.push(np);
+    }
+  }
+
+  return removed;
 }
 
 function isMatColor(
@@ -532,8 +628,35 @@ export async function removeChromaKeyBackground(
   const chromaRemovedPct = (pinkRemoved / total) * 100;
   console.log(`[Chroma Key] Pink pass: ${chromaRemovedPct.toFixed(1)}%`);
 
-  // Pass B: corner-detected background — only when AI used a white/grey canvas (not hot pink)
   const { avgR, avgG, avgB } = corners;
+
+  // Pass A2: when the corners confirm a magenta chroma canvas, run one GLOBAL pass at the
+  // expanded tolerance against both the pure key and the SAMPLED canvas color. This removes
+  // enclosed canvas pockets (truck windows, gaps between tree branches) whose pink drifted
+  // past the tight Pass A tolerance — they're the same leaked canvas color, so they sit close
+  // to the sample, while legitimate purple design colors (e.g. rgb(180,40,200), Manhattan
+  // distance ~170 from the key) stay far outside the expanded tolerance.
+  let sampledCanvasRemoved = 0;
+  if (cornerIsMagentaCanvas) {
+    for (let i = 0; i < pixels.length; i += channels) {
+      if (pixels[i + 3] === 0) continue;
+      const r = pixels[i];
+      const g = pixels[i + 1];
+      const b = pixels[i + 2];
+      if (
+        isChromaBackgroundColor(r, g, b, EXPANDED_CHROMA_TOLERANCE) ||
+        colorDistance(r, g, b, avgR, avgG, avgB) <= EXPANDED_CHROMA_TOLERANCE
+      ) {
+        pixels[i + 3] = 0;
+        sampledCanvasRemoved++;
+      }
+    }
+    console.log(
+      `[Chroma Key] Sampled-canvas global pass (rgb ${avgR},${avgG},${avgB}): ${((sampledCanvasRemoved / total) * 100).toFixed(1)}%`,
+    );
+  }
+
+  // Pass B: corner-detected background — only when AI used a white/grey canvas (not hot pink)
 
   let cornerRemoved = 0;
   if (cornerIsLightCanvas) {
@@ -741,6 +864,10 @@ export async function cleanupFlatGraphicAlpha(
 
   const px = new Uint8Array(data);
   await despillEdgeColors(px, ch);
+  const fringeRemoved = applyMagentaFringeFloodFill(px, info.width, info.height, ch);
+  if (fringeRemoved > 0) {
+    console.log(`[Apparel Matting] Magenta hue-family fringe pass removed ${fringeRemoved} px`);
+  }
 
   // Binarize alpha for hard vector-like edges
   for (let i = 0; i < px.length; i += ch) {
@@ -783,6 +910,7 @@ export async function analyzeAlphaQuality(buffer: Buffer): Promise<AlphaQualityM
   let opaqueCount = 0;
   let cornerOpaque = 0;
   let cornerTotal = 0;
+  let residualMagentaOpaque = 0;
   const cornerSize = 5;
 
   for (let y = 0; y < height; y++) {
@@ -790,7 +918,10 @@ export async function analyzeAlphaQuality(buffer: Buffer): Promise<AlphaQualityM
       const idx = (y * width + x) * channels;
       const a = pixels[idx + 3];
       if (a > 0 && a < 255) softAlpha++;
-      if (a > 128) opaqueCount++;
+      if (a > 128) {
+        opaqueCount++;
+        if (isMagentaHueFamily(pixels[idx], pixels[idx + 1], pixels[idx + 2])) residualMagentaOpaque++;
+      }
 
       const inCorner =
         x < cornerSize ||
@@ -813,6 +944,7 @@ export async function analyzeAlphaQuality(buffer: Buffer): Promise<AlphaQualityM
     largestComponentFillRatio,
     opaquePixelCount: opaqueCount,
     totalPixels: total,
+    residualMagentaOpaqueRatio: opaqueCount > 0 ? residualMagentaOpaque / opaqueCount : 0,
   };
 }
 
@@ -918,11 +1050,12 @@ export async function trimTransparentBounds(
 
 async function vectorizeWithNeplex(buffer: Buffer): Promise<Buffer> {
   const { vectorize, ColorMode, Hierarchical, PathSimplifyMode } = await import("@neplex/vectorizer");
+  const opaquePlate = await prepareOpaquePlateForVectorize(buffer);
 
-  const svg = await vectorize(buffer, {
+  const svg = await vectorize(opaquePlate, {
     colorMode: ColorMode.Color,
-    colorPrecision: 5,
-    filterSpeckle: 4,
+    colorPrecision: 6,
+    filterSpeckle: 2,
     cornerThreshold: 80,
     hierarchical: Hierarchical.Stacked,
     mode: PathSimplifyMode.Spline,
@@ -930,6 +1063,64 @@ async function vectorizeWithNeplex(buffer: Buffer): Promise<Buffer> {
   });
 
   return sanitizeVectorSvg(Buffer.from(svg));
+}
+
+/** Reject SVG when interior whites (eyes, teeth) were lost during tracing. */
+async function acceptVectorizedOrFallback(
+  sourcePng: Buffer,
+  svg: Buffer,
+): Promise<VectorizeFlatGraphicResult> {
+  const meta = await sharp(sourcePng).metadata();
+  const width = meta.width ?? 1024;
+  const height = meta.height ?? 1024;
+
+  const raster = await rasterizeSvgBuffer(svg, width, height);
+
+  // Plate-residue QA: vectorization drops the matted art onto an opaque #FF00FF plate
+  // so tracers keep interior whites. sanitizeVectorSvg strips the traced plate paths,
+  // but if a tracer emits the plate in a form the sanitizer can't parse, the SVG renders
+  // with a solid magenta background. Any meaningful plate-magenta area that isn't in the
+  // source PNG means the plate survived — keep the clean PNG instead.
+  const sourcePlatePx = await countChromaPlateOpaquePixels(sourcePng);
+  const tracedPlatePx = await countChromaPlateOpaquePixels(raster);
+  const addedPlatePx = tracedPlatePx - sourcePlatePx;
+  if (addedPlatePx > width * height * 0.005) {
+    console.warn(
+      `[Apparel Matting] Vectorize plate residue detected (${tracedPlatePx}px magenta vs ${sourcePlatePx}px in source) — keeping PNG`,
+    );
+    return { buffer: sourcePng, mimeType: "image/png" };
+  }
+
+  // Only enforce the white-retention QA when the source has a design-significant
+  // white region (eye/teeth scale — ≥0.02% of the canvas). Tiny white areas
+  // (specular highlights, anti-aliased edge pixels) make the retention ratio pure
+  // noise: tracer spline smoothing shifts a handful of pixels past the near-white
+  // threshold and the ratio collapses, falsely rejecting good SVGs. The old fixed
+  // 24px floor rejected nearly every design that had any white at all.
+  const sourceWhites = await countNearWhiteOpaquePixels(sourcePng);
+  const significanceFloor = Math.max(300, Math.round(width * height * 0.0002));
+  if (sourceWhites < significanceFloor) {
+    console.log(
+      `[Apparel Matting] Vectorize white QA skipped (${sourceWhites}px white < ${significanceFloor}px floor) — SVG accepted`,
+    );
+    return { buffer: svg, mimeType: "image/svg+xml" };
+  }
+
+  const tracedWhites = await countNearWhiteOpaquePixels(raster);
+  const ratio = tracedWhites / sourceWhites;
+  // Genuine failures (interior whites traced as holes) drop retention to near zero;
+  // benign tracer drift (smoothed edges, slightly off-white fills) stays well above 0.5.
+  if (ratio < 0.5) {
+    console.warn(
+      `[Apparel Matting] Vectorize dropped interior white (${(ratio * 100).toFixed(0)}% retained, ${tracedWhites}/${sourceWhites}px) — keeping PNG`,
+    );
+    return { buffer: sourcePng, mimeType: "image/png" };
+  }
+
+  console.log(
+    `[Apparel Matting] Vectorize white QA passed (${(ratio * 100).toFixed(0)}% retained, ${tracedWhites}/${sourceWhites}px) — SVG accepted`,
+  );
+  return { buffer: svg, mimeType: "image/svg+xml" };
 }
 
 export async function maybeVectorizeFlatGraphic(buffer: Buffer): Promise<VectorizeFlatGraphicResult> {
@@ -943,10 +1134,11 @@ export async function maybeVectorizeFlatGraphic(buffer: Buffer): Promise<Vectori
   if (provider === "recraft" || provider === "") {
     try {
       const svg = await vectorizeWithRecraft({ imageBuffer: buffer });
+      const accepted = await acceptVectorizedOrFallback(buffer, svg);
       console.log(
-        `[Apparel Matting] Recraft vectorize complete (SVG retained) in ${Date.now() - startedAt}ms`,
+        `[Apparel Matting] Recraft vectorize complete (${accepted.mimeType === "image/svg+xml" ? "SVG retained" : "PNG fallback"}) in ${Date.now() - startedAt}ms`,
       );
-      return { buffer: svg, mimeType: "image/svg+xml" };
+      return accepted;
     } catch (err) {
       console.warn(
         `[Apparel Matting] Recraft vectorize failed after ${Date.now() - startedAt}ms, trying neplex:`,
@@ -959,10 +1151,11 @@ export async function maybeVectorizeFlatGraphic(buffer: Buffer): Promise<Vectori
     try {
       const neplexStarted = Date.now();
       const svg = await vectorizeWithNeplex(buffer);
+      const accepted = await acceptVectorizedOrFallback(buffer, svg);
       console.log(
-        `[Apparel Matting] Neplex vectorize complete (SVG retained) in ${Date.now() - neplexStarted}ms (total ${Date.now() - startedAt}ms)`,
+        `[Apparel Matting] Neplex vectorize complete (${accepted.mimeType === "image/svg+xml" ? "SVG retained" : "PNG fallback"}) in ${Date.now() - neplexStarted}ms (total ${Date.now() - startedAt}ms)`,
       );
-      return { buffer: svg, mimeType: "image/svg+xml" };
+      return accepted;
     } catch (err) {
       console.warn("[Apparel Matting] Neplex vectorize skipped:", (err as Error).message);
     }
@@ -994,6 +1187,11 @@ function logQaWarnings(qa: AlphaQualityMetrics, chromaRemovedPct: number): void 
   if (qa.largestComponentFillRatio > 0.85) {
     console.warn(
       `[Apparel Matting QA] Single blob fills ${(qa.largestComponentFillRatio * 100).toFixed(1)}% — possible matting failure`,
+    );
+  }
+  if (qa.residualMagentaOpaqueRatio > 0.01) {
+    console.warn(
+      `[Apparel Matting QA] Residual magenta fringe ${(qa.residualMagentaOpaqueRatio * 100).toFixed(2)}% of opaque pixels`,
     );
   }
 }
@@ -1106,6 +1304,14 @@ export async function processApparelMotif(
       erodeAfterCleanup: false,
     });
   }
+
+  // NOTE: no automatic retry on residual magenta here (unlike the corner-opaque safety net
+  // above). The flood-fill inside cleanupFlatGraphicAlpha already removes every fringe pixel
+  // connected to transparency in one pass — anything still magenta-hued afterward is, by
+  // construction, NOT connected to background, i.e. legitimate enclosed purple/magenta art.
+  // Re-running cleanup (with its erosion step) risks thinning the margin around such enclosed
+  // pixels on a second pass until they become newly "connected" and get wrongly deleted.
+  // residualMagentaOpaqueRatio is logged via logQaWarnings() below for monitoring only.
 
   buffer = await trimTransparentBounds(buffer, 8, usedMlFallback ? 4 : 8);
 

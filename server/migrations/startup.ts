@@ -70,6 +70,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "platform_catalog_blueprints", column: "fulfillment_layout",       type: "TEXT" },
   { table: "platform_catalog_blueprints", column: "force_flat_harvest",       type: "BOOLEAN NOT NULL DEFAULT FALSE" },
   { table: "aop_calibration_runs",  column: "export_url",                  type: "TEXT" },
+  { table: "design_products",       column: "printify_product_id",         type: "TEXT" },
 ];
 
 /** One-time data fixes (idempotent WHERE clauses). */

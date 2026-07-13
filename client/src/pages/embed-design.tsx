@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import { API_BASE, PROXY_PREFIX, buildAppUrl } from "@/lib/urlBase";
 import { downloadImageFromUrl } from "@/lib/downloadImage";
 import { Button } from "@/components/ui/button";
@@ -978,11 +978,28 @@ function ProductInfoSections({
  *      /api/mockup/generate authenticate. A nested iframe has no App Bridge → 401.
  * When omitted (storefront, /s/designer, standalone) the component behaves exactly as before.
  */
+/** Fulfillment-panel capture status reported to the admin tester host page. */
+export type TesterDesignStatus = {
+  /** Generation job id of the design currently on screen (null before first generation). */
+  jobId: string | null;
+  /**
+   * AOP print-panel persistence for that job:
+   *   none   — no capture started yet (or non-AOP product)
+   *   saving — a capture is uploading; a test order sent now would miss it
+   *   saved  — latest apply's panels are on the job
+   *   error  — the latest capture failed (check console)
+   */
+  aopPanels: 'none' | 'saving' | 'saved' | 'error';
+};
+
 export interface EmbedDesignProps {
   embeddedContext?:
     | {
         mode: 'admin-tester';
         productTypeId: string | number;
+        /** Fired whenever the on-screen design's job id or panel-capture status changes,
+         *  so the tester page can target test orders at the design on screen. */
+        onTesterDesignStatus?: (status: TesterDesignStatus) => void;
       }
     | {
         mode: 'merchant-studio';
@@ -1904,6 +1921,24 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // and mockups in the same batch; we don't want that to mark the freshly-loaded mockups as stale)
   const suppressMockupStaleRef = useRef(false);
   const savedJobIdRef = useRef<string | null>(null); // tracks the jobId of the most recently generated design
+  // admin-tester has no shop URL param — the admin generate endpoint returns the job's
+  // shop so applied AOP panels can be persisted for "Send a Test Order to Printify".
+  const savedJobShopRef = useRef<string | null>(null);
+  // Monotonic sequence for AOP print-panel captures. Each apply bumps it; a capture
+  // whose sequence is no longer current aborts before writing, so a slow earlier
+  // upload can never overwrite the panels from a newer apply (last-apply-wins).
+  const aopPanelPersistSeqRef = useRef(0);
+  // Last status reported to the admin tester host (see TesterDesignStatus).
+  const testerDesignStatusRef = useRef<TesterDesignStatus>({ jobId: null, aopPanels: 'none' });
+  const emitTesterDesignStatus = useCallback(
+    (patch: Partial<TesterDesignStatus>) => {
+      testerDesignStatusRef.current = { ...testerDesignStatusRef.current, ...patch };
+      if (embeddedContext?.mode === 'admin-tester') {
+        embeddedContext.onTesterDesignStatus?.({ ...testerDesignStatusRef.current });
+      }
+    },
+    [embeddedContext],
+  );
   const bgRemovedLoadedDesignsRef = useRef<Set<string>>(new Set());
   const creditsReturnHandledRef = useRef(false);
   // Stores the per-panel rasters from the most recent Place/Pattern Apply so Retry can reproduce them.
@@ -4268,7 +4303,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       prompt: string;
       userPrompt?: string;
       size: string;
-      frameColor: string;
+      frameColor?: string;
       stylePreset?: string;
       referenceImages?: string[];
       baseImageUrl?: string;
@@ -4507,6 +4542,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       const saveShop = variables.shop || shopDomain;
       // Store jobId for mockup saving after fetchPrintifyMockups completes
       if (data.jobId) savedJobIdRef.current = data.jobId;
+      savedJobShopRef.current = data.jobShop || null;
+      // New design → previous panel captures no longer describe what's on screen.
+      emitTesterDesignStatus({ jobId: data.jobId || null, aopPanels: 'none' });
       lastFlatGalleryMockupKeyRef.current = "";
       // Reset pre-created shadow variant for this new design
       setPreShadowVariantId(null);
@@ -4533,6 +4571,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   setSavedDesigns(d.designs);
                   // Notify parent to refresh its gallery view
                   window.parent.postMessage({ type: 'APPAI_REFRESH_GALLERY' }, '*');
+                }
+                if (isMerchantStudio) {
+                  // The admin "My Designs" page caches this same query (staleTime: Infinity) —
+                  // without invalidating, a newly saved design won't appear until a hard refresh.
+                  queryClient.invalidateQueries({ queryKey: ["/api/storefront/customizer/my-designs"] });
+                  queryClient.invalidateQueries({ queryKey: ["/api/appai/design-studio/identity"] });
                 }
               })
               .catch(() => {}).finally(() => setSavedDesignsLoading(false));
@@ -4800,7 +4844,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         prompt: fullPrompt,
         userPrompt: prompt, // raw user text — stored separately so it can be restored cleanly
         size: selectedSize,
-        frameColor: selectedFrameColor || "black",
+        // Only fall back to "black" when the product actually has color options —
+        // size-only / AOP products have none, and sending a bogus colour leaked into
+        // design-product SKUs and the Printify-mockup addon's variant lookup.
+        frameColor: selectedFrameColor || (productTypeConfig?.frameColors?.length ? "black" : undefined),
         stylePreset: selectedPreset && selectedPreset !== "" ? selectedPreset : undefined,
         referenceImages: referenceImagesBase64.length > 0 ? referenceImagesBase64 : undefined,
         baseImageUrl: resolvedBaseImageUrl || undefined,
@@ -5657,6 +5704,54 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       setMockupError(null);
       setMockupsStale(false);
 
+      // Persist the flat per-panel PRINT files on the job's designState
+      // (aopPrintPanelUrls). This is what order fulfillment, the admin
+      // test-order flow, and permanent design-product publishing submit to
+      // Printify as print_areas — without it a placer-designed AOP product
+      // can never be auto-fulfilled. Runs non-blocking so the mockup upload
+      // (which gates ATC) isn't delayed by the heavier panel bake.
+      const panelSaveShop = shopDomain || savedJobShopRef.current;
+      if ((isStorefront || isAdminTester) && savedJobIdRef.current && panelSaveShop) {
+        const panelJobId = savedJobIdRef.current;
+        // Versioned capture: bump the sequence for this apply; if a newer apply
+        // starts while this one is still baking/uploading, abort before the write
+        // so stale panels can never overwrite the latest state.
+        const seq = ++aopPanelPersistSeqRef.current;
+        const isStale = () => seq !== aopPanelPersistSeqRef.current;
+        emitTesterDesignStatus({ jobId: panelJobId, aopPanels: 'saving' });
+        void (async () => {
+          try {
+            const printPanels = result.renderPrintPanels();
+            if (!printPanels?.length || isStale()) return;
+            const aopPrintPanelUrls = await Promise.all(
+              printPanels.map(async ({ position, dataUrl }) => ({
+                position,
+                url: await ensureHostedUrl(dataUrl),
+              })),
+            );
+            if (isStale()) return;
+            await safeFetch(`${API_BASE}/api/storefront/save-state`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                jobId: panelJobId,
+                shop: panelSaveShop,
+                designState: { aopPrintPanelUrls },
+              }),
+            });
+            console.log(
+              "[HoodieAopApply] Saved aopPrintPanelUrls on job",
+              panelJobId,
+              aopPrintPanelUrls.map((p) => p.position).join(","),
+            );
+            if (!isStale()) emitTesterDesignStatus({ aopPanels: 'saved' });
+          } catch (e) {
+            console.error("[HoodieAopApply] Failed to persist print panels:", e);
+            if (!isStale()) emitTesterDesignStatus({ aopPanels: 'error' });
+          }
+        })();
+      }
+
       // Persist customer state + the rendered cart image on the saved
       // generation job so Edit-from-cart and reload-after-close both
       // resume the customer at exactly this point.
@@ -5760,7 +5855,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       setMockupLoading(false);
       setMockupTriggered(false);
     }
-  }, [isStorefront, shopDomain, storefrontCustomerId]);
+  }, [isStorefront, isAdminTester, shopDomain, storefrontCustomerId, emitTesterDesignStatus]);
 
   /** Persist flat on-the-fly preview rasters to the job + refresh Saved Designs gallery. */
   const persistFlatMockupsForGallery = useCallback(
@@ -7970,6 +8065,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                                         setSavedDesigns(prev => prev.filter(x => x.id !== d.id));
                                         // Notify parent to refresh its gallery view
                                         window.parent.postMessage({ type: 'APPAI_REFRESH_GALLERY' }, '*');
+                                        if (isMerchantStudio) {
+                                          queryClient.invalidateQueries({ queryKey: ["/api/storefront/customizer/my-designs"] });
+                                          queryClient.invalidateQueries({ queryKey: ["/api/appai/design-studio/identity"] });
+                                        }
                                       }
                                     } catch {}
                                   }}
@@ -8785,14 +8884,27 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     options.panelUrls
                   );
 
-                  // Persist the same panel rasters used for the mockup. The previous
-                  // high-res background render could exceed the upload body limit and
-                  // compete with the active Printify mockup request.
-                  if (isStorefront && savedJobIdRef.current && shopDomain) {
+                  // Persist panel rasters for fulfillment. Customer storefront flow keeps the
+                  // same mockup-resolution rasters used for the live preview (fast applies).
+                  // Merchant studio designs are the source of a permanent Printify product's
+                  // print files, so they lazily build print-resolution (9000px) panels instead
+                  // — the extra render only happens once per apply, off the mockup request path.
+                  // The admin Generator Tester also persists print-resolution panels (its job
+                  // shop comes from the generate response) so "Send a Test Order to Printify"
+                  // submits the same print files a real order would.
+                  const panelSaveShop = shopDomain || savedJobShopRef.current;
+                  if ((isStorefront || isAdminTester) && savedJobIdRef.current && panelSaveShop) {
+                    const panelJobId = savedJobIdRef.current;
+                    // Versioned capture — see handleHoodieAopApply for the rationale.
+                    const seq = ++aopPanelPersistSeqRef.current;
+                    const isStale = () => seq !== aopPanelPersistSeqRef.current;
+                    emitTesterDesignStatus({ jobId: panelJobId, aopPanels: 'saving' });
                     void (async () => {
                       try {
-                        const printPanels = options.printPanelUrls || options.panelUrls;
-                        if (!printPanels?.length) return;
+                        const printPanels = (isMerchantStudio || isAdminTester) && options.getPrintPanelUrls
+                          ? await options.getPrintPanelUrls()
+                          : (options.printPanelUrls || options.panelUrls);
+                        if (!printPanels?.length || isStale()) return;
 
                         const aopPrintPanelUrls = await Promise.all(
                           printPanels.map(async ({ position, dataUrl }) => ({
@@ -8800,13 +8912,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             url: await ensureHostedUrl(dataUrl),
                           }))
                         );
+                        if (isStale()) return;
 
                         await safeFetch(`${API_BASE}/api/storefront/save-state`, {
                           method: "POST",
                           headers: { "Content-Type": "application/json" },
                           body: JSON.stringify({
-                            jobId: savedJobIdRef.current,
-                            shop: shopDomain,
+                            jobId: panelJobId,
+                            shop: panelSaveShop,
                             designState: {
                               aopPrintPanelUrls,
                               aopPlacementSettings: nextPlacement,
@@ -8814,9 +8927,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             },
                           }),
                         });
-                        console.log("[AOP] Saved aopPrintPanelUrls on job", savedJobIdRef.current, aopPrintPanelUrls.length);
+                        console.log("[AOP] Saved aopPrintPanelUrls on job", panelJobId, aopPrintPanelUrls.length);
+                        if (!isStale()) emitTesterDesignStatus({ aopPanels: 'saved' });
                       } catch (e) {
                         console.error("[AOP] Failed to persist print panel URLs:", e);
+                        if (!isStale()) emitTesterDesignStatus({ aopPanels: 'error' });
                       }
                     })();
                   }

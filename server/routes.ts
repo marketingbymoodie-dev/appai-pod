@@ -146,6 +146,7 @@ import {
   submitFlatOrderToPrintify,
   normalizeShopifyOrderLine,
 } from "./flat-order-fulfillment";
+import { createPersistentPrintifyProduct } from "./design-product-publish";
 
 /**
  * Fire-and-forget flat/mesh on-the-fly mockup calibration for a freshly imported
@@ -2504,7 +2505,25 @@ export async function registerRoutes(
       // Different requirements for apparel vs wall art
       let sizingRequirements: string;
       
-      if (isApparel) {
+      if (isApparel && isAllOverPrint) {
+        // AOP needs its own block (mirrors the storefront endpoint). Without it,
+        // compressPrompt (called with isAllOverPrint=true) can't strip the verbose
+        // apparel block, blowing past the prompt length cap and truncating away the
+        // user's description — the Generator Tester then produced style-only images.
+        sizingRequirements = `
+MANDATORY IMAGE REQUIREMENTS FOR ALL-OVER PRINT (AOP) - FOLLOW EXACTLY:
+1. ISOLATED MOTIF: Create a SINGLE, centered graphic design that is ISOLATED from any background scenery. This motif will be tiled into a repeating pattern.
+2. SOLID HOT PINK CHROMA KEY BACKGROUND: The ENTIRE background MUST be a flat, solid, uniform hot pink (#FF00FF) color. Every pixel that is not part of the design must be exactly #FF00FF. DO NOT create scenic backgrounds, gradients, or detailed environments.
+3. DESIGN COLORS: Use VIBRANT, BOLD colors. The design MUST NOT contain any hot pink/magenta pixels in the main subject — #FF00FF is reserved exclusively for the background.
+4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean hot pink space around it.
+5. CLEAN EDGES: The design must have crisp, hard vector-like edges against the hot pink background. No fuzzy, gradient, or semi-transparent edges.
+6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid hot pink background.
+6b. NO WHITE OR GREY PLATE: Do NOT render the subject on a white or grey mat — the ONLY background color is #FF00FF edge-to-edge.
+7. PRINT-READY: This is for all-over print fabric — create an isolated motif graphic.
+8. COMPOSITION FORMAT: Fill the canvas matching the requested aspect ratio with the design centered.
+9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
+`;
+      } else if (isApparel) {
         sizingRequirements = buildApparelChromaSizingRequirements(
           "VIBRANT colors. White may be used inside the subject (teeth, eyes, highlights) but NOT as a background mat. AVOID hot pink/magenta in the design.",
         );
@@ -2758,9 +2777,44 @@ console.log("[api/shopify/generate] saved image", result);
         });
       }
 
+      // Generator Tester test-order support: test orders resolve print files from
+      // generation_jobs.designState (AOP panels / flat placements saved on apply via
+      // /api/storefront/save-state). The tester renders the same designer client, so
+      // give it a completed job row (+ shop) to land those saves on.
+      let testerJobId: string | undefined;
+      let testerJobShop: string | undefined;
+      if (productType && genShopDomain) {
+        try {
+          const jobShop = genShopDomain.toLowerCase().replace(/^https?:\/\//, "");
+          const testerJob = await storage.createGenerationJob({
+            shop: jobShop,
+            sessionId: null,
+            customerId: null,
+            status: "complete",
+            prompt,
+            userPrompt: rawUserPromptAdmin ?? null,
+            stylePreset: stylePreset ?? null,
+            size: size ?? null,
+            frameColor: frameColor ?? null,
+            productTypeId: String(productType.id),
+            referenceImageUrl: null,
+            designImageUrl: generatedImageUrl,
+            thumbnailUrl: thumbnailImageUrl ?? null,
+            billingMode: "merchant",
+            expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          });
+          testerJobId = testerJob.id;
+          testerJobShop = jobShop;
+        } catch (jobErr) {
+          console.warn("[/api/generate] Failed to create tester generation job (test orders from this generation won't work):", jobErr);
+        }
+      }
+
       res.json({
         design,
         creditsRemaining: isOwner ? 999999 : customer.credits - 1,
+        jobId: testerJobId,
+        jobShop: testerJobShop,
       });
     } catch (error: any) {
       console.error("Error generating artwork:", error);
@@ -13994,7 +14048,9 @@ ${textEdgeRestrictions}
           fulfillmentLayout: (productType as any).fulfillmentLayout,
           printifyBlueprintId: productType.printifyBlueprintId,
         });
-        if (!toteFolded) {
+        // AOP products are also eligible — their per-panel print files (captured on
+        // apply) are submitted directly as the order's print_areas.
+        if (!toteFolded && !productType.isAllOverPrint) {
           return res.status(400).json({
             error: `This product is not a flat/mesh on-the-fly product (tier=${productType.onTheFlyTier ?? "none"}). Calibrate it first.`,
           });
@@ -16236,12 +16292,16 @@ ${textEdgeRestrictions}
     productOptions: Array<{ name: string; values: string[] }>;
   } {
     const allSizes = typeof productType.sizes === "string" ? JSON.parse(productType.sizes || "[]") : productType.sizes || [];
+    const allColors = typeof productType.frameColors === "string" ? JSON.parse(productType.frameColors || "[]") : productType.frameColors || [];
     const variantMap = typeof productType.variantMap === "string" ? JSON.parse(productType.variantMap || "{}") : productType.variantMap || {};
     const savedSizeIds: string[] = typeof productType.selectedSizeIds === "string" ? JSON.parse(productType.selectedSizeIds || "[]") : productType.selectedSizeIds || [];
     const sizeIdsToUse = savedSizeIds.length > 0 ? savedSizeIds : allSizes.map((s: any) => s.id);
     const sizesToUse = allSizes.filter((s: any) => sizeIdsToUse.includes(s.id));
 
-    const jobColorId = job.frameColor || null;
+    // Size-only / AOP products have no colour options — never fabricate one (SKUs/variant
+    // resolution use the plain "{sizeId}:default" key only).
+    const productHasColors = Array.isArray(allColors) && allColors.length > 0;
+    const jobColorId = productHasColors ? (job.frameColor || null) : null;
 
     const shopifyVariants: Array<{ option1: string; option2?: string; price: string; sku: string; inventory_management: null; inventory_policy: string }> = [];
     const variantMeta: Array<{ sizeId: string; colorId: string }> = [];
@@ -16255,7 +16315,7 @@ ${textEdgeRestrictions}
       shopifyVariants.push({
         option1: size.name,
         price: Number.isFinite(numericPrice) && numericPrice > 0 ? numericPrice.toFixed(2) : "0.00",
-        sku: `DP-${productType.id}-${size.id}-${jobColorId || "default"}`,
+        sku: productHasColors ? `DP-${productType.id}-${size.id}-${jobColorId || "default"}` : `DP-${productType.id}-${size.id}`,
         inventory_management: null,
         inventory_policy: "continue",
       });
@@ -16270,11 +16330,124 @@ ${textEdgeRestrictions}
     return { shopifyVariants, variantMeta, productOptions };
   }
 
+  function escapeDesignProductHtml(s: string): string {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  /** Strip script/style tags and inline event handlers from Printify's blueprint description, keeping <p> structure. */
+  function sanitizeDesignProductDescriptionHtml(html: string): string {
+    return html
+      .replace(/<script[\s\S]*?<\/script>/gi, "")
+      .replace(/<style[\s\S]*?<\/style>/gi, "")
+      .replace(/\son\w+\s*=\s*"[^"]*"/gi, "")
+      .replace(/\son\w+\s*=\s*'[^']*'/gi, "")
+      .replace(/javascript:/gi, "");
+  }
+
+  /** Mirrors client/src/components/SizeChartTable.tsx's inch→cm conversion so the standalone
+   *  product description shows the same numbers as the customizer's metric toggle. */
+  function sizeChartLabelUsesInches(label: string): boolean {
+    return /,\s*in\b/i.test(label);
+  }
+  function sizeChartRowValuesAreNumeric(values: string[]): boolean {
+    return values.length > 0 && values.every((v) => !v?.trim() || !Number.isNaN(Number(v)));
+  }
+  function convertSizeChartInchesToCm(value: string): string {
+    if (!value?.trim()) return value;
+    const num = Number(value);
+    return Number.isNaN(num) ? value : (num * 2.54).toFixed(1);
+  }
+  function convertSizeChartLabelToMetric(label: string): string {
+    return label.replace(/,\s*in\b/i, ", cm");
+  }
+
+  function buildDesignProductSizeChartHtml(chart: Record<string, any> | null): string {
+    if (!chart || !Array.isArray(chart.sizes) || !Array.isArray(chart.rows) || chart.rows.length === 0) return "";
+
+    const renderTable = (rows: Array<{ label: string; values: string[] }>) => {
+      const headerCells = ["", ...chart.sizes]
+        .map((h: string) => `<th style="padding:6px 10px;border:1px solid #ddd;text-align:left;">${escapeDesignProductHtml(String(h ?? ""))}</th>`)
+        .join("");
+      const bodyRows = rows
+        .map((row) => {
+          const cells = [row.label, ...row.values]
+            .map((v, idx) => `<td style="padding:6px 10px;border:1px solid #ddd;${idx === 0 ? "font-weight:600;" : ""}">${escapeDesignProductHtml(String(v ?? ""))}</td>`)
+            .join("");
+          return `<tr>${cells}</tr>`;
+        })
+        .join("");
+      return `<table style="border-collapse:collapse;width:100%;max-width:640px;margin-top:8px;"><thead><tr>${headerCells}</tr></thead><tbody>${bodyRows}</tbody></table>`;
+    };
+
+    const hasImperialRows = chart.rows.some((row: { label: string }) => sizeChartLabelUsesInches(row.label));
+    const unitSuffix = chart.unit ? ` (${escapeDesignProductHtml(String(chart.unit))})` : "";
+
+    if (!hasImperialRows) {
+      // Data isn't in the "<label>, in" format we know how to convert — show as-is (rare).
+      return `<h4>Size Chart${unitSuffix}</h4>${renderTable(chart.rows)}`;
+    }
+
+    const metricRows = chart.rows.map((row: { label: string; values: string[] }) => {
+      if (sizeChartLabelUsesInches(row.label) && sizeChartRowValuesAreNumeric(row.values)) {
+        return { label: convertSizeChartLabelToMetric(row.label), values: row.values.map(convertSizeChartInchesToCm) };
+      }
+      return row;
+    });
+
+    // Random suffix keeps IDs unique if a theme renders this description more than once on a
+    // page (e.g. quick-view + main product template both hydrated at once).
+    const scopeId = `aiart-sc-${Math.random().toString(36).slice(2, 10)}`;
+
+    return `<div class="${scopeId}">
+<h4 style="margin-bottom:6px;">Size Chart</h4>
+<input type="radio" id="${scopeId}-imp" name="${scopeId}-unit" class="${scopeId}-r" checked>
+<input type="radio" id="${scopeId}-met" name="${scopeId}-unit" class="${scopeId}-r">
+<div style="margin-bottom:8px;font-size:13px;">
+<label for="${scopeId}-imp" style="margin-right:14px;cursor:pointer;">Imperial (in)</label>
+<label for="${scopeId}-met" style="cursor:pointer;">Metric (cm)</label>
+</div>
+<div class="${scopeId}-imperial">${renderTable(chart.rows)}</div>
+<div class="${scopeId}-metric">${renderTable(metricRows)}</div>
+<style>
+.${scopeId}-r{display:none;}
+.${scopeId}-metric{display:none;}
+#${scopeId}-met:checked ~ .${scopeId}-imperial{display:none;}
+#${scopeId}-met:checked ~ .${scopeId}-metric{display:block;}
+</style>
+</div>`;
+  }
+
+  /** Printify's marketing paragraphs (sanitized) + an appended size-chart table when available. */
+  function buildDesignProductBodyHtml(
+    productType: { description?: string | null },
+    sizeChartHtml: string,
+    userPrompt?: string | null,
+  ): string {
+    const rawDescription = typeof productType.description === "string" ? productType.description.trim() : "";
+    const baseHtml = rawDescription
+      ? sanitizeDesignProductDescriptionHtml(rawDescription)
+      : userPrompt
+        ? `<p>${escapeDesignProductHtml(userPrompt)}</p>`
+        : "";
+    return [baseHtml, sizeChartHtml].filter(Boolean).join("\n");
+  }
+
+  /** ~60-char title-cased short form of the design's prompt + the product name, e.g. "Neon Cyberpunk Skyline Tapestry". */
+  function buildDefaultDesignProductTitle(userPrompt: string | null | undefined, productTypeName: string): string {
+    const prompt = (userPrompt || "").trim();
+    if (!prompt) return `Custom ${productTypeName}`;
+    const short = prompt.length > 60 ? `${prompt.slice(0, 57).trim()}…` : prompt;
+    const titleCased = short.replace(/\w\S*/g, (w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+    return `${titleCased} ${productTypeName}`.slice(0, 250);
+  }
+
   /**
    * POST /api/appai/design-products
    * Publish a saved My Designs studio design (generation_jobs row) as a permanent,
-   * browsable Shopify product. Plan-gated: at the active-product-design limit, the
-   * Shopify product is still created but as a draft (status "inactive").
+   * browsable Shopify product. Always created as a DRAFT (unpublished) — the
+   * merchant reviews it and activates via the PATCH endpoint (plan-limit gated).
+   * Also creates a persistent Printify product holding the print-ready artwork,
+   * which is the order-time fulfillment target (see server/design-product-publish.ts).
    */
   app.post("/api/appai/design-products", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveInstallation(req);
@@ -16301,13 +16474,7 @@ ${textEdgeRestrictions}
     if (!productType) return res.status(404).json({ error: "Product type not found" });
 
     const plan = getEffectivePlan(installation as any, shop);
-    const activeCountRows = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(designProducts)
-      .where(and(eq(designProducts.merchantId, merchant.id), eq(designProducts.status, "active")));
-    const activeCount = Number(activeCountRows[0]?.count ?? 0);
-    const { allowed, limit } = canActivateDesignProduct(plan.planName, activeCount);
-    const initialStatus: "active" | "inactive" = allowed ? "active" : "inactive";
+    const limit = getDesignProductLimit(plan.planName);
 
     const priceMap = await fetchCustomizerPagePriceMap(shop, installation, productType);
     const { shopifyVariants, variantMeta, productOptions } = buildDesignProductVariants(productType, job, priceMap);
@@ -16319,26 +16486,36 @@ ${textEdgeRestrictions}
       return res.status(400).json({ error: `Too many variants (${shopifyVariants.length}). Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}.` });
     }
 
-    const imageUrl: string | null =
-      (Array.isArray(job.mockupUrls) && (job.mockupUrls as string[])[0]) ||
-      (job as any).thumbnailUrl ||
-      job.designImageUrl ||
-      null;
-    const rawTitle = (titleOverride && titleOverride.trim()) || job.userPrompt || `Custom ${productType.name}`;
-    const cleanTitle = rawTitle.slice(0, 250);
+    // All saved mockup views (front, back, …) become the listing's images, deduped by URL.
+    const jobMockupUrls: string[] = Array.isArray(job.mockupUrls)
+      ? Array.from(new Set((job.mockupUrls as string[]).filter((u) => typeof u === "string" && u.startsWith("http"))))
+      : [];
+    const productImageUrls: string[] = jobMockupUrls.length > 0
+      ? jobMockupUrls
+      : [((job as any).thumbnailUrl || job.designImageUrl) as string].filter(Boolean);
+    const cleanTitle = ((titleOverride && titleOverride.trim()) || buildDefaultDesignProductTitle(job.userPrompt, productType.name)).slice(0, 250);
 
+    const sizeChart = productType.printifyBlueprintId
+      ? await getNormalizedSizeChartWithTimeout(Number(productType.printifyBlueprintId))
+      : null;
+    const bodyHtml = buildDesignProductBodyHtml(productType, buildDesignProductSizeChartHtml(sizeChart), job.userPrompt);
+
+    // Always created as a DRAFT — the merchant reviews/edits in Shopify, then activates
+    // via PATCH (which enforces the plan's active-product-design limit with a 402).
     const shopifyProductPayload = {
       product: {
         title: cleanTitle,
-        body_html: job.userPrompt ? `<p>${String(job.userPrompt).replace(/</g, "&lt;")}</p>` : undefined,
+        body_html: bodyHtml || undefined,
         vendor: merchant.storeName || "AI Art Studio",
         product_type: productType.name,
-        status: initialStatus === "active" ? "active" : "draft",
-        published: initialStatus === "active",
+        status: "draft",
+        published: false,
         tags: ["ai-art-studio-design", "design-product"],
         options: productOptions.length > 0 ? productOptions : undefined,
         variants: shopifyVariants,
-        images: imageUrl ? [{ src: imageUrl, alt: cleanTitle }] : undefined,
+        images: productImageUrls.length > 0
+          ? productImageUrls.map((src, i) => ({ src, alt: cleanTitle, position: i + 1 }))
+          : undefined,
       },
     };
 
@@ -16357,18 +16534,44 @@ ${textEdgeRestrictions}
     const shopifyHandle = created.product.handle as string;
     const createdVariants: any[] = created.product.variants || [];
 
+    // Default publications to Online Store only (draft stays invisible until activated, but
+    // the merchant's "Manage publishing" panel shouldn't show Point of Sale on for these).
+    try {
+      await ensureProductPublishedToOnlineStore(shop, installation.accessToken, Number(shopifyProductId), { hideFromSearch: false });
+    } catch (e: any) {
+      console.warn("[design-products] Failed to set default sales channel:", e?.message);
+    }
+
     const variantMapOut: Record<string, { sizeId: string; colorId: string }> = {};
     createdVariants.forEach((v: any, idx: number) => {
       const meta = variantMeta[idx];
       if (meta) variantMapOut[String(v.id)] = meta;
     });
 
-    if (initialStatus === "active") {
-      try {
-        await ensureProductPublishedToOnlineStore(shop, installation.accessToken, Number(shopifyProductId));
-      } catch (e: any) {
-        console.warn("[design-products] publish to online store failed:", e.message);
+    // Persistent Printify product: holds the print-ready artwork in the merchant's own
+    // Printify account and is the order-time fulfillment target (Phase 3). A failure here
+    // does not block the Shopify draft — it's flagged in the response so it can be retried
+    // (e.g. via the "Add Printify mockups" action once Printify creds/setup are fixed).
+    let printifyProductId: string | null = null;
+    let printifyWarning: string | undefined;
+    try {
+      const printifyResult = await createPersistentPrintifyProduct({
+        job,
+        productType,
+        merchant,
+        variantMeta,
+        title: `${productType.name} — ${cleanTitle}`,
+        tags: ["appai-design-product"],
+      });
+      if (printifyResult.ok) {
+        printifyProductId = printifyResult.printifyProductId;
+      } else {
+        printifyWarning = printifyResult.error;
+        console.warn("[design-products] Persistent Printify product creation failed:", printifyResult.error);
       }
+    } catch (e: any) {
+      printifyWarning = e?.message || String(e);
+      console.warn("[design-products] Persistent Printify product creation threw:", printifyWarning);
     }
 
     const [row] = await db
@@ -16379,11 +16582,12 @@ ${textEdgeRestrictions}
         jobId: job.id,
         productTypeId,
         shopifyProductId,
+        printifyProductId,
         handle: shopifyHandle,
         title: cleanTitle,
-        status: initialStatus,
+        status: "inactive",
         variantMap: variantMapOut,
-        mockupUrls: imageUrl ? [imageUrl] : [],
+        mockupUrls: productImageUrls,
       })
       .returning();
 
@@ -16392,8 +16596,9 @@ ${textEdgeRestrictions}
       designProduct: row,
       shopifyProductId,
       shopifyAdminUrl: `https://${shop}/admin/products/${shopifyProductId}`,
-      status: initialStatus,
-      limitReached: !allowed,
+      status: "inactive",
+      printifyProductId,
+      printifyWarning,
       limit,
     });
   }));
@@ -16559,7 +16764,9 @@ ${textEdgeRestrictions}
           }),
         });
         if (status === "active") {
-          await ensureProductPublishedToOnlineStore(shop, installation.accessToken, Number(row.shopifyProductId));
+          // Standalone design products should stay discoverable in search/collections —
+          // only the shadow checkout SKUs use hideFromSearch (the default).
+          await ensureProductPublishedToOnlineStore(shop, installation.accessToken, Number(row.shopifyProductId), { hideFromSearch: false });
         }
       } catch (e: any) {
         console.warn("[design-products] Shopify status update failed:", e.message);
@@ -16623,8 +16830,13 @@ ${textEdgeRestrictions}
     if (!productType) return res.status(404).json({ error: "Product type not found" });
 
     const variantMapData: VariantMap = typeof productType.variantMap === "string" ? JSON.parse(productType.variantMap || "{}") : productType.variantMap || {};
+    const productColors = typeof productType.frameColors === "string" ? JSON.parse(productType.frameColors || "[]") : productType.frameColors || [];
+    const productHasColors = Array.isArray(productColors) && productColors.length > 0;
     const sizeId = job.size || "default";
-    const colorId = job.frameColor || "default";
+    // Size-only / AOP products (or stale legacy jobs) can carry a bogus job.frameColor —
+    // only trust it when the product actually has colour options, matching the storefront
+    // mockup flow's variant resolution.
+    const colorId = productHasColors ? (job.frameColor || "default") : "default";
     const resolvedVariant = resolveVariantFromMap(variantMapData, sizeId, colorId, { allowSizeFallbackForColor: true });
     const printifyVariantId = resolvedVariant?.entry?.printifyVariantId;
     const blueprintId = Number(productType.printifyBlueprintId);
@@ -17837,7 +18049,13 @@ ${textEdgeRestrictions}
    * Tries GraphQL publishablePublish first (requires write_publications scope),
    * then always falls back to REST published_at (uses write_products scope).
    */
-  async function ensureProductPublishedToOnlineStore(shop: string, accessToken: string, productId: number) {
+  async function ensureProductPublishedToOnlineStore(
+    shop: string,
+    accessToken: string,
+    productId: number,
+    opts: { hideFromSearch?: boolean } = {},
+  ) {
+    const hideFromSearch = opts.hideFromSearch !== false;
     const gqlEndpoint = `https://${shop}/admin/api/2025-10/graphql.json`;
     const gqlHeaders = { "X-Shopify-Access-Token": accessToken, "Content-Type": "application/json" };
     const productGid = `gid://shopify/Product/${productId}`;
@@ -17922,32 +18140,35 @@ ${textEdgeRestrictions}
         }
       }
 
-      // Step 4: Set seo.hidden=1 metafield to make it "Unlisted" (hidden from search/collections)
-      try {
-        console.log(`[ensurePublished] Setting seo.hidden=1 for product ${productId}`);
-        const metafieldRes = await fetch(
-          `https://${shop}/admin/api/2025-10/products/${productId}/metafields.json`,
-          {
-            method: "POST",
-            headers: { "X-Shopify-Access-Token": accessToken, "Content-Type": "application/json" },
-            body: JSON.stringify({
-              metafield: {
-                namespace: "seo",
-                key: "hidden",
-                value: 1,
-                type: "integer"
-              }
-            }),
+      // Step 4: Set seo.hidden=1 metafield to make it "Unlisted" (hidden from search/collections).
+      // Skipped for standalone design products, which should stay discoverable.
+      if (hideFromSearch) {
+        try {
+          console.log(`[ensurePublished] Setting seo.hidden=1 for product ${productId}`);
+          const metafieldRes = await fetch(
+            `https://${shop}/admin/api/2025-10/products/${productId}/metafields.json`,
+            {
+              method: "POST",
+              headers: { "X-Shopify-Access-Token": accessToken, "Content-Type": "application/json" },
+              body: JSON.stringify({
+                metafield: {
+                  namespace: "seo",
+                  key: "hidden",
+                  value: 1,
+                  type: "integer"
+                }
+              }),
+            }
+          );
+          if (metafieldRes.ok) {
+            console.log(`[ensurePublished] Successfully set seo.hidden=1 for product ${productId}`);
+          } else {
+            const errText = await metafieldRes.text().catch(() => "");
+            console.warn(`[ensurePublished] Failed to set seo.hidden: ${metafieldRes.status} ${errText.slice(0, 200)}`);
           }
-        );
-        if (metafieldRes.ok) {
-          console.log(`[ensurePublished] Successfully set seo.hidden=1 for product ${productId}`);
-        } else {
-          const errText = await metafieldRes.text().catch(() => "");
-          console.warn(`[ensurePublished] Failed to set seo.hidden: ${metafieldRes.status} ${errText.slice(0, 200)}`);
+        } catch (metaErr: any) {
+          console.warn(`[ensurePublished] Metafield error: ${metaErr.message}`);
         }
-      } catch (metaErr: any) {
-        console.warn(`[ensurePublished] Metafield error: ${metaErr.message}`);
       }
 
     } catch (err: any) {
