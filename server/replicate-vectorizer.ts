@@ -24,6 +24,7 @@ const VECTORIZE_PLATE_CHROMA = { r: 255, g: 0, b: 255 } as const;
 
 export type RecraftVectorizeParams = {
   imageBuffer: Buffer;
+  canvasCorner?: CanvasCornerRgb | null;
 };
 
 /**
@@ -155,7 +156,9 @@ export async function vectorizeWithRecraft(params: RecraftVectorizeParams): Prom
   }
 
   const rawSvg = Buffer.from(await response.arrayBuffer());
-  return sanitizeVectorSvgConnected(rawSvg, params.imageBuffer);
+  return sanitizeVectorSvgConnected(rawSvg, params.imageBuffer, {
+    canvasCorner: params.canvasCorner,
+  });
 }
 
 /** Parse a hex (#rgb / #rrggbb) or rgb()/rgba() SVG color value. */
@@ -196,8 +199,39 @@ function isChromaPlateColorValue(value: string): boolean {
   return !!c && isChromaPlateRgb(c.r, c.g, c.b);
 }
 
+export type CanvasCornerRgb = { r: number; g: number; b: number };
+
+/** Manhattan RGB distance — shared tolerance semantics with apparel chroma key. */
+export function rgbManhattanDistance(
+  r: number,
+  g: number,
+  b: number,
+  target: CanvasCornerRgb,
+): number {
+  return Math.abs(r - target.r) + Math.abs(g - target.g) + Math.abs(b - target.b);
+}
+
+function rgbToSvgHexColor(r: number, g: number, b: number): string {
+  const hex = (n: number) => n.toString(16).padStart(2, "0");
+  return `#${hex(r)}${hex(g)}${hex(b)}`;
+}
+
+function isCanvasCornerPlateRgb(
+  r: number,
+  g: number,
+  b: number,
+  canvasCorner: CanvasCornerRgb | null | undefined,
+  tolerance: number = 55,
+): boolean {
+  if (!canvasCorner) return false;
+  return rgbManhattanDistance(r, g, b, canvasCorner) <= tolerance;
+}
+
 /** Count opaque plate-magenta pixels — detects a traced plate that survived sanitizing. */
-export async function countChromaPlateOpaquePixels(buffer: Buffer): Promise<number> {
+export async function countChromaPlateOpaquePixels(
+  buffer: Buffer,
+  canvasCorner?: CanvasCornerRgb | null,
+): Promise<number> {
   const { data, info } = await sharp(buffer)
     .ensureAlpha()
     .raw()
@@ -206,7 +240,35 @@ export async function countChromaPlateOpaquePixels(buffer: Buffer): Promise<numb
   let count = 0;
   for (let i = 0; i < data.length; i += info.channels) {
     if (data[i + 3] <= 128) continue;
-    if (isChromaPlateRgb(data[i], data[i + 1], data[i + 2])) count++;
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    if (isChromaPlateRgb(r, g, b) || isCanvasCornerPlateRgb(r, g, b, canvasCorner)) count++;
+  }
+  return count;
+}
+
+/** Count raster pixels that became opaque where the matted source was transparent. */
+export async function countOpaqueWhereSourceTransparent(
+  sourcePng: Buffer,
+  raster: Buffer,
+): Promise<number> {
+  const meta = await sharp(sourcePng).metadata();
+  const width = meta.width ?? 1024;
+  const height = meta.height ?? 1024;
+
+  const [sourceRaw, rasterRaw] = await Promise.all([
+    sharp(sourcePng).resize(width, height, { fit: "fill" }).ensureAlpha().raw().toBuffer({ resolveWithObject: true }),
+    sharp(raster).resize(width, height, { fit: "fill" }).ensureAlpha().raw().toBuffer({ resolveWithObject: true }),
+  ]);
+
+  const src = new Uint8Array(sourceRaw.data);
+  const out = new Uint8Array(rasterRaw.data);
+  const channels = sourceRaw.info.channels;
+  let count = 0;
+  for (let i = 0; i < src.length; i += channels) {
+    if (src[i + 3] > 128) continue;
+    if (out[i + 3] > 128) count++;
   }
   return count;
 }
@@ -246,23 +308,41 @@ export function sanitizeVectorSvg(
 }
 
 /** Collect distinct fill/stroke color strings in the SVG that fall in the plate hue range. */
-function collectCandidatePlateColorValues(svgText: string): string[] {
+function collectCandidatePlateColorValues(
+  svgText: string,
+  canvasCorner?: CanvasCornerRgb | null,
+): string[] {
   const values = new Set<string>();
+
+  const consider = (value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed || trimmed === "none") return;
+    if (isChromaPlateColorValue(trimmed)) {
+      values.add(trimmed);
+      return;
+    }
+    const rgb = parseSvgColor(trimmed);
+    if (rgb && isCanvasCornerPlateRgb(rgb.r, rgb.g, rgb.b, canvasCorner)) {
+      values.add(trimmed);
+    }
+  };
 
   const attrRe = /(?:fill|stroke)\s*=\s*(["'])([^"']*)\1/gi;
   let m: RegExpExecArray | null;
   while ((m = attrRe.exec(svgText))) {
-    const value = m[2].trim();
-    if (isChromaPlateColorValue(value)) values.add(value);
+    consider(m[2]);
   }
 
   const styleRe = /style\s*=\s*(["'])([^"']*)\1/gi;
   while ((m = styleRe.exec(svgText))) {
     const decls = m[2].match(/(?:fill|stroke)\s*:\s*[^;]+/gi) || [];
     for (const decl of decls) {
-      const value = decl.split(":").slice(1).join(":").trim();
-      if (isChromaPlateColorValue(value)) values.add(value);
+      consider(decl.split(":").slice(1).join(":"));
     }
+  }
+
+  if (canvasCorner) {
+    values.add(rgbToSvgHexColor(canvasCorner.r, canvasCorner.g, canvasCorner.b));
   }
 
   return [...values];
@@ -298,6 +378,7 @@ function isPlateFloodPixelRgb(r: number, g: number, b: number): boolean {
 export async function classifyPlateColorsByConnectivity(
   rawTracedRaster: Buffer,
   candidateColors: string[],
+  canvasCorner?: CanvasCornerRgb | null,
 ): Promise<Set<string>> {
   const parsed = candidateColors
     .map((value) => ({ value, rgb: parseSvgColor(value) }))
@@ -311,8 +392,15 @@ export async function classifyPlateColorsByConnectivity(
   const { width, height, channels } = info;
   const total = width * height;
 
-  const isPlateHuePixel = (pixelIdx: number) =>
-    isPlateFloodPixelRgb(data[pixelIdx], data[pixelIdx + 1], data[pixelIdx + 2]);
+  const isPlateHuePixel = (pixelIdx: number) => {
+    const r = data[pixelIdx];
+    const g = data[pixelIdx + 1];
+    const b = data[pixelIdx + 2];
+    return (
+      isPlateFloodPixelRgb(r, g, b) ||
+      isCanvasCornerPlateRgb(r, g, b, canvasCorner)
+    );
+  };
 
   // Border-connected flood over tight-tolerance plate pixels (see isPlateFloodPixelRgb) so
   // tracer color quantization noise along the plate/subject boundary doesn't fragment the
@@ -390,16 +478,29 @@ export async function classifyPlateColorsByConnectivity(
  * hue-range match, so enclosed design content sharing the plate's hue (hot-pink/magenta
  * flowers, accents, etc.) survives while the actual background plate is still stripped.
  */
-export async function sanitizeVectorSvgConnected(rawSvg: Buffer, sourceForDims: Buffer): Promise<Buffer> {
+export type SanitizeVectorSvgOptions = {
+  /** AI canvas color sampled from source corners — strips off-spec pink plates the tracer kept. */
+  canvasCorner?: CanvasCornerRgb | null;
+};
+
+export async function sanitizeVectorSvgConnected(
+  rawSvg: Buffer,
+  sourceForDims: Buffer,
+  opts?: SanitizeVectorSvgOptions,
+): Promise<Buffer> {
   const text = rawSvg.toString("utf8");
-  const candidates = collectCandidatePlateColorValues(text);
+  const candidates = collectCandidatePlateColorValues(text, opts?.canvasCorner);
   if (candidates.length === 0) return rawSvg;
 
   const meta = await sharp(sourceForDims).metadata();
   const width = meta.width ?? 1024;
   const height = meta.height ?? 1024;
   const raster = await rasterizeSvgBuffer(rawSvg, width, height);
-  const plateColors = await classifyPlateColorsByConnectivity(raster, candidates);
+  const plateColors = await classifyPlateColorsByConnectivity(
+    raster,
+    candidates,
+    opts?.canvasCorner,
+  );
 
   return sanitizeVectorSvg(rawSvg, (value) => plateColors.has(value.trim()));
 }

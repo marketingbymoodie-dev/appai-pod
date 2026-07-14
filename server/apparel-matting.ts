@@ -9,7 +9,7 @@ import {
   bufferFromRemoveBgResult,
   type RemoveBgResult,
 } from "./replicate-bg-remover";
-import { sanitizeVectorSvgConnected, vectorizeWithRecraft, prepareOpaquePlateForVectorize, countNearWhiteOpaquePixels, countChromaPlateOpaquePixels, rasterizeSvgBuffer } from "./replicate-vectorizer";
+import { sanitizeVectorSvgConnected, vectorizeWithRecraft, prepareOpaquePlateForVectorize, countNearWhiteOpaquePixels, countChromaPlateOpaquePixels, countOpaqueWhereSourceTransparent, rasterizeSvgBuffer, type CanvasCornerRgb } from "./replicate-vectorizer";
 import {
   APPAREL_CHROMA_STYLE_BY_NAME,
   APPAREL_DARK_TIER_PROMPTS,
@@ -399,7 +399,13 @@ export function isLightCanvasCorner(sample: CornerColorSample): boolean {
 export function isMagentaCanvasCorner(sample: CornerColorSample): boolean {
   const { avgR, avgG, avgB } = sample;
   const magenta = Math.min(avgR, avgB) - avgG;
-  return avgR >= 140 && avgB >= 140 && avgG <= 140 && magenta >= 40;
+  // Classic #FF00FF-family chroma canvas.
+  if (avgR >= 140 && avgB >= 140 && avgG <= 140 && magenta >= 40) return true;
+  // Off-spec AI canvas: high red, low green, moderate blue (e.g. rgb(232,39,127)).
+  if (avgR >= 180 && avgG <= 80 && avgB >= 70 && avgB <= 200 && avgR - avgG >= 100) {
+    return true;
+  }
+  return false;
 }
 
 /** Whether an RGB pixel matches the chroma-key color within tolerance (no purple-family heuristic). */
@@ -1048,7 +1054,10 @@ export async function trimTransparentBounds(
     .toBuffer();
 }
 
-async function vectorizeWithNeplex(buffer: Buffer): Promise<Buffer> {
+async function vectorizeWithNeplex(
+  buffer: Buffer,
+  canvasCorner?: CanvasCornerRgb | null,
+): Promise<Buffer> {
   const { vectorize, ColorMode, Hierarchical, PathSimplifyMode } = await import("@neplex/vectorizer");
   const opaquePlate = await prepareOpaquePlateForVectorize(buffer);
 
@@ -1062,13 +1071,14 @@ async function vectorizeWithNeplex(buffer: Buffer): Promise<Buffer> {
     pathPrecision: 4,
   });
 
-  return sanitizeVectorSvgConnected(Buffer.from(svg), buffer);
+  return sanitizeVectorSvgConnected(Buffer.from(svg), buffer, { canvasCorner });
 }
 
 /** Reject SVG when interior whites (eyes, teeth) were lost during tracing. */
 async function acceptVectorizedOrFallback(
   sourcePng: Buffer,
   svg: Buffer,
+  canvasCorner?: CanvasCornerRgb | null,
 ): Promise<VectorizeFlatGraphicResult> {
   const meta = await sharp(sourcePng).metadata();
   const width = meta.width ?? 1024;
@@ -1081,12 +1091,23 @@ async function acceptVectorizedOrFallback(
   // but if a tracer emits the plate in a form the sanitizer can't parse, the SVG renders
   // with a solid magenta background. Any meaningful plate-magenta area that isn't in the
   // source PNG means the plate survived — keep the clean PNG instead.
-  const sourcePlatePx = await countChromaPlateOpaquePixels(sourcePng);
-  const tracedPlatePx = await countChromaPlateOpaquePixels(raster);
+  const sourcePlatePx = await countChromaPlateOpaquePixels(sourcePng, canvasCorner);
+  const tracedPlatePx = await countChromaPlateOpaquePixels(raster, canvasCorner);
   const addedPlatePx = tracedPlatePx - sourcePlatePx;
   if (addedPlatePx > width * height * 0.005) {
     console.warn(
-      `[Apparel Matting] Vectorize plate residue detected (${tracedPlatePx}px magenta vs ${sourcePlatePx}px in source) — keeping PNG`,
+      `[Apparel Matting] Vectorize plate residue detected (${tracedPlatePx}px plate vs ${sourcePlatePx}px in source) — keeping PNG`,
+    );
+    return { buffer: sourcePng, mimeType: "image/png" };
+  }
+
+  // Catch-all: SVG must not paint opaque pixels where the matted source was transparent.
+  // Surviving off-spec pink backgrounds or traced holes show up here even when global white QA passes.
+  const paintedOverTransparent = await countOpaqueWhereSourceTransparent(sourcePng, raster);
+  const transparentPaintFloor = Math.max(500, Math.round(width * height * 0.005));
+  if (paintedOverTransparent > transparentPaintFloor) {
+    console.warn(
+      `[Apparel Matting] Vectorize painted ${paintedOverTransparent}px over transparent source (${transparentPaintFloor}px floor) — keeping PNG`,
     );
     return { buffer: sourcePng, mimeType: "image/png" };
   }
@@ -1126,9 +1147,9 @@ async function acceptVectorizedOrFallback(
 
   const tracedWhites = await countNearWhiteOpaquePixels(raster);
   const ratio = tracedWhites / sourceWhites;
-  // Genuine failures (interior whites traced as holes) drop retention to near zero;
-  // benign tracer drift (smoothed edges, slightly off-white fills) stays well above 0.5.
-  if (ratio < 0.5) {
+  // Genuine failures (interior whites traced as holes) drop retention sharply; raise the
+  // floor so partial tooth/sclera loss can't pass when other whites compensate globally.
+  if (ratio < 0.85) {
     console.warn(
       `[Apparel Matting] Vectorize dropped interior white (${(ratio * 100).toFixed(0)}% retained, ${tracedWhites}/${sourceWhites}px) — keeping PNG`,
     );
@@ -1141,18 +1162,22 @@ async function acceptVectorizedOrFallback(
   return { buffer: svg, mimeType: "image/svg+xml" };
 }
 
-export async function maybeVectorizeFlatGraphic(buffer: Buffer): Promise<VectorizeFlatGraphicResult> {
+export async function maybeVectorizeFlatGraphic(
+  buffer: Buffer,
+  opts?: { canvasCorner?: CanvasCornerRgb | null },
+): Promise<VectorizeFlatGraphicResult> {
   if (process.env.APPAREL_VECTORIZE !== "true") {
     return { buffer, mimeType: "image/png" };
   }
 
   const startedAt = Date.now();
   const provider = (process.env.APPAREL_VECTORIZE_PROVIDER || "recraft").trim().toLowerCase();
+  const canvasCorner = opts?.canvasCorner ?? null;
 
   if (provider === "recraft" || provider === "") {
     try {
-      const svg = await vectorizeWithRecraft({ imageBuffer: buffer });
-      const accepted = await acceptVectorizedOrFallback(buffer, svg);
+      const svg = await vectorizeWithRecraft({ imageBuffer: buffer, canvasCorner });
+      const accepted = await acceptVectorizedOrFallback(buffer, svg, canvasCorner);
       console.log(
         `[Apparel Matting] Recraft vectorize complete (${accepted.mimeType === "image/svg+xml" ? "SVG retained" : "PNG fallback"}) in ${Date.now() - startedAt}ms`,
       );
@@ -1168,8 +1193,8 @@ export async function maybeVectorizeFlatGraphic(buffer: Buffer): Promise<Vectori
   if (provider === "recraft" || provider === "neplex") {
     try {
       const neplexStarted = Date.now();
-      const svg = await vectorizeWithNeplex(buffer);
-      const accepted = await acceptVectorizedOrFallback(buffer, svg);
+      const svg = await vectorizeWithNeplex(buffer, canvasCorner);
+      const accepted = await acceptVectorizedOrFallback(buffer, svg, canvasCorner);
       console.log(
         `[Apparel Matting] Neplex vectorize complete (${accepted.mimeType === "image/svg+xml" ? "SVG retained" : "PNG fallback"}) in ${Date.now() - neplexStarted}ms (total ${Date.now() - startedAt}ms)`,
       );
@@ -1337,7 +1362,9 @@ export async function processApparelMotif(
   const qaBeforeVectorize = await analyzeAlphaQuality(buffer);
 
   if (opts.vectorize || process.env.APPAREL_VECTORIZE === "true") {
-    const vectorized = await maybeVectorizeFlatGraphic(buffer);
+    const vectorized = await maybeVectorizeFlatGraphic(buffer, {
+      canvasCorner: sourceCorner,
+    });
     buffer = vectorized.buffer;
     mimeType = vectorized.mimeType;
   }

@@ -10,6 +10,7 @@ import {
   resolveGraphicsStylePrefix,
   resolveIsApparelGeneration,
   sanitizeApparelStylePrefix,
+  isMagentaCanvasCorner,
 } from "./apparel-matting";
 
 async function rgbaBuffer(
@@ -124,6 +125,14 @@ describe("resolveApparelStylePrefix", () => {
     expect(out.toLowerCase()).toContain("#ff00ff");
     expect(out.toLowerCase()).toContain("do not use solid hot pink");
     expect(out.toLowerCase()).not.toContain("white card");
+  });
+});
+
+describe("isMagentaCanvasCorner", () => {
+  it("detects off-spec AI pink canvas corners", () => {
+    expect(isMagentaCanvasCorner({ avgR: 232, avgG: 39, avgB: 127 })).toBe(true);
+    expect(isMagentaCanvasCorner({ avgR: 255, avgG: 0, avgB: 255 })).toBe(true);
+    expect(isMagentaCanvasCorner({ avgR: 255, avgG: 255, avgB: 255 })).toBe(false);
   });
 });
 
