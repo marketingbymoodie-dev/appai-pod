@@ -253,6 +253,75 @@ describe("Recraft vectorizer client", () => {
     const count = await countNearWhiteOpaquePixels(src);
     expect(count).toBeGreaterThanOrEqual(64);
   });
+
+  it("sanitizeVectorSvgConnected strips off-spec pink canvas using sampled corner color", async () => {
+    const sharp = (await import("sharp")).default;
+    const { sanitizeVectorSvgConnected } = await import("./replicate-vectorizer");
+
+    const width = 60;
+    const height = 60;
+    const rawSvg = Buffer.from(
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">` +
+        `<rect x="0" y="0" width="${width}" height="${height}" fill="#E8277F"/>` +
+        `<rect x="20" y="20" width="20" height="20" fill="#E8277F"/>` +
+        `</svg>`,
+    );
+    const sourceForDims = await sharp({
+      create: { width, height, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+    })
+      .png()
+      .toBuffer();
+
+    const cleaned = (
+      await sanitizeVectorSvgConnected(rawSvg, sourceForDims, {
+        canvasCorner: { r: 232, g: 39, b: 127 },
+      })
+    ).toString("utf8");
+    expect(cleaned).toContain('fill="none"');
+    expect(cleaned).not.toContain("#E8277F");
+  });
+
+  it("countOpaqueWhereSourceTransparent flags painted holes over transparent source", async () => {
+    const sharp = (await import("sharp")).default;
+    const { countOpaqueWhereSourceTransparent } = await import("./replicate-vectorizer");
+
+    const source = await sharp({
+      create: { width: 40, height: 40, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+    })
+      .composite([
+        {
+          input: await sharp({
+            create: { width: 10, height: 10, channels: 4, background: { r: 255, g: 255, b: 255, alpha: 255 } },
+          })
+            .png()
+            .toBuffer(),
+          left: 15,
+          top: 15,
+        },
+      ])
+      .png()
+      .toBuffer();
+
+    const raster = await sharp({
+      create: { width: 40, height: 40, channels: 4, background: { r: 232, g: 39, b: 127, alpha: 255 } },
+    })
+      .composite([
+        {
+          input: await sharp({
+            create: { width: 10, height: 10, channels: 4, background: { r: 255, g: 255, b: 255, alpha: 255 } },
+          })
+            .png()
+            .toBuffer(),
+          left: 15,
+          top: 15,
+        },
+      ])
+      .png()
+      .toBuffer();
+
+    const count = await countOpaqueWhereSourceTransparent(source, raster);
+    expect(count).toBeGreaterThan(1000);
+  });
 });
 
 function jsonResponse(body: unknown): Response {
