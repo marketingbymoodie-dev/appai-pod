@@ -37,17 +37,20 @@
 
 import type {
   DesignGroup,
+  FrontBodyPanelPlacementBias,
   HoodiePanelKey,
   HoodieTemplate,
   HoodieView,
   MaskLayer,
   MeshGrid,
+  PanelPlacementBiasPercent,
   Pt,
   TileSettings,
 } from "@shared/hoodieTemplate";
 import {
   drawMockupImageInCanvas,
   findGroupForPanel,
+  resolveFrontBodyPanelBias,
   hoodiePanelKeyToPrintifyPosition,
   layerRenderPriority,
   mockupDrawRect,
@@ -179,6 +182,11 @@ export type AopPreviewParams = {
    * group switched off" without dirtying the template.
    */
   groupEnabledOverrides?: Record<string, boolean>;
+  /**
+   * Per-group chest/pocket UV bias overrides (admin modal preview).
+   * Merged with `template.designGroups[].panelPlacementBias` at render time.
+   */
+  groupPanelBiasOverrides?: Record<string, FrontBodyPanelPlacementBias>;
   /**
    * `id` of the design group whose handles are currently being edited.
    * The renderer dims the other groups' design-rect outlines so the
@@ -741,6 +749,34 @@ function fitAspectInside(union: Aabb, aspect: number): Aabb {
  * appear visually distorted — only the centre strip is hidden inside
  * the simulated seam.
  */
+export function applyPanelPlacementBiasToBbox(
+  bb: Aabb,
+  rect: DesignRectInfo,
+  bias: PanelPlacementBiasPercent | null | undefined,
+): Aabb {
+  if (!bias || (bias.offsetXPercent === 0 && bias.offsetYPercent === 0)) return bb;
+  const dx = (bias.offsetXPercent / 100) * rect.effective.width;
+  const dy = (bias.offsetYPercent / 100) * rect.effective.height;
+  return { x: bb.x + dx, y: bb.y + dy, width: bb.width, height: bb.height };
+}
+
+function samplingBboxForLayer(
+  bb: Aabb,
+  layer: MaskLayer,
+  layerRect: DesignRectInfo,
+  template: HoodieTemplate,
+  panelBiasOverrides?: Record<string, FrontBodyPanelPlacementBias>,
+): Aabb {
+  const group = findGroupForPanel(template.designGroups, layer.panelKey);
+  if (!group) return bb;
+  const bias = resolveFrontBodyPanelBias(
+    group,
+    layer.panelKey,
+    panelBiasOverrides?.[group.id],
+  );
+  return applyPanelPlacementBiasToBbox(bb, layerRect, bias);
+}
+
 function synthesiseSeamAwareSourceRect(
   bb: Aabb,
   rect: DesignRectInfo,
@@ -833,6 +869,8 @@ export function renderHoodFlatPanel(
      *  the artwork's native detail survives into the print file.
      *  Geometry (slice, rotation, flips) is unaffected. Default 1. */
     outputScale?: number;
+    /** Chest/pocket UV bias for this panel's artwork slice. */
+    panelPlacementBias?: PanelPlacementBiasPercent | null;
   },
 ): HTMLCanvasElement | null {
   if (!frontLayer.mesh) return null;
@@ -885,7 +923,12 @@ export function renderHoodFlatPanel(
           ? "right"
           : "none"
       : "none";
-    slice = synthesiseSeamAwareSourceRect(bb, frontRect, aw, ah, side);
+    const sampleBb = applyPanelPlacementBiasToBbox(
+      bb,
+      frontRect,
+      options?.panelPlacementBias,
+    );
+    slice = synthesiseSeamAwareSourceRect(sampleBb, frontRect, aw, ah, side);
   }
   if (slice.width <= 0 || slice.height <= 0) return null;
 
@@ -1629,8 +1672,15 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
       ) {
         const bb = layerBb;
         if (bb) {
-          synthSrc = synthesiseSeamAwareSourceRect(
+          const sampleBb = samplingBboxForLayer(
             bb,
+            layer,
+            layerRect,
+            template,
+            params.groupPanelBiasOverrides,
+          );
+          synthSrc = synthesiseSeamAwareSourceRect(
+            sampleBb,
             layerRect,
             aw,
             ah,
@@ -1656,8 +1706,15 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
         if (bb) {
           const aw = artwork.naturalWidth || artwork.width;
           const ah = artwork.naturalHeight || artwork.height;
-          const slice = synthesiseSeamAwareSourceRect(
+          const sampleBb = samplingBboxForLayer(
             bb,
+            layer,
+            layerRect,
+            template,
+            params.groupPanelBiasOverrides,
+          );
+          const slice = synthesiseSeamAwareSourceRect(
+            sampleBb,
             layerRect,
             aw,
             ah,
@@ -1866,6 +1923,7 @@ export type RenderFlatPrintPanelsParams = {
   groupPlacementOverrides?: Record<string, Record<HoodieView, ArtworkPlacement>>;
   groupSeamOverrides?: Record<string, number>;
   groupEnabledOverrides?: Record<string, boolean>;
+  groupPanelBiasOverrides?: Record<string, FrontBodyPanelPlacementBias>;
   panelEnabledOverrides?: Partial<Record<string, boolean>>;
   /** Loaded view mockups — used only to derive each view's canvas width for
    *  tile-mode seam anchoring. Optional; falls back to template geometry. */
@@ -1960,6 +2018,7 @@ export function renderFlatPrintPanels(
     groupPlacementOverrides,
     groupSeamOverrides,
     groupEnabledOverrides,
+    groupPanelBiasOverrides,
     panelEnabledOverrides,
     mockups,
   } = params;
@@ -2055,9 +2114,13 @@ export function renderFlatPrintPanels(
           PRINT_PANEL_MAX_LONG_EDGE_PX / longEdge,
         );
         if (layer.mesh) {
+          const panelBias = group
+            ? resolveFrontBodyPanelBias(group, panelKey, groupPanelBiasOverrides?.[group.id])
+            : null;
           artCanvas = renderHoodFlatPanel(layer, artwork, rect, {
             fallbackSize: dims,
             outputScale,
+            panelPlacementBias: panelBias,
           });
         } else {
           // No mesh — draw the seam-aware artwork slice straight into the
@@ -2071,7 +2134,10 @@ export function renderFlatPrintPanels(
               : SEAM_PAIR_PANELS.right.includes(panelKey)
                 ? "right"
                 : "none";
-            const slice = synthesiseSeamAwareSourceRect(bb, rect, aw, ah, side);
+            const sampleBb = rect
+              ? samplingBboxForLayer(bb, layer, rect, template, groupPanelBiasOverrides)
+              : bb;
+            const slice = synthesiseSeamAwareSourceRect(sampleBb, rect, aw, ah, side);
             if (slice.width > 0 && slice.height > 0) {
               const c = document.createElement("canvas");
               c.width = Math.max(1, Math.round(dims.width * outputScale));
