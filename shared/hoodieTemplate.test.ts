@@ -30,6 +30,12 @@ import {
   normalizeHoodieTemplate,
   panelsEligibleForView,
   SWEATSHIRT_TRIM_PANEL_KEYS,
+  mergeFrontBodyPanelPlacementBias,
+  mergePanelPlacementBiasPercent,
+  resolveFrontBodyPanelBias,
+  FRONT_CHEST_PANEL_KEYS,
+  FRONT_POCKET_PANEL_KEYS,
+  ZERO_PANEL_PLACEMENT_BIAS,
 } from "./hoodieTemplate";
 
 describe("createFreshAopTemplate", () => {
@@ -377,5 +383,46 @@ describe("mesh grid limits", () => {
     expect(mesh.cols).toBe(24);
     expect(mesh.rows).toBe(3);
     expect(mesh.targetPoints).toHaveLength(72);
+  });
+});
+
+describe("front-body panel placement bias", () => {
+  it("merges stored and override bias per chest/pocket subset", () => {
+    const merged = mergeFrontBodyPanelPlacementBias(
+      { chest: { offsetXPercent: 1, offsetYPercent: 2 } },
+      { pocket: { offsetXPercent: -3, offsetYPercent: 4 } },
+    );
+    expect(merged.chest).toEqual({ offsetXPercent: 1, offsetYPercent: 2 });
+    expect(merged.pocket).toEqual({ offsetXPercent: -3, offsetYPercent: 4 });
+  });
+
+  it("override wins for the same subset field", () => {
+    const merged = mergePanelPlacementBiasPercent(
+      { offsetXPercent: 1, offsetYPercent: 2 },
+      { offsetYPercent: 5 },
+    );
+    expect(merged).toEqual({ offsetXPercent: 1, offsetYPercent: 5 });
+  });
+
+  it("resolves chest vs pocket panel keys from front-body group", () => {
+    const group = {
+      panelPlacementBias: {
+        chest: { offsetXPercent: 0.5, offsetYPercent: 1.5 },
+        pocket: { offsetXPercent: -0.5, offsetYPercent: -1.5 },
+      },
+    };
+    expect(resolveFrontBodyPanelBias(group, FRONT_CHEST_PANEL_KEYS[0])).toEqual({
+      offsetXPercent: 0.5,
+      offsetYPercent: 1.5,
+    });
+    expect(resolveFrontBodyPanelBias(group, FRONT_POCKET_PANEL_KEYS[1])).toEqual({
+      offsetXPercent: -0.5,
+      offsetYPercent: -1.5,
+    });
+    expect(resolveFrontBodyPanelBias(group, "back")).toBeNull();
+  });
+
+  it("falls back to zero bias when group has no stored defaults", () => {
+    expect(resolveFrontBodyPanelBias({}, "front_left")).toEqual(ZERO_PANEL_PLACEMENT_BIAS);
   });
 });

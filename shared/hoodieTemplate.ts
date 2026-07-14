@@ -348,6 +348,59 @@ export const DEFAULT_GROUP_PLACEMENT: GroupPlacement = {
   offsetY: 0,
 };
 
+/** Per-subset UV sampling bias within a design group (% of group design rect). */
+export type PanelPlacementBiasPercent = {
+  offsetXPercent: number;
+  offsetYPercent: number;
+};
+
+export const ZERO_PANEL_PLACEMENT_BIAS: PanelPlacementBiasPercent = {
+  offsetXPercent: 0,
+  offsetYPercent: 0,
+};
+
+/** Zip front-body chest vs pocket artwork sampling offsets (admin defaults). */
+export type FrontBodyPanelPlacementBias = {
+  chest?: PanelPlacementBiasPercent;
+  pocket?: PanelPlacementBiasPercent;
+};
+
+export const FRONT_CHEST_PANEL_KEYS: HoodiePanelKey[] = ["front_left", "front_right"];
+export const FRONT_POCKET_PANEL_KEYS: HoodiePanelKey[] = ["pocket_left", "pocket_right"];
+
+export function mergePanelPlacementBiasPercent(
+  base?: Partial<PanelPlacementBiasPercent> | null,
+  override?: Partial<PanelPlacementBiasPercent> | null,
+): PanelPlacementBiasPercent {
+  return {
+    offsetXPercent: override?.offsetXPercent ?? base?.offsetXPercent ?? 0,
+    offsetYPercent: override?.offsetYPercent ?? base?.offsetYPercent ?? 0,
+  };
+}
+
+export function mergeFrontBodyPanelPlacementBias(
+  stored?: FrontBodyPanelPlacementBias | null,
+  override?: FrontBodyPanelPlacementBias | null,
+): FrontBodyPanelPlacementBias {
+  return {
+    chest: mergePanelPlacementBiasPercent(stored?.chest, override?.chest),
+    pocket: mergePanelPlacementBiasPercent(stored?.pocket, override?.pocket),
+  };
+}
+
+/** Resolve chest/pocket UV bias for a panel in the front-body group. */
+export function resolveFrontBodyPanelBias(
+  group: Pick<DesignGroup, "panelPlacementBias">,
+  panelKey: HoodiePanelKey | null | undefined,
+  override?: FrontBodyPanelPlacementBias | null,
+): PanelPlacementBiasPercent | null {
+  if (!panelKey) return null;
+  const merged = mergeFrontBodyPanelPlacementBias(group.panelPlacementBias, override);
+  if (FRONT_CHEST_PANEL_KEYS.includes(panelKey)) return merged.chest ?? ZERO_PANEL_PLACEMENT_BIAS;
+  if (FRONT_POCKET_PANEL_KEYS.includes(panelKey)) return merged.pocket ?? ZERO_PANEL_PLACEMENT_BIAS;
+  return null;
+}
+
 /**
  * A "design group" bundles related panels (e.g. front_left + front_right
  * = the front body) so they can be scaled/positioned together,
@@ -393,6 +446,13 @@ export type DesignGroup = {
   lockedRatio: number | null;
   /** When false, this group's panels render the background colour only (no artwork). */
   enabled: boolean;
+  /**
+   * Optional per-subset UV bias for zip front-body panels. Shifts which
+   * slice of the shared design rect each chest/pocket panel samples without
+   * moving the group's placement handle. Percent of the group's effective
+   * design rect width/height.
+   */
+  panelPlacementBias?: FrontBodyPanelPlacementBias;
 };
 
 /**

@@ -11,11 +11,18 @@ import { useToast } from "@/hooks/use-toast";
 import { Download, Image as ImageIcon, Maximize2, RotateCcw, Sparkles, Upload, ZoomIn, ZoomOut } from "lucide-react";
 import type {
   DesignGroup,
+  FrontBodyPanelPlacementBias,
   HoodieTemplate,
   HoodieView,
+  PanelPlacementBiasPercent,
   TileSettings,
 } from "@shared/hoodieTemplate";
-import { designGroupsForBlueprint } from "@shared/hoodieTemplate";
+import {
+  designGroupsForBlueprint,
+  isZipHoodieBlueprint,
+  mergeFrontBodyPanelPlacementBias,
+  resolveFrontBodyPanelBias,
+} from "@shared/hoodieTemplate";
 import { useHoodieMapperStore } from "./store";
 import {
   computeGroupRects,
@@ -122,6 +129,9 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
   const [enabledOverrides, setEnabledOverrides] = useState<Record<string, boolean>>(
     {},
   );
+  const [panelBiasOverrides, setPanelBiasOverrides] = useState<
+    Record<string, FrontBodyPanelPlacementBias>
+  >({});
   // Which group's on-canvas handles are currently editable. `null`
   // (or unknown id) = no handles shown. Defaults to the first group
   // with eligible panels in the active view.
@@ -174,6 +184,32 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
     const ov = enabledOverrides[groupId];
     if (typeof ov === "boolean") return ov;
     return designGroups.find((g) => g.id === groupId)?.enabled !== false;
+  };
+  const getPanelBias = useCallback(
+    (groupId: string): FrontBodyPanelPlacementBias => {
+      const stored = designGroups.find((g) => g.id === groupId)?.panelPlacementBias;
+      return mergeFrontBodyPanelPlacementBias(stored, panelBiasOverrides[groupId]);
+    },
+    [designGroups, panelBiasOverrides],
+  );
+  const setPanelBias = (
+    groupId: string,
+    part: "chest" | "pocket",
+    patch: Partial<PanelPlacementBiasPercent>,
+  ) => {
+    setPanelBiasOverrides((prev) => {
+      const current = mergeFrontBodyPanelPlacementBias(
+        designGroups.find((g) => g.id === groupId)?.panelPlacementBias,
+        prev[groupId],
+      );
+      return {
+        ...prev,
+        [groupId]: {
+          ...current,
+          [part]: { ...current[part], ...patch },
+        },
+      };
+    });
   };
 
   /**
@@ -318,6 +354,7 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
     Object.keys(groupPlacementOverrides).length > 0 ||
     Object.keys(seamOverrides).length > 0 ||
     Object.keys(enabledOverrides).length > 0 ||
+    Object.keys(panelBiasOverrides).length > 0 ||
     tileOverride !== null ||
     ppiOverride !== null;
 
@@ -572,6 +609,7 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
       groupPlacementOverrides,
       groupSeamOverrides: seamOverrides,
       groupEnabledOverrides: enabledOverrides,
+      groupPanelBiasOverrides: panelBiasOverrides,
       activeGroupId,
       tileSettings,
       pixelsPerInch,
@@ -595,6 +633,7 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
     groupPlacementOverrides,
     seamOverrides,
     enabledOverrides,
+    panelBiasOverrides,
     activeGroupId,
     tileSettings,
     pixelsPerInch,
@@ -795,6 +834,7 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
             {mode === "single-sheet" && artworkImg && (
               <GroupsPanel
                 designGroups={designGroups}
+                blueprintId={template.blueprintId}
                 view={view}
                 layers={template.views[view]?.layers ?? []}
                 activeGroupId={activeGroupId}
@@ -802,6 +842,8 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
                 getPlacement={getPlacement}
                 getSeam={getSeam}
                 getEnabled={getEnabled}
+                getPanelBias={getPanelBias}
+                onPanelBiasChange={setPanelBias}
                 onPlacementChange={(gid, patch) => setGroupPlacement(gid, view, patch)}
                 onSeamChange={(gid, val) =>
                   setSeamOverrides((prev) => ({ ...prev, [gid]: val }))
@@ -827,6 +869,10 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
                     },
                     seamAllowance: getSeam(g.id),
                     enabled: getEnabled(g.id),
+                    panelPlacementBias:
+                      g.id === "front-body" && isZipHoodieBlueprint(template.blueprintId)
+                        ? getPanelBias(g.id)
+                        : g.panelPlacementBias,
                     lockedRatio:
                       linkedGroupIds[g.id] && lockedRatios[g.id] !== undefined
                         ? lockedRatios[g.id]
@@ -836,6 +882,7 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
                   setGroupPlacementOverrides({});
                   setSeamOverrides({});
                   setEnabledOverrides({});
+                  setPanelBiasOverrides({});
                   toast({
                     title: "Defaults saved",
                     description: "Group placements stored on this template.",
@@ -845,6 +892,7 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
                   setGroupPlacementOverrides({});
                   setSeamOverrides({});
                   setEnabledOverrides({});
+                  setPanelBiasOverrides({});
                 }}
                 showDesignRect={showDesignRect}
                 onShowDesignRectChange={setShowDesignRect}
@@ -955,6 +1003,7 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
                   groupPlacementOverrides={groupPlacementOverrides}
                   groupSeamOverrides={seamOverrides}
                   groupEnabledOverrides={enabledOverrides}
+                  groupPanelBiasOverrides={panelBiasOverrides}
                 />
               )}
               {layerSources.size > 0 && (
@@ -1172,6 +1221,7 @@ function FlatPanelThumbnails({
   groupPlacementOverrides,
   groupSeamOverrides,
   groupEnabledOverrides,
+  groupPanelBiasOverrides,
 }: {
   template: HoodieTemplate;
   artwork: HTMLImageElement;
@@ -1182,6 +1232,7 @@ function FlatPanelThumbnails({
   groupPlacementOverrides?: Record<string, Record<HoodieView, ArtworkPlacement>>;
   groupSeamOverrides?: Record<string, number>;
   groupEnabledOverrides?: Record<string, boolean>;
+  groupPanelBiasOverrides?: Record<string, FrontBodyPanelPlacementBias>;
 }) {
   // Compute flat panels for any front-view layer that has a mesh +
   // belongs to a single-sheet design group. This intentionally
@@ -1213,7 +1264,17 @@ function FlatPanelThumbnails({
             height: calibImg.naturalHeight || calibImg.height,
           }
         : undefined;
-      const flat = renderHoodFlatPanel(layer, artwork, rect, { fallbackSize });
+      const panelBias = group
+        ? resolveFrontBodyPanelBias(
+            group,
+            layer.panelKey,
+            groupPanelBiasOverrides?.[group.id],
+          )
+        : null;
+      const flat = renderHoodFlatPanel(layer, artwork, rect, {
+        fallbackSize,
+        panelPlacementBias: panelBias,
+      });
       out.push({
         id: layer.id,
         label: layer.name || layer.panelKey,
@@ -1228,6 +1289,7 @@ function FlatPanelThumbnails({
     groupPlacementOverrides,
     groupSeamOverrides,
     groupEnabledOverrides,
+    groupPanelBiasOverrides,
   ]);
 
   if (panels.length === 0) {
@@ -1529,6 +1591,7 @@ function SingleSheetPanelPicker({
  */
 function GroupsPanel({
   designGroups,
+  blueprintId,
   view,
   layers,
   activeGroupId,
@@ -1536,6 +1599,8 @@ function GroupsPanel({
   getPlacement,
   getSeam,
   getEnabled,
+  getPanelBias,
+  onPanelBiasChange,
   onPlacementChange,
   onSeamChange,
   onEnabledChange,
@@ -1551,6 +1616,7 @@ function GroupsPanel({
   onShowDesignRectChange,
 }: {
   designGroups: DesignGroup[];
+  blueprintId: number | null;
   view: HoodieView;
   layers: import("@shared/hoodieTemplate").MaskLayer[];
   activeGroupId: string | null;
@@ -1558,6 +1624,12 @@ function GroupsPanel({
   getPlacement: (groupId: string, v: HoodieView) => ArtworkPlacement;
   getSeam: (groupId: string) => number;
   getEnabled: (groupId: string) => boolean;
+  getPanelBias: (groupId: string) => FrontBodyPanelPlacementBias;
+  onPanelBiasChange: (
+    groupId: string,
+    part: "chest" | "pocket",
+    patch: Partial<PanelPlacementBiasPercent>,
+  ) => void;
   onPlacementChange: (groupId: string, patch: Partial<ArtworkPlacement>) => void;
   onSeamChange: (groupId: string, value: number) => void;
   onEnabledChange: (groupId: string, value: boolean) => void;
@@ -1666,6 +1738,12 @@ function GroupsPanel({
           // view, so disable its inputs here. The admin sees the
           // current scale + a hint and can switch to FRONT to edit.
           const hoodReadOnly = g.id === "hood" && view === "back";
+          const showPanelBias =
+            g.id === "front-body" &&
+            isZipHoodieBlueprint(blueprintId) &&
+            view === "front" &&
+            enabled;
+          const panelBias = getPanelBias(g.id);
           return (
             <div
               key={g.id}
@@ -1776,6 +1854,66 @@ function GroupsPanel({
                               onChange={(v) => onSeamChange(g.id, v / 100)}
                             />
                           )}
+                          {showPanelBias && (
+                            <>
+                              <div className="pt-1 text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                                Panel UV bias
+                              </div>
+                              <div className="text-[10px] leading-snug text-slate-500">
+                                Nudges chest vs pocket artwork independently (% of
+                                design rect). Positive Y moves artwork down on the
+                                panel; affects mockups and print files.
+                              </div>
+                              <PlacementSlider
+                                label="Chest panels Y"
+                                unit="%"
+                                value={panelBias.chest?.offsetYPercent ?? 0}
+                                min={-10}
+                                max={10}
+                                step={0.1}
+                                precision={1}
+                                onChange={(offsetYPercent) =>
+                                  onPanelBiasChange(g.id, "chest", { offsetYPercent })
+                                }
+                              />
+                              <PlacementSlider
+                                label="Chest panels X"
+                                unit="%"
+                                value={panelBias.chest?.offsetXPercent ?? 0}
+                                min={-10}
+                                max={10}
+                                step={0.1}
+                                precision={1}
+                                onChange={(offsetXPercent) =>
+                                  onPanelBiasChange(g.id, "chest", { offsetXPercent })
+                                }
+                              />
+                              <PlacementSlider
+                                label="Pocket panels Y"
+                                unit="%"
+                                value={panelBias.pocket?.offsetYPercent ?? 0}
+                                min={-10}
+                                max={10}
+                                step={0.1}
+                                precision={1}
+                                onChange={(offsetYPercent) =>
+                                  onPanelBiasChange(g.id, "pocket", { offsetYPercent })
+                                }
+                              />
+                              <PlacementSlider
+                                label="Pocket panels X"
+                                unit="%"
+                                value={panelBias.pocket?.offsetXPercent ?? 0}
+                                min={-10}
+                                max={10}
+                                step={0.1}
+                                precision={1}
+                                onChange={(offsetXPercent) =>
+                                  onPanelBiasChange(g.id, "pocket", { offsetXPercent })
+                                }
+                              />
+                            </>
+                          )}
                         </>
                       )}
                     </>
@@ -1812,8 +1950,8 @@ function GroupsPanel({
       </div>
       <div className="text-[10px] text-slate-500">
         Edits stay in this preview until you click Save defaults — that copies the
-        current placements / seams / enable flags onto the template so future
-        artworks render the same way.
+        current placements, panel biases, seams, and enable flags onto the template
+        so future artworks render the same way.
       </div>
     </div>
   );
