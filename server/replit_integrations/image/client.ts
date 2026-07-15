@@ -101,12 +101,15 @@ async function urlToBase64(
   return { mimeType: contentType, data: buf.toString("base64") };
 }
 
+import { userPromptRequestsMonochrome } from "@shared/generationPromptHints";
+
 export type GenerateImageParams = {
   prompt: string;
   aspectRatio?: string;
   inputImageUrl?: string | string[] | null;
   isApparel?: boolean;
   isAllOverPrint?: boolean;
+  userPrompt?: string | null;
 };
 
 // Map aspect ratio to Nano Banana Pro supported values
@@ -163,15 +166,26 @@ function stripVerboseRequirementBlocks(raw: string): string {
     .trim();
 }
 
-function compressPrompt(raw: string, isApparel: boolean, isAllOverPrint?: boolean): string {
+function compressPrompt(
+  raw: string,
+  isApparel: boolean,
+  isAllOverPrint?: boolean,
+  userPrompt?: string | null,
+): string {
+  const artworkMatch = raw.match(/=== ARTWORK DESCRIPTION ===\s*([\s\S]*)/);
+  const artworkSection = artworkMatch?.[1]?.trim() || "";
+
+  const monoHint = userPromptRequestsMonochrome(userPrompt)
+    ? "Black/white/grey palette only — no green or other colors unless the user requested them. "
+    : "";
+
   let compressed: string;
 
   if (isApparel && isAllOverPrint) {
     compressed = stripVerboseRequirementBlocks(raw);
 
-    // Compact AOP constraint: isolated motif on a chroma-key background so the
-    // server can reliably remove it before building AOP mockup tiles.
     const shortAopConstraints =
+      monoHint +
       "Isolated centered motif on a SOLID HOT PINK (#FF00FF) background. " +
       "Every pixel not part of the design must be exactly #FF00FF. " +
       "NO white mat, NO white rectangle, NO card behind subject — background must be pure #FF00FF to all four edges. " +
@@ -182,8 +196,8 @@ function compressPrompt(raw: string, isApparel: boolean, isAllOverPrint?: boolea
   } else if (isApparel) {
     compressed = stripVerboseRequirementBlocks(raw);
 
-    // Compact apparel constraint with chroma key background + no-added-text rule
     const shortApparelConstraints =
+      monoHint +
       "Isolated centered graphic on a SOLID HOT PINK (#FF00FF) background. " +
       "Every pixel not part of the design must be exactly #FF00FF. " +
       "NO white mat, NO white rectangle, NO card behind subject — background must be pure #FF00FF to all four edges. " +
@@ -200,9 +214,12 @@ function compressPrompt(raw: string, isApparel: boolean, isAllOverPrint?: boolea
     compressed = shortConstraints + compressed;
   }
 
-  // Hard truncate — but preserve the end of the prompt (user's description) over the middle
+  // Hard truncate — preserve the user's artwork description over verbose constraints
   if (compressed.length > PROMPT_MAX_LENGTH) {
-    compressed = compressed.substring(0, PROMPT_MAX_LENGTH);
+    const artMax = artworkSection ? Math.min(artworkSection.length, 380) : 0;
+    const headMax = PROMPT_MAX_LENGTH - artMax - (artMax > 0 ? 4 : 0);
+    const head = compressed.substring(0, Math.max(0, headMax));
+    compressed = artMax > 0 ? `${head} ... ${artworkSection.substring(0, artMax)}` : head;
   }
 
   return compressed;
@@ -294,7 +311,12 @@ export async function generateImageBase64(
   const token = getReplicateToken();
   const version = getReplicateModelVersion();
 
-  const compressedPrompt = compressPrompt(params.prompt, params.isApparel ?? false, params.isAllOverPrint ?? false);
+  const compressedPrompt = compressPrompt(
+    params.prompt,
+    params.isApparel ?? false,
+    params.isAllOverPrint ?? false,
+    params.userPrompt,
+  );
   const requestedAspectRatio = mapToSupportedAspectRatio(params.aspectRatio);
 
   // Attempt 0: requested aspect ratio, Attempt 1: 1:1, Attempt 2: 3:4
