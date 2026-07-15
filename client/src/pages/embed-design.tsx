@@ -10,7 +10,7 @@ import { Switch } from "@/components/ui/switch";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, Share2, Upload, ExternalLink, CheckCircle, ChevronLeft, ChevronRight, ChevronDown, Info, Plus, Download } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
@@ -49,6 +49,10 @@ import {
 } from "@/components/designer/FlatProductPlacer/lib/flatMockupPreview";
 import { resolveFlatBlankColorId, resolveFlatPlacementGeometryKey, resolveFlatBlank, normalizeFlatColorKey } from "@/components/designer/FlatProductPlacer/lib/flatAssets";
 import { shouldUseStyleReferenceImage } from "@shared/generationPromptHints";
+import {
+  detectStylePromptMismatch,
+  resolveSuggestedStylePresets,
+} from "@shared/stylePromptCompatibility";
 import { STOREFRONT_FREE_GENERATION_LIMIT, storefrontArtworksRemaining } from "@shared/storefront-credits";
 import {
   frameColorsRedundantWithSizes,
@@ -1852,6 +1856,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   }, [shopDomain, centralAppUrl, googleAuthEnabled]);
   const [savedDesigns, setSavedDesigns] = useState<Array<{id: string; artworkUrl: string; mockupUrls?: string[]; designState?: Record<string, any> | null; prompt: string; stylePreset?: string | null; size?: string | null; frameColor?: string | null; baseTitle: string | null; pageHandle: string | null; productTypeId: string | null; customerId?: string | null; createdAt: string}>>([]);
   const [showGalleryFullModal, setShowGalleryFullModal] = useState(false);
+  const [styleMismatchDialog, setStyleMismatchDialog] = useState<{
+    reasons: string[];
+    suggestions: { id: string; name: string }[];
+    currentStyleName: string;
+  } | null>(null);
   const [savedDesignsLoading, setSavedDesignsLoading] = useState(false);
   const [galleryLimit, setGalleryLimit] = useState(20);
   const [showSavedDesigns, setShowSavedDesigns] = useState(false);
@@ -4880,8 +4889,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     window.setTimeout(() => setCreditsPurchaseLoading(false), 8000);
   };
 
-  const handleGenerate = async () => {
-    const activePresetForCheck = filteredStylePresets.find(p => p.id === selectedPreset);
+  const handleGenerate = async (options?: {
+    skipStyleMismatchCheck?: boolean;
+    overridePresetId?: string;
+  }) => {
+    const effectivePresetId = options?.overridePresetId ?? selectedPreset;
+    if (options?.overridePresetId) {
+      setSelectedPreset(options.overridePresetId);
+    }
+
+    const activePresetForCheck = filteredStylePresets.find(p => p.id === effectivePresetId);
     if (!prompt.trim() && !activePresetForCheck?.descriptionOptional) return;
 
     if ((isShopify || isStorefront) && customer && !hasGenerationCapacity) {
@@ -4911,10 +4928,30 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
 
     // Validate required style sub-option
-    const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
+    const activePreset = filteredStylePresets.find(p => p.id === effectivePresetId);
     if (activePreset?.options?.required && selectedStyleOption === "") {
       alert(`Please choose a ${activePreset.options.label.toLowerCase()} before generating`);
       return;
+    }
+
+    if (!options?.skipStyleMismatchCheck && activePreset && prompt.trim()) {
+      const mismatch = detectStylePromptMismatch(
+        prompt,
+        activePreset.promptSuffix,
+        activePreset.name,
+      );
+      if (mismatch) {
+        setStyleMismatchDialog({
+          reasons: mismatch.reasons,
+          suggestions: resolveSuggestedStylePresets(
+            filteredStylePresets,
+            mismatch.suggestedStyleNames,
+            activePreset.id,
+          ),
+          currentStyleName: activePreset.name,
+        });
+        return;
+      }
     }
 
     // Build the prompt: prepend selected option fragment if present
@@ -4933,8 +4970,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (!shouldUseStyleReferenceImage(prompt, referenceImages.length > 0)) {
       resolvedBaseImageUrl = undefined;
     }
-    if (selectedPreset && selectedPreset !== "") {
-      const preset = filteredStylePresets.find((p) => p.id === selectedPreset);
+    if (effectivePresetId && effectivePresetId !== "") {
+      const preset = filteredStylePresets.find((p) => p.id === effectivePresetId);
       if (preset?.promptSuffix) {
         fullPrompt = `${fullPrompt}. ${preset.promptSuffix}`;
       }
@@ -4982,7 +5019,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         // size-only / AOP products have none, and sending a bogus colour leaked into
         // design-product SKUs and the Printify-mockup addon's variant lookup.
         frameColor: selectedFrameColor || (productTypeConfig?.frameColors?.length ? "black" : undefined),
-        stylePreset: selectedPreset && selectedPreset !== "" ? selectedPreset : undefined,
+        stylePreset: effectivePresetId && effectivePresetId !== "" ? effectivePresetId : undefined,
         referenceImages: referenceImagesBase64.length > 0 ? referenceImagesBase64 : undefined,
         baseImageUrl: resolvedBaseImageUrl || undefined,
         shop: (isShopify || isStorefront) ? shopDomain : undefined,
@@ -7649,6 +7686,58 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   return (
     <div className={`p-3 sm:p-4 ${isEmbedded || isStorefront ? "bg-transparent" : "bg-background min-h-screen"}`}>
+      <Dialog open={!!styleMismatchDialog} onOpenChange={(open) => !open && setStyleMismatchDialog(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>This style may not match your description</DialogTitle>
+            <DialogDescription asChild>
+              <div className="space-y-3 pt-1 text-sm text-muted-foreground">
+                <p>
+                  <span className="font-medium text-foreground">{styleMismatchDialog?.currentStyleName}</span>{" "}
+                  has fixed rules that can override what you typed.
+                </p>
+                <ul className="list-disc space-y-1 pl-5">
+                  {styleMismatchDialog?.reasons.map((reason) => (
+                    <li key={reason}>{reason}</li>
+                  ))}
+                </ul>
+                {styleMismatchDialog && styleMismatchDialog.suggestions.length > 0 && (
+                  <p>Try one of these styles instead — they follow your description more closely:</p>
+                )}
+              </div>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex-col gap-2 sm:flex-col sm:space-x-0">
+            {styleMismatchDialog?.suggestions.map((preset) => (
+              <Button
+                key={preset.id}
+                type="button"
+                className="w-full"
+                onClick={() => {
+                  void handleGenerate({
+                    skipStyleMismatchCheck: true,
+                    overridePresetId: preset.id,
+                  });
+                  setStyleMismatchDialog(null);
+                }}
+              >
+                Use {preset.name}
+              </Button>
+            ))}
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full"
+              onClick={() => {
+                setStyleMismatchDialog(null);
+                void handleGenerate({ skipStyleMismatchCheck: true });
+              }}
+            >
+              Generate anyway with {styleMismatchDialog?.currentStyleName}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog open={creditsPopoverOpen} onOpenChange={setCreditsPopoverOpen}>
         <DialogContent className="text-sm space-y-3 sm:max-w-sm">
           <DialogHeader>
