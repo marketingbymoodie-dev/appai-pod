@@ -46,7 +46,7 @@
  * flat-calibration bucket (already required for flat/mesh products) and use that
  * URL — no Printify image-id round trip is needed.
  */
-import { pool } from "./db";
+import { getBlueprintVariantPlaceholders } from "./printify-mockups";
 import { storage } from "./storage";
 import {
   bakeFlatPrintFile,
@@ -797,11 +797,33 @@ export async function submitFlatOrderToPrintify(
     // AOP: submit the captured per-panel print files directly as print_areas —
     // no bake step, these are the exact files the in-app Printify mockups used.
     if (resolved.kind === "aop") {
+      const validPlaceholderPositions = await getBlueprintVariantPlaceholders(
+        target.blueprintId,
+        target.providerId,
+        target.printifyVariantId,
+        printifyToken!,
+      );
+      const allowedPositions = validPlaceholderPositions
+        ? new Set(validPlaceholderPositions.map((p) => p.position))
+        : null;
+
       const printAreas: Record<string, PrintAreaImage[]> = {};
       for (const panel of resolved.design.panels) {
+        if (allowedPositions && !allowedPositions.has(panel.position)) {
+          console.warn(
+            `[flat-order-fulfillment] Skipping AOP panel "${panel.position}" — not a Printify placeholder for variant ${target.printifyVariantId} (allowed: ${[...allowedPositions].join(", ")})`,
+          );
+          continue;
+        }
         const src = toAbsolutePrintUrl(panel.url);
         printAreas[panel.position] = [{ src, scale: 1, x: 0.5, y: 0.5, angle: 0 }];
         allUrls[`${designId}:${panel.position}`] = src;
+      }
+      if (Object.keys(printAreas).length === 0) {
+        skippedReasons.push(
+          `line ${line.lineId}: no AOP print panels match Printify placeholders for variant ${target.printifyVariantId}`,
+        );
+        continue;
       }
       lineItems.push({
         print_provider_id: target.providerId,

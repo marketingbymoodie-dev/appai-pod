@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { FlaskConical, Loader2, Package, Save } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
 import EmbedDesign, { type TesterDesignStatus } from "@/pages/embed-design";
+import { dedupeProductTypesForPicker } from "@shared/productTypePicker";
 import type { ProductType } from "@shared/schema";
 
 interface DesignStudioIdentity {
@@ -32,14 +33,30 @@ export default function AdminCreateProduct() {
     initialProductTypeId ? parseInt(initialProductTypeId) : null
   );
 
-  const { data: productTypes, isLoading: productTypesLoading } = useQuery<ProductType[]>({
-    queryKey: ["/api/product-types"],
+  const { data: productTypesRaw, isLoading: productTypesLoading } = useQuery<ProductType[]>({
+    queryKey: ["/api/admin/product-types"],
   });
+  const productTypes = useMemo(
+    () => dedupeProductTypesForPicker(productTypesRaw ?? []),
+    [productTypesRaw],
+  );
 
   const { data: studioIdentity } = useQuery<DesignStudioIdentity>({
     queryKey: ["/api/appai/design-studio/identity"],
   });
-  const canSaveDesigns = studioIdentity?.canSaveDesigns === true;
+  const { data: planData } = useQuery<{
+    planName: string | null;
+    planStatus: string | null;
+    isActive: boolean;
+  }>({
+    queryKey: ["/api/appai/plan"],
+  });
+
+  const canSaveDesigns =
+    studioIdentity?.canSaveDesigns === true ||
+    (!!planData?.isActive &&
+      !!planData.planName &&
+      ["starter", "dabbler", "pro", "pro_plus"].includes(planData.planName));
 
   // Live status of the design on screen, reported by the embedded customizer:
   // which generation job it is + whether its AOP print panels are still uploading.

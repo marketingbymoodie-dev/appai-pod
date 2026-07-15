@@ -136,7 +136,7 @@ type CachedPlaceholders = { positions: BlueprintPlaceholder[]; ts: number };
 const BLUEPRINT_PLACEHOLDER_TTL_MS = 24 * 60 * 60 * 1000;
 const blueprintPlaceholderCache = new Map<string, CachedPlaceholders>();
 
-async function getBlueprintVariantPlaceholders(
+export async function getBlueprintVariantPlaceholders(
   blueprintId: number,
   providerId: number,
   variantId: number,
