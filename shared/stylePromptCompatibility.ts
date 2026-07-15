@@ -63,13 +63,6 @@ export function stylePrefixIsSingleMotif(stylePrefix: string, styleName: string)
   );
 }
 
-/** True when the user typed enough detail that style constraints may override it. */
-export function isDetailedUserPrompt(userDesc: string | null | undefined): boolean {
-  if (!userDesc) return false;
-  const words = userDesc.trim().split(/\s+/).filter(Boolean);
-  return words.length >= 4;
-}
-
 /**
  * Detect when a selected style's prefix fights the customer's description.
  * Returns null when generation can proceed without warning.
@@ -83,11 +76,20 @@ export function detectStylePromptMismatch(
   const prefix = (stylePrefix || "").trim();
   const name = (styleName || "").trim();
 
-  if (!hasUserArtworkDescription(user) || !isDetailedUserPrompt(user)) return null;
+  if (!hasUserArtworkDescription(user)) return null;
   if (!prefix && !name) return null;
 
+  const wordCount = user.split(/\s+/).filter(Boolean).length;
   const reasons: string[] = [];
   const suggestedStyleNames: string[] = [];
+
+  // High-confidence conflicts — fire even on short prompts (e.g. "rainbow pattern").
+  if (userPromptRequestsPattern(user) && stylePrefixIsSingleMotif(prefix, name)) {
+    reasons.push(
+      "Your description asks for a repeating pattern, but this style is built for a single centered icon or motif.",
+    );
+    suggestedStyleNames.push("Pattern Maker");
+  }
 
   if (userPromptRequestsMonochrome(user) && stylePrefixRequiresVibrantColor(prefix)) {
     reasons.push(
@@ -96,16 +98,13 @@ export function detectStylePromptMismatch(
     suggestedStyleNames.push("Free 4 All", "Pattern Maker");
   }
 
-  if (userPromptRequestsPattern(user) && stylePrefixIsSingleMotif(prefix, name)) {
-    reasons.push(
-      "Your description asks for a repeating pattern, but this style is built for a single centered icon or motif.",
-    );
-    if (!suggestedStyleNames.includes("Pattern Maker")) {
-      suggestedStyleNames.unshift("Pattern Maker");
-    }
-  }
-
-  if (stylePrefixIsMinimalIcon(prefix, name) && user.split(/\s+/).length >= 4 && reasons.length === 0) {
+  // Minimalist Icon: long or descriptive prompts get replaced by generic icons.
+  if (
+    stylePrefixIsMinimalIcon(prefix, name) &&
+    wordCount >= 4 &&
+    !userPromptRequestsPattern(user) &&
+    reasons.length === 0
+  ) {
     reasons.push(
       "This style always steers toward a generic minimalist icon. Your detailed subject may be simplified or replaced.",
     );
