@@ -67,8 +67,10 @@ import {
 import { resolveFabricWeaveTexture, WOVEN_WALL_TAPESTRY_BLUEPRINT_ID } from "@shared/fabricWeave";
 import {
   apparelMotifDesignColors,
+  buildAopPatternSizingRequirements,
   buildAopSizingRequirements,
   filterStyleReferenceUrls,
+  styleIsPatternMaker,
 } from "@shared/generationPromptHints";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShopifyToken } from "./shopify";
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
@@ -2511,7 +2513,10 @@ export async function registerRoutes(
       let sizingRequirements: string;
       
       if (isApparel && isAllOverPrint) {
-        sizingRequirements = buildAopSizingRequirements(userDescAdmin);
+        const usePatternAop = styleIsPatternMaker(styleName, stylePromptPrefix);
+        sizingRequirements = usePatternAop
+          ? buildAopPatternSizingRequirements(userDescAdmin)
+          : buildAopSizingRequirements(userDescAdmin);
       } else if (isApparel) {
         sizingRequirements = buildApparelChromaSizingRequirements(
           apparelMotifDesignColors(userDescAdmin, colorTier === "dark"),
@@ -2648,12 +2653,15 @@ ${textEdgeRestrictions}
       }
 
       // Generate image using Replicate
+      const usePatternAopAdmin = !!(isAllOverPrint && styleIsPatternMaker(styleName, stylePromptPrefix));
+
       const { mimeType, data } = await generateImageBase64({
         prompt: fullPrompt,
         aspectRatio: geminiAspectRatio,
         inputImageUrl,
         isApparel,
         isAllOverPrint,
+        isPatternStyle: usePatternAopAdmin,
         userPrompt: userDescAdmin || null,
       });
 console.log("[api/generate] replicate returned", {
@@ -7450,7 +7458,10 @@ ${textEdgeRestrictions}
       let sizingRequirements: string;
 
       if (isApparel && isAllOverPrint) {
-        sizingRequirements = buildAopSizingRequirements(userDescSf);
+        const usePatternAopSf = styleIsPatternMaker(styleName, stylePromptPrefix);
+        sizingRequirements = usePatternAopSf
+          ? buildAopPatternSizingRequirements(userDescSf)
+          : buildAopSizingRequirements(userDescSf);
       } else if (isApparel) {
         // Apparel: #FF00FF chroma key background for precise removal
         const frameColor = req.body.frameColor;
@@ -7644,12 +7655,14 @@ ${textEdgeRestrictions}
           // Call AI image generation
           const aiStart = Date.now();
           console.log(`${W} calling AI (aspectRatio=${geminiAspectRatio ?? "1:1"}) +${aiStart - wStart}ms`);
+          const usePatternAopSf = !!(isAllOverPrint && styleIsPatternMaker(styleName, stylePromptPrefix));
           const { data: base64Data, mimeType: generatedMimeType } = await generateImageBase64({
             prompt: fullPrompt,
             aspectRatio: geminiAspectRatio ?? "1:1",
             inputImageUrl,
             isApparel,
             isAllOverPrint,
+            isPatternStyle: usePatternAopSf,
             userPrompt: userDescSf || null,
           });
           console.log(`${W} AI returned ${Date.now() - aiStart}ms, hasData=${!!base64Data}, total +${Date.now() - wStart}ms`);
