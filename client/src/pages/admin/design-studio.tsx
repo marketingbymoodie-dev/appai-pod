@@ -11,6 +11,7 @@ interface DesignStudioIdentity {
   customerId: string;
   savedCount: number;
   savedLimit: number;
+  canSaveDesigns?: boolean;
 }
 
 /**
