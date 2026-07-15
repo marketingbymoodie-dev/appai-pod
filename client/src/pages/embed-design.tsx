@@ -5894,6 +5894,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           try {
             const printPanels = result.renderPrintPanels();
             if (!printPanels?.length || isStale()) return;
+            lastAopPanelUrlsRef.current = printPanels;
             const aopPrintPanelUrls = await Promise.all(
               printPanels.map(async ({ position, dataUrl }) => ({
                 position,

@@ -368,6 +368,47 @@ export type FrontBodyPanelPlacementBias = {
 export const FRONT_CHEST_PANEL_KEYS: HoodiePanelKey[] = ["front_left", "front_right"];
 export const FRONT_POCKET_PANEL_KEYS: HoodiePanelKey[] = ["pocket_left", "pocket_right"];
 
+/** All customer-toggle pocket panels (pullover kangaroo + zip halves). */
+export const KANGAROO_POCKET_PANEL_KEYS: HoodiePanelKey[] = [
+  "front_pocket",
+  "pocket_left",
+  "pocket_right",
+];
+
+export function isKangarooPocketPanelKey(
+  panelKey: HoodiePanelKey | null | undefined,
+): boolean {
+  return !!panelKey && KANGAROO_POCKET_PANEL_KEYS.includes(panelKey);
+}
+
+/**
+ * Move `front_pocket` from the always-disabled `trim` group into `front-body`
+ * so toggling Pockets on can actually render / export artwork. Idempotent.
+ */
+export function migrateFrontPocketOutOfTrimGroup(
+  designGroups: DesignGroup[],
+): DesignGroup[] {
+  const frontBodyIdx = designGroups.findIndex((g) => g.id === "front-body");
+  const trimIdx = designGroups.findIndex((g) => g.id === "trim");
+  if (
+    frontBodyIdx < 0 ||
+    trimIdx < 0 ||
+    !designGroups[trimIdx].panelKeys.includes("front_pocket") ||
+    designGroups[frontBodyIdx].panelKeys.includes("front_pocket")
+  ) {
+    return designGroups;
+  }
+  return designGroups.map((g, i) => {
+    if (i === frontBodyIdx) {
+      return { ...g, panelKeys: [...g.panelKeys, "front_pocket"] };
+    }
+    if (i === trimIdx) {
+      return { ...g, panelKeys: g.panelKeys.filter((k) => k !== "front_pocket") };
+    }
+    return g;
+  });
+}
+
 export function mergePanelPlacementBiasPercent(
   base?: Partial<PanelPlacementBiasPercent> | null,
   override?: Partial<PanelPlacementBiasPercent> | null,
@@ -1168,31 +1209,11 @@ export function normalizeHoodieTemplate(template: HoodieTemplate): HoodieTemplat
       ];
     }
   }
-  // Migrate stale pullover templates where `front_pocket` still lives in the
+  // Migrate stale templates where `front_pocket` still lives in the
   // always-disabled `trim` group (pre-fix persisted JSON). Without this,
   // toggling "Pockets" on in the customer placer can never show artwork
-  // because `trim` is force-disabled at render time — see
-  // defaultPulloverDesignGroups() above for the current (fixed) default.
-  if (isPulloverHoodieBlueprint(template.blueprintId)) {
-    const frontBodyIdx = designGroups.findIndex((g) => g.id === "front-body");
-    const trimIdx = designGroups.findIndex((g) => g.id === "trim");
-    if (
-      frontBodyIdx >= 0 &&
-      trimIdx >= 0 &&
-      designGroups[trimIdx].panelKeys.includes("front_pocket") &&
-      !designGroups[frontBodyIdx].panelKeys.includes("front_pocket")
-    ) {
-      designGroups = designGroups.map((g, i) => {
-        if (i === frontBodyIdx) {
-          return { ...g, panelKeys: [...g.panelKeys, "front_pocket"] };
-        }
-        if (i === trimIdx) {
-          return { ...g, panelKeys: g.panelKeys.filter((k) => k !== "front_pocket") };
-        }
-        return g;
-      });
-    }
-  }
+  // because `trim` is force-disabled at render time.
+  designGroups = migrateFrontPocketOutOfTrimGroup(designGroups);
   const placerEditor = resolvePlacerEditor({ ...template, designGroups });
   const garmentLayout = resolveGarmentLayout({ ...template, designGroups, placerEditor });
   if (usesJumperNoHoodGarmentUi({ ...template, designGroups, placerEditor, garmentLayout })) {
