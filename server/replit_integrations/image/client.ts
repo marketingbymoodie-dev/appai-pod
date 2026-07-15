@@ -109,6 +109,7 @@ export type GenerateImageParams = {
   inputImageUrl?: string | string[] | null;
   isApparel?: boolean;
   isAllOverPrint?: boolean;
+  isPatternStyle?: boolean;
   userPrompt?: string | null;
 };
 
@@ -157,7 +158,7 @@ const PROMPT_MAX_LENGTH = 900;
 function stripVerboseRequirementBlocks(raw: string): string {
   return raw
     .replace(
-      /\n*MANDATORY IMAGE REQUIREMENTS FOR (?:ALL-OVER PRINT \(AOP\)|APPAREL PRINTING)[\s\S]*?(?==== ARTWORK DESCRIPTION|$)/,
+      /\n*MANDATORY IMAGE REQUIREMENTS FOR (?:ALL-OVER PRINT \(AOP\)(?: PATTERN)?|APPAREL PRINTING)[\s\S]*?(?==== ARTWORK DESCRIPTION|$)/,
       ""
     )
     .replace(/=== CRITICAL CANVAS REQUIREMENTS[\s\S]*?(?==== ARTWORK DESCRIPTION|=== IMAGE CONTENT|$)/, "")
@@ -171,6 +172,7 @@ function compressPrompt(
   isApparel: boolean,
   isAllOverPrint?: boolean,
   userPrompt?: string | null,
+  isPatternStyle?: boolean,
 ): string {
   const artworkMatch = raw.match(/=== ARTWORK DESCRIPTION ===\s*([\s\S]*)/);
   const artworkSection = artworkMatch?.[1]?.trim() || "";
@@ -184,14 +186,21 @@ function compressPrompt(
   if (isApparel && isAllOverPrint) {
     compressed = stripVerboseRequirementBlocks(raw);
 
-    const shortAopConstraints =
-      monoHint +
-      "Isolated centered motif on a SOLID HOT PINK (#FF00FF) background. " +
-      "Every pixel not part of the design must be exactly #FF00FF. " +
-      "NO white mat, NO white rectangle, NO card behind subject — background must be pure #FF00FF to all four edges. " +
-      "Do NOT use hot pink or magenta anywhere in the design itself. " +
-      "Clean hard edges, no gradients into background, no rectangular frames. " +
-      "Do NOT add any text, words, slogans, or labels unless the user explicitly requested them. ";
+    const shortAopConstraints = isPatternStyle
+      ? monoHint +
+        "Seamless tileable repeating pattern unit on SOLID HOT PINK (#FF00FF). " +
+        "Must repeat seamlessly when tiled — NOT a single isolated centered icon. " +
+        "Every pixel not part of the pattern must be exactly #FF00FF. " +
+        "Do NOT use hot pink or magenta inside the pattern itself. " +
+        "Clean hard edges, no rectangular frames. " +
+        "Do NOT add text unless the user explicitly requested it. "
+      : monoHint +
+        "Isolated centered motif on a SOLID HOT PINK (#FF00FF) background. " +
+        "Every pixel not part of the design must be exactly #FF00FF. " +
+        "NO white mat, NO white rectangle, NO card behind subject — background must be pure #FF00FF to all four edges. " +
+        "Do NOT use hot pink or magenta anywhere in the design itself. " +
+        "Clean hard edges, no gradients into background, no rectangular frames. " +
+        "Do NOT add any text, words, slogans, or labels unless the user explicitly requested them. ";
     compressed = shortAopConstraints + compressed;
   } else if (isApparel) {
     compressed = stripVerboseRequirementBlocks(raw);
@@ -316,6 +325,7 @@ export async function generateImageBase64(
     params.isApparel ?? false,
     params.isAllOverPrint ?? false,
     params.userPrompt,
+    params.isPatternStyle,
   );
   const requestedAspectRatio = mapToSupportedAspectRatio(params.aspectRatio);
 

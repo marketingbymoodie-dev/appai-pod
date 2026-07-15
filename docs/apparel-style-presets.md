@@ -47,6 +47,7 @@ White inside the subject (teeth, eyes) is OK; hot pink is not.
 
 1. Create in Admin → Styles with `category: apparel` and full chroma-safe prefixes (light + dark).
 2. Optionally add fallbacks to `shared/apparel-chroma-prompts.ts` for new installs / reseed.
+3. If the style imposes fixed composition/color rules, see [Style / prompt mismatch warnings](./style-prompt-mismatch-warnings.md) for pre-generate customer dialogs and how alternatives are scoped to styles the merchant actually exposes.
 
 ## Verification
 

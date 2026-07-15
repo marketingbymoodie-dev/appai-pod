@@ -78,3 +78,30 @@ export function apparelMotifDesignColors(
   }
   return "VIBRANT colors. White may be used inside the subject (teeth, eyes, highlights) but NOT as a background mat. AVOID hot pink/magenta in the design.";
 }
+
+/** Pattern Maker / tileable-repeat styles (not single-icon AOP). */
+export function styleIsPatternMaker(
+  styleName: string | null | undefined,
+  stylePrefix: string | null | undefined,
+): boolean {
+  const combined = `${styleName || ""} ${stylePrefix || ""}`.toLowerCase();
+  return (
+    /\bpattern maker\b/.test(combined) ||
+    (/\brepeating pattern\b/.test(combined) && /\btileable\b/.test(combined))
+  );
+}
+
+/** AOP sizing for Pattern Maker — tileable repeat unit, not a single centered icon. */
+export function buildAopPatternSizingRequirements(userDesc: string | null | undefined): string {
+  return `
+MANDATORY IMAGE REQUIREMENTS FOR ALL-OVER PRINT (AOP) PATTERN - FOLLOW EXACTLY:
+1. TILEABLE REPEATING UNIT: Create a seamless, tileable repeating pattern unit. The design must repeat seamlessly when tiled horizontally and vertically. Do NOT output a single isolated icon floating in empty space.
+2. SOLID HOT PINK CHROMA KEY BACKGROUND: The ENTIRE background MUST be a flat, solid, uniform hot pink (#FF00FF) color. Every pixel that is not part of the pattern must be exactly #FF00FF.
+3. ${aopDesignColorRequirement(userDesc)}
+4. FILL THE TILE: Pattern elements should fill the tile unit edge-to-edge with no large empty pink gaps — this unit will be repeated across the garment.
+5. CLEAN EDGES: Crisp vector-like edges between pattern elements and the hot pink background. No fuzzy gradients into the background.
+6. NO RECTANGULAR FRAMES: Do NOT put the pattern inside a box, border, or card — the tile should extend to all four edges.
+7. PRINT-READY: This is for all-over print fabric — create a seamless repeat tile.
+8. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, or extra subjects unless the user explicitly asked for them.
+`;
+}

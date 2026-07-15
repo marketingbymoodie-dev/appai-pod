@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   aopDesignColorRequirement,
   apparelMotifDesignColors,
+  buildAopPatternSizingRequirements,
   buildAopSizingRequirements,
   filterStyleReferenceUrls,
   hasUserArtworkDescription,
   shouldUseStyleReferenceImage,
+  styleIsPatternMaker,
   userPromptRequestsMonochrome,
 } from "./generationPromptHints";
 
@@ -52,5 +54,16 @@ describe("generationPromptHints", () => {
     expect(filterStyleReferenceUrls(urls, "black and white jungle patterns", false)).toEqual([]);
     expect(filterStyleReferenceUrls(urls, "black and white jungle patterns", true)).toEqual(urls);
     expect(filterStyleReferenceUrls(urls, "", false)).toEqual(urls);
+  });
+
+  it("buildAopPatternSizingRequirements targets tileable repeats", () => {
+    const block = buildAopPatternSizingRequirements("rainbow pattern");
+    expect(block).toContain("TILEABLE REPEATING UNIT");
+    expect(block).not.toContain("SINGLE, centered");
+  });
+
+  it("styleIsPatternMaker detects pattern maker styles", () => {
+    expect(styleIsPatternMaker("Pattern Maker", "Create a repeating pattern of")).toBe(true);
+    expect(styleIsPatternMaker("Minimalist Icon", "Create a minimal icon of")).toBe(false);
   });
 });

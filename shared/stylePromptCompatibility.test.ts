@@ -11,7 +11,19 @@ const MINIMALIST_ICON_PREFIX =
 describe("stylePromptCompatibility", () => {
   it("detects pattern requests", () => {
     expect(userPromptRequestsPattern("black and white jungle patterns")).toBe(true);
+    expect(userPromptRequestsPattern("rainbow pattern")).toBe(true);
     expect(userPromptRequestsPattern("a scary bear")).toBe(false);
+  });
+
+  it("flags minimalist icon + rainbow pattern (short prompt)", () => {
+    const mismatch = detectStylePromptMismatch(
+      "rainbow pattern",
+      MINIMALIST_ICON_PREFIX,
+      "Minimalist Icon",
+    );
+    expect(mismatch).not.toBeNull();
+    expect(mismatch!.reasons.some((r) => r.includes("repeating pattern"))).toBe(true);
+    expect(mismatch!.suggestedStyleNames).toContain("Pattern Maker");
   });
 
   it("flags minimalist icon + B&W patterns prompt", () => {
