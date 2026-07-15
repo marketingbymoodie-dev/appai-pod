@@ -3546,7 +3546,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     patternUrl?: string,
     mirrorLegs?: boolean,
     panelUrls?: { position: string; dataUrl: string }[],
-    printPlacementOverride?: "front" | "back" | "both"
+    printPlacementOverride?: "front" | "back" | "both",
+    bgColorOverride?: string,
   ) => {
     // Guard: never call the mockup endpoint without a real design image.
     if (!designImageUrl) {
@@ -3630,14 +3631,19 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       // server uses it to fill any blueprint placeholder the client doesn't
       // render — e.g. inner hood / collar yoke / placket trim on zip hoodies
       // — so those regions don't show the default white garment template.
-      const aopBgColor = useAopCustomizer
-        ? (() => {
-            const candidate = aopPlacementSettings?.bgColor ?? aopPatternSettings?.bgColor;
-            return typeof candidate === "string" && /^#[0-9a-fA-F]{6}$/.test(candidate)
-              ? candidate
-              : undefined;
-          })()
-        : undefined;
+      const aopBgColor = (() => {
+        if (
+          typeof bgColorOverride === "string" &&
+          /^#[0-9a-fA-F]{6}$/.test(bgColorOverride)
+        ) {
+          return bgColorOverride;
+        }
+        if (!useAopCustomizer) return undefined;
+        const candidate = aopPlacementSettings?.bgColor ?? aopPatternSettings?.bgColor;
+        return typeof candidate === "string" && /^#[0-9a-fA-F]{6}$/.test(candidate)
+          ? candidate
+          : undefined;
+      })();
       const mockupPrintPlacement = useAopCustomizer
         ? undefined
         : supportsPrintPlacementSelection
@@ -5823,12 +5829,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
    * raster as `printifyMockupImages[front]` so `getPreferredMockupUrl()`
    * returns it (cart `_mockup_url` line property, ATC enabled state, etc).
    *
-   * Stage 5 will layer in the per-panel reverse-mesh-warp print files and
-   * the optional Printify "Printers Mockup" background-fire on top of this
-   * — for now we deliberately ship without it because (a) the user already
-   * gets a high-fidelity local preview that matches what Printify will
-   * produce, and (b) Printify mockup generation needs the per-panel print
-   * files we don't compute yet.
+   * Stage 5: also fires Printify mockup generation with per-panel print rasters
+   * and garment bgColor so blueprint-only placeholders (collar, trim) render
+   * correctly — same path as legacy PatternCustomizer AOP apply.
    */
   const handleHoodieAopApply = useCallback(async (
     result: HoodieAopPlacerApplyResult,
@@ -5849,6 +5852,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
     const frontDataUrl = frontCanvas.toDataURL("image/png");
     const backDataUrl = backCanvas?.toDataURL("image/png") ?? null;
+    const printPanels = result.renderPrintPanels();
+    if (printPanels?.length) {
+      lastAopPanelUrlsRef.current = printPanels;
+    }
 
     setMockupLoading(true);
     setMockupTriggered(true);
@@ -5875,6 +5882,27 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       setMockupError(null);
       setMockupsStale(false);
 
+      if (
+        productTypeConfig?.hasPrintifyMockups &&
+        selectedSize &&
+        printPanels?.length
+      ) {
+        void fetchPrintifyMockups(
+          frontHosted,
+          productTypeConfig.id,
+          selectedSize,
+          selectedFrameColor || "default",
+          transform.scale,
+          50,
+          50,
+          frontHosted,
+          undefined,
+          printPanels,
+          undefined,
+          result.state.backgroundColor,
+        );
+      }
+
       // Persist the flat per-panel PRINT files on the job's designState
       // (aopPrintPanelUrls). This is what order fulfillment, the admin
       // test-order flow, and permanent design-product publishing submit to
@@ -5892,11 +5920,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         emitTesterDesignStatus({ jobId: panelJobId, aopPanels: 'saving' });
         void (async () => {
           try {
-            const printPanels = result.renderPrintPanels();
-            if (!printPanels?.length || isStale()) return;
-            lastAopPanelUrlsRef.current = printPanels;
+            const panelsForSave = printPanels ?? result.renderPrintPanels();
+            if (!panelsForSave?.length || isStale()) return;
+            lastAopPanelUrlsRef.current = panelsForSave;
             const aopPrintPanelUrls = await Promise.all(
-              printPanels.map(async ({ position, dataUrl }) => ({
+              panelsForSave.map(async ({ position, dataUrl }) => ({
                 position,
                 url: await ensureHostedUrl(dataUrl),
               })),
@@ -6027,7 +6055,18 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       setMockupLoading(false);
       setMockupTriggered(false);
     }
-  }, [isStorefront, isAdminTester, shopDomain, storefrontCustomerId, emitTesterDesignStatus]);
+  }, [
+    isStorefront,
+    isAdminTester,
+    shopDomain,
+    storefrontCustomerId,
+    emitTesterDesignStatus,
+    productTypeConfig,
+    selectedSize,
+    selectedFrameColor,
+    transform.scale,
+    fetchPrintifyMockups,
+  ]);
 
   /** Persist flat on-the-fly preview rasters to the job + refresh Saved Designs gallery. */
   const persistFlatMockupsForGallery = useCallback(

@@ -59,8 +59,15 @@ import {
 } from "@shared/hoodieTemplate";
 import {
   pocketOverlayRectOnFrontPanel,
+  punchOutRectOnCanvas,
   shouldMergePulloverPocketForPrintify,
 } from "@shared/pulloverPocketPrintMerge";
+import {
+  BODY_PRINT_BLEED_PANEL_KEYS,
+  computeTilePxOnFlatCanvas,
+  computePreviewMeshTileStretch,
+  PRINT_PANEL_BOTTOM_BLEED_FRACTION,
+} from "@shared/aopTileScale";
 import { svgPathToAnchors, svgPathToSubpaths, clipCanvasToMaskSubpaths, appendMaskSubpathsToPath, boundingBoxOfSubpaths } from "./svgPath";
 import { drawMeshWarp } from "./meshWarp";
 
@@ -1079,22 +1086,45 @@ function meshTargetBbox(mesh: MeshGrid): Aabb | null {
 }
 
 /**
- * Preview-only: when the flat mesh canvas overscans the visible panel polygon
- * (common on back body, sleeves, hood), the mesh compresses the flat sheet
- * onto the mockup and tiles look too dense unless scaled up here. Do NOT use
- * for Printify print export — those flat sheets are submitted as-is.
+ * Preview-only: when the mesh target bbox overscans the visible panel polygon,
+ * compensate tile density so the warped preview matches Printify. Uses mockup
+ * space only — never apply on print export.
  */
 export function computeMeshFlatTileStretch(
-  maskPath: string,
-  flatW: number,
-  flatH: number,
+  meshTargetWidth: number,
+  visiblePolyWidth: number,
 ): number {
-  if (flatW <= 0 || flatH <= 0) return 1;
-  const polyBb = aabbOf(svgPathToAnchors(maskPath));
-  if (!polyBb || polyBb.width <= 0 || polyBb.height <= 0) return 1;
-  const stretchX = flatW / polyBb.width;
-  const stretchY = flatH / polyBb.height;
-  return Math.max(stretchX, stretchY, 1);
+  return computePreviewMeshTileStretch(meshTargetWidth, visiblePolyWidth);
+}
+
+/** Mesh target bbox preferred; falls back to mask polygon for placement math. */
+function layerReferenceBbox(layer: MaskLayer): Aabb | null {
+  if (layer.mesh) {
+    const meshBb = meshTargetBbox(layer.mesh);
+    if (meshBb) return meshBb;
+  }
+  return aabbOf(svgPathToAnchors(layer.maskPath));
+}
+
+function extendPanelBottomBleed(
+  canvas: HTMLCanvasElement,
+  panelKey: HoodiePanelKey,
+  bg: string,
+): HTMLCanvasElement {
+  if (!BODY_PRINT_BLEED_PANEL_KEYS.has(panelKey)) return canvas;
+  const bleedH = Math.max(
+    2,
+    Math.ceil(canvas.height * PRINT_PANEL_BOTTOM_BLEED_FRACTION),
+  );
+  const next = document.createElement("canvas");
+  next.width = canvas.width;
+  next.height = canvas.height + bleedH;
+  const ctx = next.getContext("2d");
+  if (!ctx) return canvas;
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, next.width, next.height);
+  ctx.drawImage(canvas, 0, 0);
+  return next;
 }
 
 /**
@@ -1136,40 +1166,38 @@ function renderTiledFlatPanel(
   const meshOverscanCompensation = opts?.meshOverscanCompensation ?? false;
   if (!layer.mesh) return null;
 
+  const meshTb = meshTargetBbox(layer.mesh);
+  if (!meshTb) return null;
+
   // Decide flat-panel canvas dimensions.
   let flatW: number;
   let flatH: number;
+  let flatCanvasWBase: number;
   const src = layer.mesh.sourceRect;
   if (src && src.width > 0 && src.height > 0) {
-    flatW = Math.max(1, Math.round(src.width));
+    flatCanvasWBase = Math.max(1, Math.round(src.width));
+    flatW = flatCanvasWBase;
     flatH = Math.max(1, Math.round(src.height));
   } else {
-    // Use the mesh's projected area in mockup coordinates so the flat
-    // canvas is in the same coord space the mesh maps onto. Critical
-    // for tile-size uniformity across panels — the polygon bbox is
-    // not a reliable proxy because admin meshes typically extend past
-    // the polygon by 2× or more on sleeves / hood / waistband.
-    const tb = meshTargetBbox(layer.mesh);
-    if (!tb) return null;
-    flatW = Math.max(1, Math.round(tb.width));
-    flatH = Math.max(1, Math.round(tb.height));
+    flatCanvasWBase = Math.max(1, Math.round(meshTb.width));
+    flatW = flatCanvasWBase;
+    flatH = Math.max(1, Math.round(meshTb.height));
   }
   const scale = Math.max(0.01, outputScale);
   flatW = Math.max(1, Math.round(flatW * scale));
   flatH = Math.max(1, Math.round(flatH * scale));
 
-  // Tile size in flat-canvas px. Mesh overscan compensation is preview-only:
-  // the mesh compresses an oversized flat sheet onto the visible panel, so
-  // tiles must scale up on the flat sheet to read correctly after warp. Print
-  // export submits the flat sheet to Printify as-is — never apply that
-  // stretch there or the physical print tiles come out much too large.
-  // `outputScale` multiplies both the canvas and the tile so the pattern
-  // geometry is unchanged — just rendered at higher density.
-  const tilePxMockup = Math.max(1, settings.tileSizeInches * pixelsPerInch);
-  const tileStretch = meshOverscanCompensation
-    ? computeMeshFlatTileStretch(layer.maskPath, flatW, flatH)
-    : 1;
-  const tilePxFlat = tilePxMockup * scale * tileStretch;
+  const polyAnchors = svgPathToAnchors(layer.maskPath);
+  const polyBb = polyAnchors.length >= 3 ? aabbOf(polyAnchors) : null;
+  const tilePxFlat = computeTilePxOnFlatCanvas({
+    tileSizeInches: settings.tileSizeInches,
+    pixelsPerInch,
+    flatCanvasW: flatCanvasWBase,
+    meshTargetWidth: meshTb.width,
+    visiblePolyWidth: polyBb?.width,
+    outputScale: scale,
+    meshOverscanCompensation,
+  });
   const aw = artwork.naturalWidth || artwork.width;
   const ah = artwork.naturalHeight || artwork.height;
   const tileHFlat = tilePxFlat * (ah / Math.max(1, aw));
@@ -1195,8 +1223,6 @@ function renderTiledFlatPanel(
   //     about the seams).
   let anchorX = flatW / 2;
   const cx = canvasW / 2;
-  const polyAnchors = svgPathToAnchors(layer.maskPath);
-  const polyBb = polyAnchors.length >= 3 ? aabbOf(polyAnchors) : null;
   if (
     polyBb &&
     layer.mesh.cols >= 2 &&
@@ -2041,6 +2067,7 @@ export function finalizePulloverPrintPanelsForPrintify(
   panels: FlatPrintPanelExport[],
   template: HoodieTemplate,
   panelEnabledOverrides?: Partial<Record<string, boolean>>,
+  backgroundColor?: string | null,
 ): FlatPrintPanelExport[] {
   const pocketsEnabled = panelEnabledOverrides?.front_pocket !== false;
   if (!shouldMergePulloverPocketForPrintify(template.blueprintId, pocketsEnabled)) {
@@ -2060,8 +2087,8 @@ export function finalizePulloverPrintPanelsForPrintify(
     return panels.filter((_, i) => i !== pocketIdx);
   }
 
-  const frontBb = aabbOf(svgPathToAnchors(frontLayer.maskPath));
-  const pocketBb = aabbOf(svgPathToAnchors(pocketLayer.maskPath));
+  const frontBb = layerReferenceBbox(frontLayer);
+  const pocketBb = layerReferenceBbox(pocketLayer);
   if (!frontBb || !pocketBb) {
     return panels.filter((_, i) => i !== pocketIdx);
   }
@@ -2083,7 +2110,9 @@ export function finalizePulloverPrintPanelsForPrintify(
     return panels.filter((_, i) => i !== pocketIdx);
   }
 
+  const bg = backgroundColor || DEFAULT_GARMENT_BACKGROUND;
   ctx.drawImage(frontEntry.canvas, 0, 0);
+  punchOutRectOnCanvas(ctx, dest, bg);
   ctx.drawImage(
     pocketEntry.canvas,
     0,
@@ -2307,10 +2336,16 @@ export function renderFlatPrintPanels(
       pctx.fillRect(0, 0, panel.width, panel.height);
       pctx.drawImage(artCanvas, 0, 0);
 
+      const withBleed = extendPanelBottomBleed(panel, panelKey, bg);
       seenPositions.add(position);
-      out.push({ position, panelKey, canvas: panel });
+      out.push({ position, panelKey, canvas: withBleed });
     }
   }
 
-  return finalizePulloverPrintPanelsForPrintify(out, template, panelEnabledOverrides);
+  return finalizePulloverPrintPanelsForPrintify(
+    out,
+    template,
+    panelEnabledOverrides,
+    backgroundColor,
+  );
 }

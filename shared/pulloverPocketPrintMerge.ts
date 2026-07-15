@@ -22,6 +22,25 @@ export function shouldMergePulloverPocketForPrintify(
   return pocketsEnabled && isPulloverHoodieBlueprint(blueprintId);
 }
 
+/** Map overlay rect using reference bboxes (mesh target or polygon) in mockup space. */
+export function overlayRectOnReferencePanel(
+  hostBb: MockupBbox,
+  overlayBb: MockupBbox,
+  hostCanvasW: number,
+  hostCanvasH: number,
+): PulloverPocketOverlayRect {
+  return pocketOverlayRectOnFrontPanel(hostBb, overlayBb, hostCanvasW, hostCanvasH);
+}
+
+/** Fill a rectangle on a canvas — used to punch out underlying art before overlay. */
+export function punchOutRectOnCanvas(
+  ctx: CanvasRenderingContext2D,
+  rect: PulloverPocketOverlayRect,
+  fillColor: string,
+): void {
+  ctx.fillStyle = fillColor;
+  ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+}
 /** Map the pocket mask bbox into front-panel canvas pixels (mockup-calibrated). */
 export function pocketOverlayRectOnFrontPanel(
   frontBb: MockupBbox,

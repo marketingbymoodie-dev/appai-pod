@@ -366,7 +366,12 @@ export type FrontBodyPanelPlacementBias = {
 };
 
 export const FRONT_CHEST_PANEL_KEYS: HoodiePanelKey[] = ["front_left", "front_right"];
-export const FRONT_POCKET_PANEL_KEYS: HoodiePanelKey[] = ["pocket_left", "pocket_right"];
+/** Chest + kangaroo pocket panels in the front-body group (zip halves + pullover). */
+export const FRONT_POCKET_PANEL_KEYS: HoodiePanelKey[] = [
+  "pocket_left",
+  "pocket_right",
+  "front_pocket",
+];
 
 /** All customer-toggle pocket panels (pullover kangaroo + zip halves). */
 export const KANGAROO_POCKET_PANEL_KEYS: HoodiePanelKey[] = [
