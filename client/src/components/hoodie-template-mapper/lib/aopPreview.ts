@@ -1074,11 +1074,10 @@ function meshTargetBbox(mesh: MeshGrid): Aabb | null {
 }
 
 /**
- * When the flat mesh canvas overscans the visible panel polygon (common on
- * back body, sleeves, hood), the same `tileSizeInches` packs too many tiles
- * into the flat sheet — the mesh compresses them onto the mockup and the
- * pattern looks denser than the front. Scale tile px by flat÷visible so one
- * inch on the slider reads the same on every view.
+ * Preview-only: when the flat mesh canvas overscans the visible panel polygon
+ * (common on back body, sleeves, hood), the mesh compresses the flat sheet
+ * onto the mockup and tiles look too dense unless scaled up here. Do NOT use
+ * for Printify print export — those flat sheets are submitted as-is.
  */
 export function computeMeshFlatTileStretch(
   maskPath: string,
@@ -1126,8 +1125,10 @@ function renderTiledFlatPanel(
   settings: TileSettings,
   pixelsPerInch: number,
   canvasW: number,
-  outputScale = 1,
+  opts?: { outputScale?: number; meshOverscanCompensation?: boolean },
 ): HTMLCanvasElement | null {
+  const outputScale = opts?.outputScale ?? 1;
+  const meshOverscanCompensation = opts?.meshOverscanCompensation ?? false;
   if (!layer.mesh) return null;
 
   // Decide flat-panel canvas dimensions.
@@ -1152,13 +1153,17 @@ function renderTiledFlatPanel(
   flatW = Math.max(1, Math.round(flatW * scale));
   flatH = Math.max(1, Math.round(flatH * scale));
 
-  // Tile size in flat-canvas px. When flatW/H overscans the visible polygon
-  // (mesh seam allowance), compensate so the warped tile still reads as
-  // `tileSizeInches` on the mockup — same apparent scale on front and back.
+  // Tile size in flat-canvas px. Mesh overscan compensation is preview-only:
+  // the mesh compresses an oversized flat sheet onto the visible panel, so
+  // tiles must scale up on the flat sheet to read correctly after warp. Print
+  // export submits the flat sheet to Printify as-is — never apply that
+  // stretch there or the physical print tiles come out much too large.
   // `outputScale` multiplies both the canvas and the tile so the pattern
   // geometry is unchanged — just rendered at higher density.
   const tilePxMockup = Math.max(1, settings.tileSizeInches * pixelsPerInch);
-  const tileStretch = computeMeshFlatTileStretch(layer.maskPath, flatW, flatH);
+  const tileStretch = meshOverscanCompensation
+    ? computeMeshFlatTileStretch(layer.maskPath, flatW, flatH)
+    : 1;
   const tilePxFlat = tilePxMockup * scale * tileStretch;
   const aw = artwork.naturalWidth || artwork.width;
   const ah = artwork.naturalHeight || artwork.height;
@@ -1647,6 +1652,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
           tileSettings,
           ppi,
           W,
+          { meshOverscanCompensation: true },
         );
         if (flatTile) {
           drawMeshWarp(pctx, flatTile, flatTile.width, flatTile.height, {
@@ -2111,7 +2117,9 @@ export function renderFlatPrintPanels(
         const capped = Math.min(wanted, PRINT_PANEL_MAX_LONG_EDGE_PX / longEdge);
         const outputScale = Math.max(1, capped);
         artCanvas = layer.mesh
-          ? renderTiledFlatPanel(layer, artwork, tileSettings, ppi, canvasW, outputScale)
+          ? renderTiledFlatPanel(layer, artwork, tileSettings, ppi, canvasW, {
+              outputScale,
+            })
           : null;
         if (!artCanvas) {
           // No mesh — tile straight into an upscaled polygon-bbox canvas.
