@@ -47,6 +47,7 @@
  * URL — no Printify image-id round trip is needed.
  */
 import { getBlueprintVariantPlaceholders } from "./printify-mockups";
+import { pool } from "./db";
 import { storage } from "./storage";
 import {
   bakeFlatPrintFile,
