@@ -1074,6 +1074,26 @@ function meshTargetBbox(mesh: MeshGrid): Aabb | null {
 }
 
 /**
+ * When the flat mesh canvas overscans the visible panel polygon (common on
+ * back body, sleeves, hood), the same `tileSizeInches` packs too many tiles
+ * into the flat sheet — the mesh compresses them onto the mockup and the
+ * pattern looks denser than the front. Scale tile px by flat÷visible so one
+ * inch on the slider reads the same on every view.
+ */
+export function computeMeshFlatTileStretch(
+  maskPath: string,
+  flatW: number,
+  flatH: number,
+): number {
+  if (flatW <= 0 || flatH <= 0) return 1;
+  const polyBb = aabbOf(svgPathToAnchors(maskPath));
+  if (!polyBb || polyBb.width <= 0 || polyBb.height <= 0) return 1;
+  const stretchX = flatW / polyBb.width;
+  const stretchY = flatH / polyBb.height;
+  return Math.max(stretchX, stretchY, 1);
+}
+
+/**
  * Tile mode — render a per-panel **flat tile sheet** for a layer with
  * a mesh. Mirrors the place-on-item pipeline: tile the artwork in the
  * panel's flat coordinate system (so the pattern runs along the
@@ -1132,14 +1152,14 @@ function renderTiledFlatPanel(
   flatW = Math.max(1, Math.round(flatW * scale));
   flatH = Math.max(1, Math.round(flatH * scale));
 
-  // Tile size in flat-canvas px. Because flatW/H matches the mesh's
-  // projected area in mockup px, a tile that's `tilePxMockup` flat-px
-  // wide will render at the same `tilePxMockup` mockup-px wide on
-  // screen (modulo per-triangle deformation from fabric drape).
-  // `outputScale` multiplies both the canvas and the tile so the
-  // pattern geometry is unchanged — just rendered at higher density.
+  // Tile size in flat-canvas px. When flatW/H overscans the visible polygon
+  // (mesh seam allowance), compensate so the warped tile still reads as
+  // `tileSizeInches` on the mockup — same apparent scale on front and back.
+  // `outputScale` multiplies both the canvas and the tile so the pattern
+  // geometry is unchanged — just rendered at higher density.
   const tilePxMockup = Math.max(1, settings.tileSizeInches * pixelsPerInch);
-  const tilePxFlat = tilePxMockup * scale;
+  const tileStretch = computeMeshFlatTileStretch(layer.maskPath, flatW, flatH);
+  const tilePxFlat = tilePxMockup * scale * tileStretch;
   const aw = artwork.naturalWidth || artwork.width;
   const ah = artwork.naturalHeight || artwork.height;
   const tileHFlat = tilePxFlat * (ah / Math.max(1, aw));
