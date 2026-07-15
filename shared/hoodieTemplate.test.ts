@@ -32,6 +32,7 @@ import {
   SWEATSHIRT_TRIM_PANEL_KEYS,
   mergeFrontBodyPanelPlacementBias,
   mergePanelPlacementBiasPercent,
+  migrateFrontPocketOutOfTrimGroup,
   resolveFrontBodyPanelBias,
   FRONT_CHEST_PANEL_KEYS,
   FRONT_POCKET_PANEL_KEYS,
@@ -242,6 +243,17 @@ describe("pullover hoodie panel keys (bp 450)", () => {
     expect(normalized.designGroups?.find((g) => g.id === "trim")?.panelKeys).toEqual([
       "waistband",
     ]);
+  });
+
+  it("migrateFrontPocketOutOfTrimGroup runs without a blueprint id (stale Supabase JSON)", () => {
+    const groups = defaultPulloverDesignGroups().map((g) => {
+      if (g.id === "front-body") return { ...g, panelKeys: ["front"] as const };
+      if (g.id === "trim") return { ...g, panelKeys: ["waistband", "front_pocket"] as const };
+      return g;
+    });
+    const migrated = migrateFrontPocketOutOfTrimGroup(groups);
+    expect(migrated.find((g) => g.id === "front-body")?.panelKeys).toContain("front_pocket");
+    expect(migrated.find((g) => g.id === "trim")?.panelKeys).not.toContain("front_pocket");
   });
 
   it("mockupDrawRect applies x/y/scale", () => {

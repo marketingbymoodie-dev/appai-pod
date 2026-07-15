@@ -27,6 +27,7 @@ import {
   isZipHoodieBlueprint,
   usesJumperNoHoodGarmentUi,
   normalizeHoodieTemplate,
+  migrateFrontPocketOutOfTrimGroup,
   type DesignGroup,
   type HoodiePanelKey,
   type HoodieTemplate,
@@ -553,6 +554,8 @@ function buildEffectiveRenderConfig(
 
   if (!state.pocketsEnabled) {
     groups = stripGroupPanelKeys(groups, "front-body", POCKET_PANEL_KEYS);
+  } else {
+    groups = migrateFrontPocketOutOfTrimGroup(groups);
   }
 
   if (state.hoodLinked && isPulloverHoodieBlueprint(template.blueprintId)) {

@@ -52,6 +52,7 @@ import {
   findGroupForPanel,
   resolveFrontBodyPanelBias,
   hoodiePanelKeyToPrintifyPosition,
+  isKangarooPocketPanelKey,
   layerRenderPriority,
   mockupDrawRect,
   SEAM_PAIR_PANELS,
@@ -1498,10 +1499,12 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
         ? params.panelEnabledOverrides[layer.panelKey]
         : undefined;
     const panelMutedByCustomer = panelOverride === false;
+    const pocketArtworkAllowed =
+      isKangarooPocketPanelKey(layer.panelKey) && panelOverride !== false;
     const skipArtwork =
       panelMutedByCustomer ||
-      (mode === "single-sheet" && !groupEnabled) ||
-      (mode === "tile" && !groupEnabled);
+      (mode === "single-sheet" && !groupEnabled && !pocketArtworkAllowed) ||
+      (mode === "tile" && !groupEnabled && !pocketArtworkAllowed);
 
     // Background colour fill — sits UNDER the artwork inside each
     // panel's polygon. Explicit `backgroundColor` fills every panel;
@@ -2094,8 +2097,12 @@ export function renderFlatPrintPanels(
       // enabled flag; tile mode has no group rects (group toggles don't mute
       // there) — only customer-level panel overrides do.
       const groupEnabled = mode === "single-sheet" && rect ? rect.enabled : true;
+      const panelOverride = panelEnabledOverrides?.[panelKey];
+      const pocketArtworkAllowed =
+        isKangarooPocketPanelKey(panelKey) && panelOverride !== false;
       const muted =
-        panelEnabledOverrides?.[panelKey] === false || !groupEnabled;
+        panelOverride === false ||
+        (mode === "single-sheet" && !groupEnabled && !pocketArtworkAllowed);
 
       if (muted || !artwork || (mode === "tile" && !tileSettings)) {
         const solid = solidPanelCanvas(dims, bg);
