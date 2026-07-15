@@ -48,6 +48,7 @@ import {
   renderFlatMockupDataUrl,
 } from "@/components/designer/FlatProductPlacer/lib/flatMockupPreview";
 import { resolveFlatBlankColorId, resolveFlatPlacementGeometryKey, resolveFlatBlank, normalizeFlatColorKey } from "@/components/designer/FlatProductPlacer/lib/flatAssets";
+import { shouldUseStyleReferenceImage } from "@shared/generationPromptHints";
 import { STOREFRONT_FREE_GENERATION_LIMIT, storefrontArtworksRemaining } from "@shared/storefront-credits";
 import {
   frameColorsRedundantWithSizes,
@@ -4928,6 +4929,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
     if (!resolvedBaseImageUrl && (activePreset as any)?.baseImageUrl) {
       resolvedBaseImageUrl = (activePreset as any).baseImageUrl;
+    }
+    if (!shouldUseStyleReferenceImage(prompt, referenceImages.length > 0)) {
+      resolvedBaseImageUrl = undefined;
     }
     if (selectedPreset && selectedPreset !== "") {
       const preset = filteredStylePresets.find((p) => p.id === selectedPreset);

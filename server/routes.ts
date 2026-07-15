@@ -65,6 +65,11 @@ import {
   usesToteFoldedFulfillment,
 } from "@shared/productLayoutPolicy";
 import { resolveFabricWeaveTexture, WOVEN_WALL_TAPESTRY_BLUEPRINT_ID } from "@shared/fabricWeave";
+import {
+  apparelMotifDesignColors,
+  buildAopSizingRequirements,
+  filterStyleReferenceUrls,
+} from "@shared/generationPromptHints";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShopifyToken } from "./shopify";
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { syncCreditEntitlementMetafield } from "./credit-entitlements";
@@ -2506,26 +2511,10 @@ export async function registerRoutes(
       let sizingRequirements: string;
       
       if (isApparel && isAllOverPrint) {
-        // AOP needs its own block (mirrors the storefront endpoint). Without it,
-        // compressPrompt (called with isAllOverPrint=true) can't strip the verbose
-        // apparel block, blowing past the prompt length cap and truncating away the
-        // user's description — the Generator Tester then produced style-only images.
-        sizingRequirements = `
-MANDATORY IMAGE REQUIREMENTS FOR ALL-OVER PRINT (AOP) - FOLLOW EXACTLY:
-1. ISOLATED MOTIF: Create a SINGLE, centered graphic design that is ISOLATED from any background scenery. This motif will be tiled into a repeating pattern.
-2. SOLID HOT PINK CHROMA KEY BACKGROUND: The ENTIRE background MUST be a flat, solid, uniform hot pink (#FF00FF) color. Every pixel that is not part of the design must be exactly #FF00FF. DO NOT create scenic backgrounds, gradients, or detailed environments.
-3. DESIGN COLORS: Use VIBRANT, BOLD colors. The design MUST NOT contain any hot pink/magenta pixels in the main subject — #FF00FF is reserved exclusively for the background.
-4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean hot pink space around it.
-5. CLEAN EDGES: The design must have crisp, hard vector-like edges against the hot pink background. No fuzzy, gradient, or semi-transparent edges.
-6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid hot pink background.
-6b. NO WHITE OR GREY PLATE: Do NOT render the subject on a white or grey mat — the ONLY background color is #FF00FF edge-to-edge.
-7. PRINT-READY: This is for all-over print fabric — create an isolated motif graphic.
-8. COMPOSITION FORMAT: Fill the canvas matching the requested aspect ratio with the design centered.
-9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
-`;
+        sizingRequirements = buildAopSizingRequirements(userDescAdmin);
       } else if (isApparel) {
         sizingRequirements = buildApparelChromaSizingRequirements(
-          "VIBRANT colors. White may be used inside the subject (teeth, eyes, highlights) but NOT as a background mat. AVOID hot pink/magenta in the design.",
+          apparelMotifDesignColors(userDescAdmin, colorTier === "dark"),
         );
       } else {
         // Wall art needs full-bleed edge-to-edge designs
@@ -2630,10 +2619,14 @@ ${textEdgeRestrictions}
         }
       }
 
-      // Build image input array: all style base images + customer reference image
+      // Build image input array: style base images (when no user subject) + customer reference
       const imageInputUrls: string[] = [];
-      const allStyleBaseUrls: string[] = (req as any)._styleBaseImageUrls ||
-        (styleBaseImageUrl ? [styleBaseImageUrl] : []);
+      const allStyleBaseUrls: string[] = filterStyleReferenceUrls(
+        (req as any)._styleBaseImageUrls || (styleBaseImageUrl ? [styleBaseImageUrl] : []),
+        userDescAdmin,
+        !!customerImageUrl,
+      );
+      const effectiveStyleBaseUrl = allStyleBaseUrls[0];
       imageInputUrls.push(...allStyleBaseUrls);
       if (customerImageUrl) imageInputUrls.push(customerImageUrl);
       const inputImageUrl: string | string[] | null = imageInputUrls.length > 1 ? imageInputUrls : imageInputUrls[0] || null;
@@ -2641,7 +2634,7 @@ ${textEdgeRestrictions}
       // When reference images are provided, instruct the model how to use them
       if (imageInputUrls.length > 0) {
         let refInstruction: string;
-        if (styleBaseImageUrl && customerImageUrl) {
+        if (effectiveStyleBaseUrl && customerImageUrl) {
           refInstruction = `Two reference images are provided. The FIRST is a style/scene foundation — use it as the visual template and overall composition guide. The SECOND is the customer's subject (e.g. their pet, logo, or photo) — incorporate this subject into the design as the focal element. Do NOT duplicate or repeat the subject.`;
         } else if (customerImageUrl) {
           const isTextStyle = stylePreset && ["opinionated", "quotes"].includes(stylePreset);
@@ -2661,6 +2654,7 @@ ${textEdgeRestrictions}
         inputImageUrl,
         isApparel,
         isAllOverPrint,
+        userPrompt: userDescAdmin || null,
       });
 console.log("[api/generate] replicate returned", {
   mimeType,
@@ -3468,14 +3462,19 @@ ${textEdgeRestrictions}
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);
       const embedImageInputUrls: string[] = [];
-      // Push all style base images (up to 5), not just the first one
-      for (const u of embedStyleBaseImageUrls) embedImageInputUrls.push(u);
+      const embedStyleRefs = filterStyleReferenceUrls(
+        embedStyleBaseImageUrls,
+        userDescEmbed,
+        embedCustomerImageUrls.length > 0,
+      );
+      const effectiveEmbedStyleBaseUrl = embedStyleRefs[0];
+      for (const u of embedStyleRefs) embedImageInputUrls.push(u);
       for (const u of embedCustomerImageUrls) embedImageInputUrls.push(u);
       const inputImageUrl: string | string[] | null = embedImageInputUrls.length > 1 ? embedImageInputUrls : embedImageInputUrls[0] || null;
 
       if (embedImageInputUrls.length > 0) {
         let refInstruction: string;
-        if (embedStyleBaseImageUrl && embedCustomerImageUrls.length > 0) {
+        if (effectiveEmbedStyleBaseUrl && embedCustomerImageUrls.length > 0) {
           refInstruction = `Multiple reference images are provided. The FIRST is a style/scene foundation — use it as the visual template and overall composition guide. The remaining image(s) are the customer's subject(s) — incorporate them into the design as focal elements. Do NOT duplicate or repeat subjects.`;
         } else if (embedCustomerImageUrls.length > 1) {
           refInstruction = `Multiple reference images are provided by the customer. Incorporate all subjects and elements from these images into a cohesive design. Do NOT duplicate subjects.`;
@@ -3497,6 +3496,7 @@ ${textEdgeRestrictions}
         inputImageUrl,
         isApparel,
         isAllOverPrint,
+        userPrompt: userDescEmbed || null,
       });
 
       if (!base64Data) {
@@ -7450,20 +7450,7 @@ ${textEdgeRestrictions}
       let sizingRequirements: string;
 
       if (isApparel && isAllOverPrint) {
-        // AOP: hot pink chroma key — stripped server-side after generation
-        sizingRequirements = `
-MANDATORY IMAGE REQUIREMENTS FOR ALL-OVER PRINT (AOP) - FOLLOW EXACTLY:
-1. ISOLATED MOTIF: Create a SINGLE, centered graphic design that is ISOLATED from any background scenery. This motif will be tiled into a repeating pattern.
-2. SOLID HOT PINK CHROMA KEY BACKGROUND: The ENTIRE background MUST be a flat, solid, uniform hot pink (#FF00FF) color. Every pixel that is not part of the design must be exactly #FF00FF. DO NOT create scenic backgrounds, gradients, or detailed environments.
-3. DESIGN COLORS: Use VIBRANT, BOLD colors. The design MUST NOT contain any hot pink/magenta pixels in the main subject — #FF00FF is reserved exclusively for the background.
-4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean hot pink space around it.
-5. CLEAN EDGES: The design must have crisp, hard vector-like edges against the hot pink background. No fuzzy, gradient, or semi-transparent edges.
-6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid hot pink background.
-6b. NO WHITE OR GREY PLATE: Do NOT render the subject on a white or grey mat — the ONLY background color is #FF00FF edge-to-edge.
-7. PRINT-READY: This is for all-over print fabric — create an isolated motif graphic.
-8. COMPOSITION FORMAT: Fill the canvas matching the requested aspect ratio with the design centered.
-9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
-`;
+        sizingRequirements = buildAopSizingRequirements(userDescSf);
       } else if (isApparel) {
         // Apparel: #FF00FF chroma key background for precise removal
         const frameColor = req.body.frameColor;
@@ -7476,9 +7463,7 @@ MANDATORY IMAGE REQUIREMENTS FOR ALL-OVER PRINT (AOP) - FOLLOW EXACTLY:
           }
         }
         const isDarkTier = colorTier === "dark";
-        const designColors = isDarkTier
-          ? "BRIGHT, VIBRANT colors including white and light tones. AVOID dark, black, and hot pink/magenta colors in the design."
-          : "VIBRANT colors. White may be used inside the subject (teeth, eyes, highlights) but NOT as a background mat. AVOID hot pink/magenta in the design.";
+        const designColors = apparelMotifDesignColors(userDescSf, isDarkTier);
 
         // Use dark tier prompt variant if available
         if (sfStyleCategory === "apparel" && isDarkTier && stylePreset) {
@@ -7629,13 +7614,19 @@ ${textEdgeRestrictions}
 
           // Build image input array: all style base images (up to 5) + customer reference(s)
           const sfImageInputUrls: string[] = [];
-          for (const u of sfStyleBaseImageUrls) sfImageInputUrls.push(u);
+          const sfStyleRefs = filterStyleReferenceUrls(
+            sfStyleBaseImageUrls,
+            userDescSf,
+            sfCustomerImageUrls.length > 0,
+          );
+          const effectiveSfStyleBaseUrl = sfStyleRefs[0];
+          for (const u of sfStyleRefs) sfImageInputUrls.push(u);
           for (const u of sfCustomerImageUrls) sfImageInputUrls.push(u);
           const inputImageUrl: string | string[] | null = sfImageInputUrls.length > 1 ? sfImageInputUrls : sfImageInputUrls[0] || null;
 
           if (sfImageInputUrls.length > 0) {
             let refInstruction: string;
-            if (sfStyleBaseImageUrl && sfCustomerImageUrls.length > 0) {
+            if (effectiveSfStyleBaseUrl && sfCustomerImageUrls.length > 0) {
               refInstruction = `Multiple reference images are provided. The FIRST is a style/scene foundation — use it as the visual template. The remaining image(s) are the customer's subject(s) — incorporate them as focal elements. Do NOT duplicate subjects.`;
             } else if (sfCustomerImageUrls.length > 1) {
               refInstruction = `Multiple reference images are provided by the customer. Incorporate all subjects and elements from these images into a cohesive design. Do NOT duplicate subjects.`;
@@ -7659,6 +7650,7 @@ ${textEdgeRestrictions}
             inputImageUrl,
             isApparel,
             isAllOverPrint,
+            userPrompt: userDescSf || null,
           });
           console.log(`${W} AI returned ${Date.now() - aiStart}ms, hasData=${!!base64Data}, total +${Date.now() - wStart}ms`);
 
