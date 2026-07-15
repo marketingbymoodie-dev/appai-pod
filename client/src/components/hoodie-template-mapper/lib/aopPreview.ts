@@ -57,6 +57,10 @@ import {
   mockupDrawRect,
   SEAM_PAIR_PANELS,
 } from "@shared/hoodieTemplate";
+import {
+  pocketOverlayRectOnFrontPanel,
+  shouldMergePulloverPocketForPrintify,
+} from "@shared/pulloverPocketPrintMerge";
 import { svgPathToAnchors, svgPathToSubpaths, clipCanvasToMaskSubpaths, appendMaskSubpathsToPath, boundingBoxOfSubpaths } from "./svgPath";
 import { drawMeshWarp } from "./meshWarp";
 
@@ -2017,6 +2021,93 @@ function solidPanelCanvas(
   return canvas;
 }
 
+function findFrontViewLayer(
+  template: HoodieTemplate,
+  panelKey: HoodiePanelKey,
+): MaskLayer | null {
+  for (const layer of template.views.front?.layers ?? []) {
+    if (layer.visible && !layer.isExclusion && layer.panelKey === panelKey) {
+      return layer;
+    }
+  }
+  return null;
+}
+
+/**
+ * Printify blueprint 450 has no `front_pocket` placeholder — bake pocket art
+ * into the `front` print file at mockup-calibrated offset before upload.
+ */
+export function finalizePulloverPrintPanelsForPrintify(
+  panels: FlatPrintPanelExport[],
+  template: HoodieTemplate,
+  panelEnabledOverrides?: Partial<Record<string, boolean>>,
+): FlatPrintPanelExport[] {
+  const pocketsEnabled = panelEnabledOverrides?.front_pocket !== false;
+  if (!shouldMergePulloverPocketForPrintify(template.blueprintId, pocketsEnabled)) {
+    return panels.filter((p) => p.panelKey !== "front_pocket");
+  }
+
+  const frontIdx = panels.findIndex((p) => p.panelKey === "front");
+  const pocketIdx = panels.findIndex((p) => p.panelKey === "front_pocket");
+  if (frontIdx < 0) {
+    return panels.filter((p) => p.panelKey !== "front_pocket");
+  }
+  if (pocketIdx < 0) return panels;
+
+  const frontLayer = findFrontViewLayer(template, "front");
+  const pocketLayer = findFrontViewLayer(template, "front_pocket");
+  if (!frontLayer || !pocketLayer) {
+    return panels.filter((_, i) => i !== pocketIdx);
+  }
+
+  const frontBb = aabbOf(svgPathToAnchors(frontLayer.maskPath));
+  const pocketBb = aabbOf(svgPathToAnchors(pocketLayer.maskPath));
+  if (!frontBb || !pocketBb) {
+    return panels.filter((_, i) => i !== pocketIdx);
+  }
+
+  const frontEntry = panels[frontIdx];
+  const pocketEntry = panels[pocketIdx];
+  const dest = pocketOverlayRectOnFrontPanel(
+    frontBb,
+    pocketBb,
+    frontEntry.canvas.width,
+    frontEntry.canvas.height,
+  );
+
+  const merged = document.createElement("canvas");
+  merged.width = frontEntry.canvas.width;
+  merged.height = frontEntry.canvas.height;
+  const ctx = merged.getContext("2d");
+  if (!ctx) {
+    return panels.filter((_, i) => i !== pocketIdx);
+  }
+
+  ctx.drawImage(frontEntry.canvas, 0, 0);
+  ctx.drawImage(
+    pocketEntry.canvas,
+    0,
+    0,
+    pocketEntry.canvas.width,
+    pocketEntry.canvas.height,
+    dest.x,
+    dest.y,
+    dest.width,
+    dest.height,
+  );
+
+  const next = panels.filter((_, i) => i !== pocketIdx);
+  const newFrontIdx = next.findIndex((p) => p.panelKey === "front");
+  if (newFrontIdx >= 0) {
+    next[newFrontIdx] = {
+      ...next[newFrontIdx],
+      position: "front",
+      canvas: merged,
+    };
+  }
+  return next;
+}
+
 /**
  * Export the flat per-panel print files for a template + customer state —
  * the "Phase 5 production export" counterpart of `renderAopPreview`. These
@@ -2221,5 +2312,5 @@ export function renderFlatPrintPanels(
     }
   }
 
-  return out;
+  return finalizePulloverPrintPanelsForPrintify(out, template, panelEnabledOverrides);
 }
