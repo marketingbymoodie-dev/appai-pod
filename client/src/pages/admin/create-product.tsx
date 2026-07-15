@@ -1,16 +1,24 @@
 import { useCallback, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { FlaskConical, Loader2, Package } from "lucide-react";
+import { FlaskConical, Loader2, Package, Save } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
 import EmbedDesign, { type TesterDesignStatus } from "@/pages/embed-design";
 import type { ProductType } from "@shared/schema";
+
+interface DesignStudioIdentity {
+  shop: string;
+  customerId: string;
+  savedCount: number;
+  savedLimit: number;
+  canSaveDesigns?: boolean;
+}
 
 /** How long the Send button will wait for an in-flight print-panel upload before ordering anyway. */
 const PANEL_SAVE_WAIT_MS = 90_000;
@@ -28,12 +36,20 @@ export default function AdminCreateProduct() {
     queryKey: ["/api/product-types"],
   });
 
+  const { data: studioIdentity } = useQuery<DesignStudioIdentity>({
+    queryKey: ["/api/appai/design-studio/identity"],
+  });
+  const canSaveDesigns = studioIdentity?.canSaveDesigns === true;
+
   // Live status of the design on screen, reported by the embedded customizer:
   // which generation job it is + whether its AOP print panels are still uploading.
   // Ref (not state) — updates arrive mid-edit and shouldn't rerender the page.
   const testerStatusRef = useRef<TesterDesignStatus>({ jobId: null, aopPanels: "none" });
+  const saveDesignRef = useRef<(() => Promise<void>) | null>(null);
+  const [testerHasDesign, setTesterHasDesign] = useState(false);
   const handleTesterDesignStatus = useCallback((status: TesterDesignStatus) => {
     testerStatusRef.current = status;
+    setTesterHasDesign(!!status.jobId);
   }, []);
 
   // Send a DRAFT test order to Printify — targets the design currently on screen
@@ -76,6 +92,38 @@ export default function AdminCreateProduct() {
     },
   });
 
+  const saveDesignMutation = useMutation({
+    mutationFn: async () => {
+      const waitStart = Date.now();
+      while (
+        testerStatusRef.current.aopPanels === "saving" &&
+        Date.now() - waitStart < PANEL_SAVE_WAIT_MS
+      ) {
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      if (!saveDesignRef.current) {
+        throw new Error("Customizer not ready — wait for it to load.");
+      }
+      await saveDesignRef.current();
+    },
+    onSuccess: () => {
+      toast({
+        title: "Design saved",
+        description: "Saved to My Designs. You can list it as a product or reopen it from there.",
+        action: (
+          <a href="/my-designs" className="underline text-xs">
+            Open My Designs
+          </a>
+        ),
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/storefront/customizer/my-designs"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/appai/design-studio/identity"] });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Save failed", description: error.message, variant: "destructive" });
+    },
+  });
+
   return (
     <AdminLayout>
       <div className="space-y-6">
@@ -83,13 +131,38 @@ export default function AdminCreateProduct() {
           <div>
             <h1 className="text-2xl font-bold" data-testid="text-create-product-title">Art Generator Tester</h1>
             <p className="text-muted-foreground max-w-2xl">
-              Test each Customizer page with an artwork generation and then send a test order to Printify to check
+              Test each Customizer page with an artwork generation
+              {canSaveDesigns ? ", save designs to My Designs," : ""} then send a test order to Printify to check
               the output matches your mockup here. Important! Delete your test orders in your Printify admin
               immediately if you have automatic fulfilment already enabled there.
             </p>
           </div>
           {selectedProductTypeId && (
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              {canSaveDesigns ? (
+                <Button
+                  variant="outline"
+                  onClick={() => saveDesignMutation.mutate()}
+                  disabled={!testerHasDesign || saveDesignMutation.isPending || testOrderMutation.isPending}
+                  data-testid="button-save-design"
+                >
+                  {saveDesignMutation.isPending ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <Save className="h-4 w-4 mr-2" />
+                  )}
+                  {saveDesignMutation.isPending ? "Saving…" : "Save to My Designs"}
+                </Button>
+              ) : null}
+              {!canSaveDesigns && studioIdentity ? (
+                <p className="text-xs text-muted-foreground w-full sm:w-auto">
+                  Saving to My Designs requires{" "}
+                  <a href="/admin/plan" className="underline">
+                    Starter or above
+                  </a>
+                  .
+                </p>
+              ) : null}
               <Button
                 onClick={() => testOrderMutation.mutate(selectedProductTypeId)}
                 disabled={testOrderMutation.isPending}
@@ -118,6 +191,7 @@ export default function AdminCreateProduct() {
                 // Switching products remounts the customizer — the previous design's
                 // job id no longer describes what's on screen.
                 testerStatusRef.current = { jobId: null, aopPanels: "none" };
+                setTesterHasDesign(false);
                 setSelectedProductTypeId(parseInt(v));
               }}
             >
@@ -150,6 +224,7 @@ export default function AdminCreateProduct() {
                   mode: "admin-tester",
                   productTypeId: selectedProductTypeId,
                   onTesterDesignStatus: handleTesterDesignStatus,
+                  saveDesignRef,
                 }}
               />
             </CardContent>

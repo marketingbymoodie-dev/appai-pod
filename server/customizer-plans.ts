@@ -84,6 +84,15 @@ export const PLAN_DISPLAY_NAMES: Record<string, string> = {
 export const PAID_PLANS = ["starter", "dabbler", "pro", "pro_plus"] as const;
 export type PaidPlan = typeof PAID_PLANS[number];
 
+/** Merchant My Designs save/library — Starter and above only (not trial / inactive). */
+export function canSaveMerchantDesigns(
+  planName: string | null | undefined,
+  planStatus: string | null | undefined,
+): boolean {
+  const isActive = planStatus === "trialing" || planStatus === "active";
+  return isActive && !!planName && (PAID_PLANS as readonly string[]).includes(planName);
+}
+
 /**
  * Maximum monthly overage cost (USD) a plan can incur = overage cap × per-unit
  * price. This is the `cappedAmount` Shopify requires on a usage-pricing line:

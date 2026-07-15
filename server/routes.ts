@@ -70,7 +70,7 @@ import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { syncCreditEntitlementMetafield } from "./credit-entitlements";
 import { privacyPolicyHtml } from "./privacy-policy";
 import Stripe from "stripe";
-import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota, getDesignProductLimit, canActivateDesignProduct } from "./customizer-plans";
+import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota, getDesignProductLimit, canActivateDesignProduct, canSaveMerchantDesigns } from "./customizer-plans";
 import { extractUsageLineItemId, retryPendingOverageCharges } from "./usage-billing";
 import { peekMerchantGenerationQuota, quotaBlockBody } from "./generation-quota";
 import {
@@ -7940,13 +7940,27 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "Design generation is not complete yet" });
       }
 
+      const aliases = await storage.getCustomerAliases(customerId).catch(() => []);
+      const isMerchantStudioSave = aliases.some((a) => a.aliasType === MERCHANT_STUDIO_ALIAS_TYPE);
+
+      // Merchant My Designs saves require Starter or above — trial merchants can generate
+      // in the tester but cannot persist to the saved-design library.
+      if (isMerchantStudioSave) {
+        const plan = getEffectivePlan(installation as any, shop);
+        if (!canSaveMerchantDesigns(plan.planName, plan.planStatus)) {
+          return res.status(403).json({
+            error: "PLAN_UPGRADE_REQUIRED",
+            message: "Upgrade to Starter or above to save designs to My Designs.",
+          });
+        }
+      }
+
       // Merchant design-studio identities skip the generate-time GALLERY_FULL check (their
       // generate call omits customerId to preserve shop-plan billing), so enforce the cap
       // here instead, at the point the job actually becomes "saved". Real customer identities
       // are unaffected — they were already capped before this job could complete.
       if (job.customerId !== customerId) {
-        const aliases = await storage.getCustomerAliases(customerId).catch(() => []);
-        if (aliases.some((a) => a.aliasType === MERCHANT_STUDIO_ALIAS_TYPE)) {
+        if (isMerchantStudioSave) {
           const savedCount = await db
             .select({ count: sql<number>`count(*)` })
             .from(generationJobs)
@@ -16230,12 +16244,14 @@ ${textEdgeRestrictions}
         ),
       );
     const savedCount = Number(savedCountRows[0]?.count ?? 0);
+    const plan = getEffectivePlan(installation as any, shop);
 
     res.json({
       shop,
       customerId: customer.id,
       savedCount,
       savedLimit: MERCHANT_STUDIO_GALLERY_LIMIT,
+      canSaveDesigns: canSaveMerchantDesigns(plan.planName, plan.planStatus),
     });
   }));
 

@@ -995,11 +995,13 @@ export type TesterDesignStatus = {
 export interface EmbedDesignProps {
   embeddedContext?:
     | {
-        mode: 'admin-tester';
-        productTypeId: string | number;
+    mode: 'admin-tester';
+    productTypeId: string | number;
         /** Fired whenever the on-screen design's job id or panel-capture status changes,
          *  so the tester page can target test orders at the design on screen. */
         onTesterDesignStatus?: (status: TesterDesignStatus) => void;
+        /** Set by EmbedDesign — parent calls `.current()` to save the on-screen design to My Designs. */
+        saveDesignRef?: React.MutableRefObject<(() => Promise<void>) | null>;
       }
     | {
         mode: 'merchant-studio';
@@ -1120,7 +1122,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     ? 'admin-tester'
     : embeddedContext?.mode === 'merchant-studio'
       ? 'merchant-studio'
-      : detectRuntimeMode(searchParams);
+    : detectRuntimeMode(searchParams);
 
   const isAdminTester = runtimeMode === 'admin-tester';
   // merchant-studio: merchant admin "My Designs" studio. Uses the same storefront endpoints
@@ -1642,9 +1644,28 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         if (!data?.customerId) return;
         setStorefrontCustomerId(data.customerId);
         setGalleryLimit(data.savedLimit || 30);
+        canSaveMerchantDesignsRef.current = data.canSaveDesigns === true;
       })
       .catch((err) => console.warn('[EmbedDesign] merchant-studio identity bootstrap failed', err));
   }, [isMerchantStudio, shopDomain]);
+
+  // admin-tester: resolve merchant design-studio identity so manual "Save to My Designs"
+  // can link generation_jobs rows the same way merchant-studio auto-save does.
+  useEffect(() => {
+    if (!isAdminTester) return;
+    safeFetch(`${API_BASE}/api/appai/design-studio/identity`, {
+      credentials: 'include',
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!data?.customerId) return;
+        setStorefrontCustomerId(data.customerId);
+        adminTesterShopRef.current = data.shop || null;
+        setGalleryLimit(data.savedLimit || 30);
+        canSaveMerchantDesignsRef.current = data.canSaveDesigns === true;
+      })
+      .catch((err) => console.warn('[EmbedDesign] admin-tester identity bootstrap failed', err));
+  }, [isAdminTester]);
 
   const completeStorefrontLogin = useCallback((data: {
     customerId: string;
@@ -1924,6 +1945,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // admin-tester has no shop URL param — the admin generate endpoint returns the job's
   // shop so applied AOP panels can be persisted for "Send a Test Order to Printify".
   const savedJobShopRef = useRef<string | null>(null);
+  /** Merchant shop from design-studio identity — fallback when save-design needs a shop. */
+  const adminTesterShopRef = useRef<string | null>(null);
+  /** Whether this merchant's plan allows saving to My Designs (Starter+). */
+  const canSaveMerchantDesignsRef = useRef(false);
   // Monotonic sequence for AOP print-panel captures. Each apply bumps it; a capture
   // whose sequence is no longer current aborts before writing, so a slow earlier
   // upload can never overwrite the panels from a newer apply (last-apply-wins).
@@ -4187,6 +4212,110 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     return '';
   }, [printifyMockups, printifyMockupImages]);
 
+  /** Admin Generator Tester: persist the on-screen design to the merchant's My Designs library. */
+  const saveDesignToMyLibrary = useCallback(async () => {
+    if (!isAdminTester) return;
+
+    if (!canSaveMerchantDesignsRef.current) {
+      throw new Error("Upgrade to Starter or above to save designs to My Designs.");
+    }
+
+    const jobId = savedJobIdRef.current;
+    const shop = savedJobShopRef.current || adminTesterShopRef.current;
+    const customerId = storefrontCustomerId;
+
+    if (!jobId || !shop || !customerId) {
+      throw new Error("Generate a design first, then save it to My Designs.");
+    }
+    if (!generatedDesign?.imageUrl) {
+      throw new Error("No artwork on screen to save.");
+    }
+
+    const saveRes = await safeFetch(`${API_BASE}/api/storefront/save-design`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ jobId, customerId, shop }),
+    });
+    const saveData = await saveRes.json().catch(() => ({}));
+    if (!saveRes.ok) {
+      if (saveData.error === 'PLAN_UPGRADE_REQUIRED') {
+        throw new Error(saveData.message || "Upgrade to Starter or above to save designs to My Designs.");
+      }
+      if (saveData.error === 'GALLERY_FULL') {
+        throw new Error(
+          saveData.message ||
+            `Your saved designs library is full (${saveData.limit ?? galleryLimit} max). Delete some in My Designs first.`,
+        );
+      }
+      throw new Error(saveData.message || saveData.error || 'Failed to save design');
+    }
+
+    await safeFetch(`${API_BASE}/api/storefront/save-state`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jobId,
+        shop,
+        designState: {
+          scale: transform.scale,
+          x: transform.x,
+          y: transform.y,
+          selectedSize,
+          selectedFrameColor,
+          stylePreset: selectedPreset && selectedPreset !== '' ? selectedPreset : null,
+          prompt,
+        },
+      }),
+    }).catch((e) => console.error('[AdminTester Save] save-state failed:', e));
+
+    const mockupUrls: string[] = [];
+    for (const img of printifyMockupImages) {
+      const abs = toAbsoluteMockupUrlForSave(img.url);
+      if (abs && !mockupUrls.includes(abs)) mockupUrls.push(abs);
+    }
+    for (const u of printifyMockups) {
+      const abs = toAbsoluteMockupUrlForSave(u);
+      if (abs && !mockupUrls.includes(abs)) mockupUrls.push(abs);
+    }
+    const preferred = toAbsoluteMockupUrlForSave(getPreferredMockupUrl());
+    if (preferred && !mockupUrls.includes(preferred)) mockupUrls.unshift(preferred);
+
+    if (mockupUrls.length > 0) {
+      await safeFetch(`${API_BASE}/api/storefront/save-mockups`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId, shop, mockupUrls }),
+      }).catch((e) => console.error('[AdminTester Save] save-mockups failed:', e));
+    }
+
+    queryClient.invalidateQueries({ queryKey: ["/api/storefront/customizer/my-designs"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/appai/design-studio/identity"] });
+  }, [
+    isAdminTester,
+    generatedDesign?.imageUrl,
+    storefrontCustomerId,
+    transform,
+    selectedSize,
+    selectedFrameColor,
+    selectedPreset,
+    prompt,
+    printifyMockupImages,
+    printifyMockups,
+    getPreferredMockupUrl,
+    galleryLimit,
+  ]);
+
+  useEffect(() => {
+    if (embeddedContext?.mode !== 'admin-tester') return;
+    const ref = embeddedContext.saveDesignRef;
+    if (!ref) return;
+    ref.current = saveDesignToMyLibrary;
+    return () => {
+      ref.current = null;
+    };
+  }, [embeddedContext, saveDesignToMyLibrary]);
+
   // Sync cart state with the parent page's Add to Cart button (storefront mode only)
   useEffect(() => {
     if (!isStorefront) return;
@@ -4479,8 +4608,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           freeGenerationsUsed: nextFreeUsed,
           isLoggedIn: customer?.isLoggedIn ?? !!storefrontCustomerId,
         };
-        setCustomer(updatedCust);
-        try { localStorage.setItem('appai_customer', JSON.stringify(updatedCust)); } catch {}
+          setCustomer(updatedCust);
+          try { localStorage.setItem('appai_customer', JSON.stringify(updatedCust)); } catch {}
 
         if (remaining > 0) {
           const noun = storefrontCustomerId && nextPaidCredits > 0 ? 'Artwork' : 'Free Artwork';
@@ -4550,7 +4679,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       setPreShadowVariantId(null);
       if (preShadowPollRef.current) { clearTimeout(preShadowPollRef.current); preShadowPollRef.current = null; }
       console.log('[AutoSave] isStorefront:', isStorefront, 'customerId:', saveCustomerId, 'jobId:', data.jobId);
-      if (isStorefront && saveCustomerId && data.jobId) {
+      const merchantStudioSaveAllowed = !isMerchantStudio || canSaveMerchantDesignsRef.current;
+      if (isStorefront && saveCustomerId && data.jobId && merchantStudioSaveAllowed) {
         safeFetch(`${API_BASE}/api/storefront/save-design`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -5052,7 +5182,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (variantsFetchingKeyRef.current === fetchKey) {
       return;
     }
-
+    
     const needsColorOptions = showFrameColorSelector;
     const catalogUsable =
       variantCatalogIsUsable(shopifyVariants.length > 0 ? shopifyVariants : variants, needsColorOptions);
@@ -5120,7 +5250,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     const frameName =
       frameColorObjects.find(f => f.id === selectedFrameColor)?.name ?? selectedFrameColor ?? "";
 
-    console.log('[Design Studio] Finding variant. selectedVariantParam:', selectedVariantParam,
+    console.log('[Design Studio] Finding variant. selectedVariantParam:', selectedVariantParam, 
                 'variants:', variants.length, 'shopifyVariants:', shopifyVariants.length,
                 'selectedSize:', selectedSize, 'selectedFrameColor:', selectedFrameColor,
                 'hasColors:', hasColors);
@@ -5191,7 +5321,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // Keep baseVariantForShadowRef current so fetchPrintifyMockups (with limited deps) can
   // read the latest resolved variant for shadow-product pre-creation without closure staleness.
   useEffect(() => {
-    const matched = findVariantId();
+      const matched = findVariantId();
     baseVariantForShadowRef.current = matched ? normalizeVariantId(matched) : "";
   }); // run after every render so it's always in sync with variant state
 
@@ -5333,8 +5463,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         !flatRenderFailed
       );
       if (!flatOnTheFly) {
-        setVariantError("Please refresh mockups before adding to cart — your frame color selection has changed.");
-        return;
+      setVariantError("Please refresh mockups before adding to cart — your frame color selection has changed.");
+      return;
       }
     }
 
@@ -6549,7 +6679,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       }, '*');
     };
     const handleWheel = (e: WheelEvent) => {
-      const target = e.target as Element | null;
+        const target = e.target as Element | null;
 
       // Let Radix portaled overlays scroll internally when the pointer is over them.
       if (
@@ -6591,7 +6721,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       // toggle resizes the same iframe without a reload), even though
       // overflow/CSS have already switched correctly. See
       // docs/iframe-scroll-architecture.md before changing this.
-      const scrollEl = document.scrollingElement || document.documentElement;
+        const scrollEl = document.scrollingElement || document.documentElement;
       const maxScrollTop = scrollEl.scrollHeight - scrollEl.clientHeight;
       const maxScrollLeft = scrollEl.scrollWidth - scrollEl.clientWidth;
       const atBottom = scrollEl.scrollTop >= maxScrollTop - 1;
@@ -6602,13 +6732,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       const pinnedX = e.deltaX === 0 || (e.deltaX > 0 && atRight) || (e.deltaX < 0 && atLeft);
 
       if (pinnedY && pinnedX) {
-        window.parent.postMessage({
-          type: 'ai-art-studio:wheel',
+            window.parent.postMessage({
+              type: 'ai-art-studio:wheel',
           deltaX: e.deltaX,
           deltaY: e.deltaY,
           deltaZ: e.deltaZ,
           deltaMode: e.deltaMode,
-        }, '*');
+            }, '*');
         return;
       }
 
@@ -7030,7 +7160,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const buildPriceMap = useCallback((): Record<string, number> => {
     const priceMap: Record<string, number> = {};
     if (!shopifyVariants || shopifyVariants.length === 0) return priceMap;
-
+    
     const hasColors = showFrameColorSelector;
     const frameName =
       frameColorObjects.find((f) => f.id === selectedFrameColor)?.name ??
@@ -7490,7 +7620,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   onClick={() => setCreditsPopoverOpen(true)}
                 >
                   <Info className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground transition-colors" />
-                </button>
+            </button>
               </div>
             )}
           </div>
@@ -7504,8 +7634,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 aria-label="Pricing info"
                 onClick={() => setCreditsPopoverOpen(true)}
               >
-                <Info className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground transition-colors" />
-              </button>
+                    <Info className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground transition-colors" />
+                  </button>
             </div>
           )
         )}
@@ -7521,24 +7651,24 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             <DialogTitle>Artwork Credits</DialogTitle>
           </DialogHeader>
           <p className="text-muted-foreground">You get {STOREFRONT_FREE_GENERATION_LIMIT} free AI-generated artworks to try.</p>
-          <p className="text-muted-foreground">After that, it&apos;s just $1 for 10 more credits.</p>
-          <p className="text-muted-foreground">Credits are fully refunded when you complete a physical product purchase!</p>
-          <Button
-            type="button"
-            size="sm"
-            className="w-full"
-            onClick={handleBuyMoreCredits}
-            disabled={creditsPurchaseLoading}
-          >
-            {creditsPurchaseLoading ? (
-              <>
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                Opening Checkout...
-              </>
-            ) : (
-              "More Credits"
-            )}
-          </Button>
+                  <p className="text-muted-foreground">After that, it&apos;s just $1 for 10 more credits.</p>
+                  <p className="text-muted-foreground">Credits are fully refunded when you complete a physical product purchase!</p>
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="w-full"
+                    onClick={handleBuyMoreCredits}
+                    disabled={creditsPurchaseLoading}
+                  >
+                    {creditsPurchaseLoading ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Opening Checkout...
+                      </>
+                    ) : (
+                      "More Credits"
+                    )}
+                  </Button>
         </DialogContent>
       </Dialog>
       {/* Guide box shimmer + title shimmer animations */}
@@ -7775,7 +7905,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         {otpStep === 'email' ? (
                           <div className="space-y-2">
                             <p className="text-xs text-muted-foreground">Continue with email</p>
-                            <div className="flex gap-2">
+                          <div className="flex gap-2">
                             <input
                               type="email"
                               placeholder="Enter your email"
@@ -8361,7 +8491,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             onClick={() => setCreditsPopoverOpen(true)}
                           >
                             <Info className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground transition-colors" />
-                          </button>
+                      </button>
                         </div>
                       )}
                     </div>
@@ -8370,7 +8500,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       <div className="text-xs text-muted-foreground mt-1 flex items-center justify-center gap-1">
                         {artworksRemainingLabel}
                         <button
-                          type="button"
+                              type="button"
                           className="inline-flex items-center"
                           aria-label="Pricing info"
                           onClick={() => setCreditsPopoverOpen(true)}
@@ -8509,7 +8639,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         }
                         const flatOnTheFly = usesFlatOnTheFlyPreview;
                         if (!flatOnTheFly) {
-                          setTransform({ scale: defaultZoom, x: 50, y: 50 });
+                        setTransform({ scale: defaultZoom, x: 50, y: 50 });
                         }
                       }}
                       prices={buildPriceMap()}
@@ -8564,19 +8694,19 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                                 lastFlatGalleryMockupKeyRef.current = "";
                                 return;
                               }
-                              fetchPrintifyMockups(
-                                toAbsoluteImageUrl(generatedDesign.imageUrl),
-                                productTypeConfig.id,
-                                selectedSize,
-                                selectedFrameColor || "default",
-                                transform.scale,
-                                transform.x,
-                                transform.y,
-                                undefined,
-                                undefined,
-                                undefined,
-                                nextPlacement,
-                              );
+                                fetchPrintifyMockups(
+                                  toAbsoluteImageUrl(generatedDesign.imageUrl),
+                                  productTypeConfig.id,
+                                  selectedSize,
+                                  selectedFrameColor || "default",
+                                  transform.scale,
+                                  transform.x,
+                                  transform.y,
+                                  undefined,
+                                  undefined,
+                                  undefined,
+                                  nextPlacement,
+                                );
                             }}
                           >
                             <SelectTrigger id="print-placement-select" className="h-11">
@@ -9113,7 +9243,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                           postGenGalleryItems,
                           getPreferredMockupUrl(),
                         )
-                      : null;
+                        : null;
 
                   return (
                     <ProductMockup
@@ -9197,30 +9327,30 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
               {/* Left/right arrow navigation — after artwork exists */}
               {(isShopify || isStorefront) && generatedDesign?.imageUrl && postGenGalleryItems.length > 1 && (
-                <>
-                  <button
-                    type="button"
-                    aria-label="Previous"
+                  <>
+                    <button
+                      type="button"
+                      aria-label="Previous"
                     onClick={() =>
                       setSelectedMockupIndex(
                         (i) => (i - 1 + postGenGalleryItems.length) % postGenGalleryItems.length,
                       )
                     }
-                    className="absolute left-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
-                  >
-                    <ChevronLeft className="w-5 h-5" />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="Next"
+                      className="absolute left-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
+                    >
+                      <ChevronLeft className="w-5 h-5" />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Next"
                     onClick={() =>
                       setSelectedMockupIndex((i) => (i + 1) % postGenGalleryItems.length)
                     }
-                    className="absolute right-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
-                  >
-                    <ChevronRight className="w-5 h-5" />
-                  </button>
-                </>
+                      className="absolute right-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
+                    >
+                      <ChevronRight className="w-5 h-5" />
+                    </button>
+                  </>
               )}
 
               {/* Stale mockups overlay */}
@@ -9235,10 +9365,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
             {/* Catalog placeholder indicators — before artwork exists */}
             {isStorefront && !generatedDesign?.imageUrl && catalogPreviewImages.length > 1 && (
-              <div className="flex justify-center gap-3 mt-1">
+                <div className="flex justify-center gap-3 mt-1">
                 {catalogPreviewImages.map((_, idx) => (
-                  <button
-                    key={idx}
+                    <button
+                      key={idx}
                     type="button"
                     onClick={() => setCatalogPreviewIndex(idx)}
                     aria-label={`Placeholder image ${idx + 1}`}
@@ -9271,13 +9401,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 {postGenGalleryItems.map((item, idx) => (
                   <button
                     key={`${item.kind}-${idx}`}
-                    type="button"
-                    onClick={() => setSelectedMockupIndex(idx)}
+                      type="button"
+                      onClick={() => setSelectedMockupIndex(idx)}
                     aria-label={item.label}
-                    className={`flex flex-col items-center gap-0.5 transition-all duration-200 ${
-                      selectedMockupIndex === idx ? "opacity-100" : "opacity-40 hover:opacity-70"
-                    }`}
-                  >
+                      className={`flex flex-col items-center gap-0.5 transition-all duration-200 ${
+                        selectedMockupIndex === idx ? "opacity-100" : "opacity-40 hover:opacity-70"
+                      }`}
+                    >
                     <span
                       className={`rounded-full transition-all duration-200 ${
                         selectedMockupIndex === idx
@@ -9292,9 +9422,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     >
                       {item.label}
                     </span>
-                  </button>
-                ))}
-              </div>
+                    </button>
+                  ))}
+                </div>
             )}
 
             {generatedDesign?.imageUrl && !useAopCustomizer && !flatPlacerEligible && (
