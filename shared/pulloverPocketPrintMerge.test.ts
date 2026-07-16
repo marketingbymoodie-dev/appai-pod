@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   mapMockupPointToFrontFlat,
+  mapMockupPointsToHostFlat,
   overlayRectOnReferencePanel,
   pocketOverlayRectOnFrontPanel,
   shouldMergePulloverPocketForPrintify,
@@ -55,5 +56,30 @@ describe("mapMockupPointToFrontFlat", () => {
       x: 800,
       y: 1000,
     });
+  });
+});
+
+describe("mapMockupPointsToHostFlat", () => {
+  it("uses mesh inverse when host mesh is provided", () => {
+    const hostMesh = {
+      cols: 2,
+      rows: 2,
+      targetPoints: [
+        { x: 100, y: 200 },
+        { x: 500, y: 200 },
+        { x: 100, y: 700 },
+        { x: 500, y: 700 },
+      ],
+      sourceRect: { x: 0, y: 0, width: 800, height: 1000 },
+    };
+    const hostBb = { x: 100, y: 200, width: 400, height: 500 };
+    const [mapped] = mapMockupPointsToHostFlat(
+      [{ x: 100, y: 200 }],
+      hostMesh,
+      hostBb,
+      800,
+      1000,
+    );
+    expect(mapped).toEqual({ x: 0, y: 0 });
   });
 });

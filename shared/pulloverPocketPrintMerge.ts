@@ -1,4 +1,6 @@
+import type { MeshGrid } from "./hoodieTemplate";
 import { isPulloverHoodieBlueprint } from "./hoodieTemplate";
+import { mapMockupPointsViaHostMesh, mockupPointToMeshFlatPixel } from "./meshFlatInverse";
 
 export type PulloverPocketOverlayRect = {
   x: number;
@@ -63,6 +65,30 @@ export function mapMockupPointsToFrontFlat(
 ): MockupPoint[] {
   return points.map((p) => mapMockupPointToFrontFlat(p, hostBb, flatW, flatH));
 }
+
+/**
+ * Map mockup points onto the host panel's flat print canvas using the
+ * host mesh inverse (correct for Printify UV space). Falls back to linear
+ * bbox stretch when a point lies outside the meshed region.
+ */
+export function mapMockupPointsToHostFlat(
+  points: MockupPoint[],
+  hostMesh: MeshGrid | null | undefined,
+  hostBb: MockupBbox,
+  flatW: number,
+  flatH: number,
+): MockupPoint[] {
+  return mapMockupPointsViaHostMesh(
+    points,
+    hostMesh,
+    hostBb,
+    flatW,
+    flatH,
+    (p) => mapMockupPointToFrontFlat(p, hostBb, flatW, flatH),
+  );
+}
+
+export { mockupPointToMeshFlatPixel };
 
 /** Fill a rectangle on a canvas — used to punch out underlying art before overlay. */
 export function punchOutRectOnCanvas(

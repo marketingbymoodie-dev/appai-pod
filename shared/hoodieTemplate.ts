@@ -31,6 +31,8 @@ export type HoodieView = "front" | "back";
  */
 /** Printify blueprint 450 (pullover) — single full front body placeholder. */
 export const PULOVER_HOODIE_BLUEPRINT_ID = 450;
+/** Preview-only: pullover front chest placement renders ~5% larger to match Printify. */
+export const PULOVER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE = 1.05;
 /** Printify blueprint 451 (zip) — split front_left / front_right placeholders. */
 export const ZIP_HOODIE_BLUEPRINT_ID = 451;
 /** Printify blueprint 449 (unisex sweatshirt AOP) — collar + cuffs, no hood. */

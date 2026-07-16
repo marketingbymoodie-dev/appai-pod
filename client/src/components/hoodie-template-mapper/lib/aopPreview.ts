@@ -50,7 +50,9 @@ import type {
 import {
   drawMockupImageInCanvas,
   findGroupForPanel,
+  isPulloverHoodieBlueprint,
   migrateFrontPocketOutOfTrimGroup,
+  PULOVER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE,
   resolveFrontBodyPanelBias,
   hoodiePanelKeyToPrintifyPosition,
   shouldRenderKangarooPocketArtwork,
@@ -59,7 +61,7 @@ import {
   SEAM_PAIR_PANELS,
 } from "@shared/hoodieTemplate";
 import {
-  mapMockupPointsToFrontFlat,
+  mapMockupPointsToHostFlat,
   pocketOverlayRectOnFrontPanel,
   punchOutRectOnCanvas,
   shouldMergePulloverPocketForPrintify,
@@ -70,8 +72,6 @@ import {
   computePreviewMeshTileStretch,
   PRINT_PANEL_BOTTOM_BLEED_FRACTION,
   PRINT_PANEL_TOP_BLEED_FRACTION,
-  referenceMockupToFlatScale,
-  type MeshScaleSample,
 } from "@shared/aopTileScale";
 import { svgPathToAnchors, svgPathToSubpaths, clipCanvasToMaskSubpaths, appendMaskSubpathsToPath, boundingBoxOfSubpaths } from "./svgPath";
 import { drawMeshWarp } from "./meshWarp";
@@ -1140,36 +1140,36 @@ function extendPanelPrintBleed(
   return next;
 }
 
-function flatCanvasWidthForLayer(layer: MaskLayer): number | null {
-  const src = layer.mesh?.sourceRect;
-  if (src && src.width > 0) return Math.max(1, Math.round(src.width));
-  if (layer.mesh) {
-    const tb = meshTargetBbox(layer.mesh);
-    if (tb) return Math.max(1, Math.round(tb.width));
-  }
-  return null;
+/** Preview-only placement bump (does not affect print export). */
+function scaleDesignRectEffective(info: DesignRectInfo, factor: number): DesignRectInfo {
+  if (factor === 1) return info;
+  const cx = info.effective.x + info.effective.width / 2;
+  const cy = info.effective.y + info.effective.height / 2;
+  const w = info.effective.width * factor;
+  const h = info.effective.height * factor;
+  return {
+    ...info,
+    effective: { x: cx - w / 2, y: cy - h / 2, width: w, height: h },
+  };
 }
 
-function collectMeshScaleSamples(template: HoodieTemplate): MeshScaleSample[] {
-  const samples: MeshScaleSample[] = [];
-  for (const view of ["front", "back"] as HoodieView[]) {
-    for (const layer of template.views[view]?.layers ?? []) {
-      if (!layer.visible || layer.isExclusion || !layer.mesh) continue;
-      const meshTb = meshTargetBbox(layer.mesh);
-      const flatCanvasW = flatCanvasWidthForLayer(layer);
-      if (!meshTb || !flatCanvasW) continue;
-      samples.push({
-        panelKey: layer.panelKey,
-        flatCanvasW,
-        meshTargetWidth: meshTb.width,
-      });
-    }
+function applyPulloverFrontBodyPreviewPlacementScale(
+  template: HoodieTemplate,
+  rects: Map<string, DesignRectInfo>,
+): void {
+  if (
+    !isPulloverHoodieBlueprint(template.blueprintId) &&
+    template.hoodieType !== "pullover-hoodie-aop"
+  ) {
+    return;
   }
-  return samples;
-}
-
-function resolveGarmentMockupToFlatScale(template: HoodieTemplate): number | null {
-  return referenceMockupToFlatScale(collectMeshScaleSamples(template));
+  const fb = rects.get("front-body");
+  if (fb) {
+    rects.set(
+      "front-body",
+      scaleDesignRectEffective(fb, PULOVER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE),
+    );
+  }
 }
 
 /**
@@ -1493,6 +1493,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
           legacyPlacement: artworkPlacement,
         })
       : new Map<string, DesignRectInfo>();
+  applyPulloverFrontBodyPreviewPlacementScale(template, groupRects);
   // Helper: which design rect should this layer sample from?
   const rectForLayer = (layer: MaskLayer): DesignRectInfo | null => {
     const group = findGroupForPanel(template.designGroups, layer.panelKey);
@@ -1512,12 +1513,16 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     } else {
       frontRectsCache =
         mode === "single-sheet"
-          ? computeGroupRects(template, "front", artwork, {
-              placementOverrides: params.groupPlacementOverrides,
-              seamOverrides: params.groupSeamOverrides,
-              enabledOverrides: params.groupEnabledOverrides,
-              legacyPlacement: artworkPlacement,
-            })
+          ? (() => {
+              const rects = computeGroupRects(template, "front", artwork, {
+                placementOverrides: params.groupPlacementOverrides,
+                seamOverrides: params.groupSeamOverrides,
+                enabledOverrides: params.groupEnabledOverrides,
+                legacyPlacement: artworkPlacement,
+              });
+              applyPulloverFrontBodyPreviewPlacementScale(template, rects);
+              return rects;
+            })()
           : new Map<string, DesignRectInfo>();
     }
     return frontRectsCache;
@@ -1545,8 +1550,6 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     params.pixelsPerInch ??
     template.realWorldCalibration?.pixelsPerInch ??
     1024 / 24;
-  const garmentMockupToFlatScale =
-    mode === "tile" ? resolveGarmentMockupToFlatScale(template) : null;
 
   for (const layer of printLayers) {
     const subpaths = svgPathToSubpaths(layer.maskPath);
@@ -1737,10 +1740,10 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
           ppi,
           W,
           {
-            // Garment-wide tile scale (print + preview) — per-panel overscan
-            // compensation would inflate left/right hood halves differently.
-            meshOverscanCompensation: !garmentMockupToFlatScale,
-            mockupToFlatScaleOverride: garmentMockupToFlatScale ?? undefined,
+            // Pattern mode: one tile size (inches × ppi) converted per panel
+            // via flatCanvasW / meshTargetWidth. Preview overscan compensation
+            // keeps hood/pocket tiles visually matched to body on the mockup.
+            meshOverscanCompensation: true,
           },
         );
         if (flatTile) {
@@ -2187,18 +2190,28 @@ export function finalizePulloverPrintPanelsForPrintify(
     // Same pipeline as the live preview: warp the pocket flat tile sheet
     // through the pocket mesh, but land on the front Printify flat canvas
     // by remapping mockup targetPoints into front-flat UV space.
-    const mappedTargets = mapMockupPointsToFrontFlat(
+    const mappedTargets = mapMockupPointsToHostFlat(
       pocketMesh.targetPoints,
+      frontLayer.mesh,
       frontBb,
       merged.width,
       merged.height,
     );
     const pocketSubpaths = svgPathToSubpaths(pocketLayer.maskPath);
     const mappedSubpaths = pocketSubpaths.map((path) =>
-      path.map((p) => ({
-        x: ((p.x - frontBb.x) / Math.max(1, frontBb.width)) * merged.width,
-        y: ((p.y - frontBb.y) / Math.max(1, frontBb.height)) * merged.height,
-      })),
+      path.map((p) => {
+        const mapped = mapMockupPointsToHostFlat(
+          [p],
+          frontLayer.mesh,
+          frontBb,
+          merged.width,
+          merged.height,
+        )[0];
+        return mapped ?? {
+          x: ((p.x - frontBb.x) / Math.max(1, frontBb.width)) * merged.width,
+          y: ((p.y - frontBb.y) / Math.max(1, frontBb.height)) * merged.height,
+        };
+      }),
     );
     ctx.save();
     if (clipCanvasToMaskSubpaths(ctx, mappedSubpaths)) {
@@ -2319,8 +2332,6 @@ export function renderFlatPrintPanels(
     params.pixelsPerInch ??
     template.realWorldCalibration?.pixelsPerInch ??
     1024 / 24;
-  const garmentMockupToFlatScale =
-    mode === "tile" ? resolveGarmentMockupToFlatScale(template) : null;
   const artworkLongEdge = artwork
     ? Math.max(artwork.naturalWidth || artwork.width, artwork.naturalHeight || artwork.height, 1)
     : 1;
@@ -2388,7 +2399,6 @@ export function renderFlatPrintPanels(
         artCanvas = layer.mesh
           ? renderTiledFlatPanel(layer, artwork, tileSettings, ppi, canvasW, {
               outputScale,
-              mockupToFlatScaleOverride: garmentMockupToFlatScale ?? undefined,
             })
           : null;
         if (!artCanvas) {
