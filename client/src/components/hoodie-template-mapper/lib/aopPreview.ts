@@ -59,6 +59,7 @@ import {
   SEAM_PAIR_PANELS,
 } from "@shared/hoodieTemplate";
 import {
+  mapMockupPointsToFrontFlat,
   pocketOverlayRectOnFrontPanel,
   punchOutRectOnCanvas,
   shouldMergePulloverPocketForPrintify,
@@ -2129,7 +2130,13 @@ export function finalizePulloverPrintPanelsForPrintify(
   backgroundColor?: string | null,
 ): FlatPrintPanelExport[] {
   const pocketsEnabled = panelEnabledOverrides?.front_pocket !== false;
-  if (!shouldMergePulloverPocketForPrintify(template.blueprintId, pocketsEnabled)) {
+  if (
+    !shouldMergePulloverPocketForPrintify(
+      template.blueprintId,
+      pocketsEnabled,
+      template.hoodieType,
+    )
+  ) {
     return panels.filter((p) => p.panelKey !== "front_pocket");
   }
 
@@ -2158,20 +2165,6 @@ export function finalizePulloverPrintPanelsForPrintify(
 
   const frontEntry = panels[frontIdx];
   const pocketEntry = panels[pocketIdx];
-  const dest = pocketOverlayRectOnFrontPanel(
-    frontBb,
-    pocketBb,
-    frontEntry.canvas.width,
-    frontEntry.canvas.height,
-  );
-  if (
-    dest.width < 1 ||
-    dest.height < 1 ||
-    !Number.isFinite(dest.x) ||
-    !Number.isFinite(dest.y)
-  ) {
-    return panels.filter((p) => p.panelKey !== "front_pocket");
-  }
 
   const merged = document.createElement("canvas");
   merged.width = frontEntry.canvas.width;
@@ -2183,18 +2176,82 @@ export function finalizePulloverPrintPanelsForPrintify(
 
   const bg = backgroundColor || DEFAULT_GARMENT_BACKGROUND;
   ctx.drawImage(frontEntry.canvas, 0, 0);
-  punchOutRectOnCanvas(ctx, dest, bg);
-  ctx.drawImage(
-    pocketEntry.canvas,
-    0,
-    0,
-    pocketEntry.canvas.width,
-    pocketEntry.canvas.height,
-    dest.x,
-    dest.y,
-    dest.width,
-    dest.height,
-  );
+
+  const pocketMesh = pocketLayer.mesh;
+  if (
+    pocketMesh &&
+    pocketMesh.targetPoints.length === pocketMesh.cols * pocketMesh.rows &&
+    pocketMesh.cols >= 2 &&
+    pocketMesh.rows >= 2
+  ) {
+    // Same pipeline as the live preview: warp the pocket flat tile sheet
+    // through the pocket mesh, but land on the front Printify flat canvas
+    // by remapping mockup targetPoints into front-flat UV space.
+    const mappedTargets = mapMockupPointsToFrontFlat(
+      pocketMesh.targetPoints,
+      frontBb,
+      merged.width,
+      merged.height,
+    );
+    const pocketSubpaths = svgPathToSubpaths(pocketLayer.maskPath);
+    const mappedSubpaths = pocketSubpaths.map((path) =>
+      path.map((p) => ({
+        x: ((p.x - frontBb.x) / Math.max(1, frontBb.width)) * merged.width,
+        y: ((p.y - frontBb.y) / Math.max(1, frontBb.height)) * merged.height,
+      })),
+    );
+    ctx.save();
+    if (clipCanvasToMaskSubpaths(ctx, mappedSubpaths)) {
+      drawMeshWarp(
+        ctx,
+        pocketEntry.canvas,
+        pocketEntry.canvas.width,
+        pocketEntry.canvas.height,
+        {
+          ...pocketMesh,
+          targetPoints: mappedTargets,
+          sourceRect: {
+            x: 0,
+            y: 0,
+            width: pocketEntry.canvas.width,
+            height: pocketEntry.canvas.height,
+          },
+          sourceRotation: 0,
+          sourceFlipX: false,
+          sourceFlipY: false,
+        },
+      );
+    }
+    ctx.restore();
+  } else {
+    // No mesh — stretch the pocket flat panel into the bbox (legacy templates).
+    const dest = pocketOverlayRectOnFrontPanel(
+      frontBb,
+      pocketBb,
+      frontEntry.canvas.width,
+      frontEntry.canvas.height,
+    );
+    if (
+      dest.width < 1 ||
+      dest.height < 1 ||
+      !Number.isFinite(dest.x) ||
+      !Number.isFinite(dest.y)
+    ) {
+      return panels.filter((p) => p.panelKey !== "front_pocket");
+    }
+    punchOutRectOnCanvas(ctx, dest, bg);
+    ctx.drawImage(
+      pocketEntry.canvas,
+      0,
+      0,
+      pocketEntry.canvas.width,
+      pocketEntry.canvas.height,
+      dest.x,
+      dest.y,
+      dest.width,
+      dest.height,
+    );
+  }
 
   const next = panels.filter((_, i) => i !== pocketIdx);
   const newFrontIdx = next.findIndex((p) => p.panelKey === "front");
@@ -2248,6 +2305,7 @@ export function renderFlatPrintPanels(
     shouldMergePulloverPocketForPrintify(
       template.blueprintId,
       panelEnabledOverrides?.front_pocket !== false,
+      template.hoodieType,
     )
   ) {
     template = {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  mapMockupPointToFrontFlat,
   overlayRectOnReferencePanel,
   pocketOverlayRectOnFrontPanel,
   shouldMergePulloverPocketForPrintify,
@@ -9,6 +10,12 @@ import { PULOVER_HOODIE_BLUEPRINT_ID } from "./hoodieTemplate";
 describe("shouldMergePulloverPocketForPrintify", () => {
   it("merges for pullover when pockets are on", () => {
     expect(shouldMergePulloverPocketForPrintify(PULOVER_HOODIE_BLUEPRINT_ID, true)).toBe(true);
+  });
+
+  it("merges when blueprint id is missing but hoodie type is pullover", () => {
+    expect(shouldMergePulloverPocketForPrintify(undefined, true, "pullover-hoodie-aop")).toBe(
+      true,
+    );
   });
 
   it("skips for zip hoodie or pockets off", () => {
@@ -34,5 +41,19 @@ describe("pocketOverlayRectOnFrontPanel", () => {
     expect(overlayRectOnReferencePanel(frontBb, pocketBb, 800, 1000)).toEqual(
       pocketOverlayRectOnFrontPanel(frontBb, pocketBb, 800, 1000),
     );
+  });
+});
+
+describe("mapMockupPointToFrontFlat", () => {
+  it("maps mockup corners into flat canvas space", () => {
+    const host = { x: 100, y: 200, width: 400, height: 500 };
+    expect(mapMockupPointToFrontFlat({ x: 100, y: 200 }, host, 800, 1000)).toEqual({
+      x: 0,
+      y: 0,
+    });
+    expect(mapMockupPointToFrontFlat({ x: 500, y: 700 }, host, 800, 1000)).toEqual({
+      x: 800,
+      y: 1000,
+    });
   });
 });
