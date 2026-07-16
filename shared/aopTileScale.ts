@@ -103,6 +103,36 @@ export function mockupToFlatScale(flatCanvasW: number, meshTargetWidth: number):
   return flatCanvasW / meshTargetWidth;
 }
 
+/** Body panels used to derive one garment-wide tile scale in pattern mode. */
+export const PATTERN_TILE_BODY_REFERENCE_KEYS = new Set([
+  "front",
+  "back",
+  "front_left",
+  "front_right",
+]);
+
+/**
+ * One mockup→flat scale for pattern mode: median of chest/back body panels
+ * (excludes hood, pockets, sleeves whose mesh overscan skews per-panel ratios).
+ * Applied to every panel so 1.5" tiles look uniform on the garment.
+ */
+export function patternModeUniformTileScale(samples: MeshScaleSample[]): number | null {
+  const body = samples.filter(
+    (s) => s.panelKey && PATTERN_TILE_BODY_REFERENCE_KEYS.has(s.panelKey),
+  );
+  if (body.length > 0) {
+    const ratios = body
+      .map((s) => mockupToFlatScale(s.flatCanvasW, s.meshTargetWidth))
+      .sort((a, b) => a - b);
+    const mid = Math.floor(ratios.length / 2);
+    if (ratios.length % 2 === 0) {
+      return (ratios[mid - 1] + ratios[mid]) / 2;
+    }
+    return ratios[mid] ?? null;
+  }
+  return referenceMockupToFlatScale(samples);
+}
+
 /**
  * Pick one mockup→flat scale for the whole garment. Prefers the back body
  * panel (usually best calibrated); falls back to median of body/sleeve panels.

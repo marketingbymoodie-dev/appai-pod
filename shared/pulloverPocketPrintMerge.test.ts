@@ -82,4 +82,27 @@ describe("mapMockupPointsToHostFlat", () => {
     );
     expect(mapped).toEqual({ x: 0, y: 0 });
   });
+
+  it("scales mesh UV coords when export canvas is upscaled past sourceRect", () => {
+    const hostMesh = {
+      cols: 2,
+      rows: 2,
+      targetPoints: [
+        { x: 100, y: 200 },
+        { x: 500, y: 200 },
+        { x: 100, y: 700 },
+        { x: 500, y: 700 },
+      ],
+      sourceRect: { x: 0, y: 0, width: 800, height: 1000 },
+    };
+    const hostBb = { x: 100, y: 200, width: 400, height: 500 };
+    const [mapped] = mapMockupPointsToHostFlat(
+      [{ x: 500, y: 700 }],
+      hostMesh,
+      hostBb,
+      1600,
+      2000,
+    );
+    expect(mapped).toEqual({ x: 1600, y: 2000 });
+  });
 });

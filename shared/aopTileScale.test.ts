@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   computePreviewMeshTileStretch,
   computeTilePxOnFlatCanvas,
+  patternModeUniformTileScale,
   referenceMockupToFlatScale,
 } from "./aopTileScale";
 
@@ -55,6 +56,20 @@ describe("computeTilePxOnFlatCanvas", () => {
       mockupToFlatScaleOverride: 9,
     };
     expect(computeTilePxOnFlatCanvas(base)).toBeCloseTo(85.33 * 9, 0);
+  });
+});
+
+describe("patternModeUniformTileScale", () => {
+  it("uses median of chest/back body panels, not hood or pocket outliers", () => {
+    const scale = patternModeUniformTileScale([
+      { panelKey: "front_left", flatCanvasW: 4000, meshTargetWidth: 500 },
+      { panelKey: "front_right", flatCanvasW: 4200, meshTargetWidth: 500 },
+      { panelKey: "back", flatCanvasW: 4500, meshTargetWidth: 500 },
+      { panelKey: "left_hood", flatCanvasW: 9000, meshTargetWidth: 500 },
+      { panelKey: "pocket_left", flatCanvasW: 2000, meshTargetWidth: 500 },
+    ]);
+    // median of [8, 8.4, 9] = 8.4
+    expect(scale).toBeCloseTo(8.4, 5);
   });
 });
 

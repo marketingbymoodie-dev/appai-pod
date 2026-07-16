@@ -1,6 +1,6 @@
 import type { MeshGrid } from "./hoodieTemplate";
 import { isPulloverHoodieBlueprint } from "./hoodieTemplate";
-import { mapMockupPointsViaHostMesh, mockupPointToMeshFlatPixel } from "./meshFlatInverse";
+import { mockupPointToMeshFlatPixel } from "./meshFlatInverse";
 
 export type PulloverPocketOverlayRect = {
   x: number;
@@ -75,17 +75,24 @@ export function mapMockupPointsToHostFlat(
   points: MockupPoint[],
   hostMesh: MeshGrid | null | undefined,
   hostBb: MockupBbox,
-  flatW: number,
-  flatH: number,
+  canvasW: number,
+  canvasH: number,
 ): MockupPoint[] {
-  return mapMockupPointsViaHostMesh(
-    points,
-    hostMesh,
-    hostBb,
-    flatW,
-    flatH,
-    (p) => mapMockupPointToFrontFlat(p, hostBb, flatW, flatH),
-  );
+  const src = hostMesh?.sourceRect;
+  const srcW = src && src.width > 0 ? src.width : canvasW;
+  const srcH = src && src.height > 0 ? src.height : canvasH;
+  const sx = canvasW / Math.max(1, srcW);
+  const sy = canvasH / Math.max(1, srcH);
+
+  return points.map((p) => {
+    if (hostMesh) {
+      const mapped = mockupPointToMeshFlatPixel(p, hostMesh, srcW, srcH);
+      if (mapped) {
+        return { x: mapped.x * sx, y: mapped.y * sy };
+      }
+    }
+    return mapMockupPointToFrontFlat(p, hostBb, canvasW, canvasH);
+  });
 }
 
 export { mockupPointToMeshFlatPixel };

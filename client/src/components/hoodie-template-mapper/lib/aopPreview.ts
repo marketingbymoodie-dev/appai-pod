@@ -70,8 +70,10 @@ import {
   BODY_PRINT_BLEED_PANEL_KEYS,
   computeTilePxOnFlatCanvas,
   computePreviewMeshTileStretch,
+  patternModeUniformTileScale,
   PRINT_PANEL_BOTTOM_BLEED_FRACTION,
   PRINT_PANEL_TOP_BLEED_FRACTION,
+  type MeshScaleSample,
 } from "@shared/aopTileScale";
 import { svgPathToAnchors, svgPathToSubpaths, clipCanvasToMaskSubpaths, appendMaskSubpathsToPath, boundingBoxOfSubpaths } from "./svgPath";
 import { drawMeshWarp } from "./meshWarp";
@@ -1140,6 +1142,39 @@ function extendPanelPrintBleed(
   return next;
 }
 
+function flatCanvasWidthForLayer(layer: MaskLayer): number | null {
+  const src = layer.mesh?.sourceRect;
+  if (src && src.width > 0) return Math.max(1, Math.round(src.width));
+  if (layer.mesh) {
+    const tb = meshTargetBbox(layer.mesh);
+    if (tb) return Math.max(1, Math.round(tb.width));
+  }
+  return null;
+}
+
+function collectMeshScaleSamples(template: HoodieTemplate): MeshScaleSample[] {
+  const samples: MeshScaleSample[] = [];
+  for (const view of ["front", "back"] as HoodieView[]) {
+    for (const layer of template.views[view]?.layers ?? []) {
+      if (!layer.visible || layer.isExclusion || !layer.mesh) continue;
+      const meshTb = meshTargetBbox(layer.mesh);
+      const flatCanvasW = flatCanvasWidthForLayer(layer);
+      if (!meshTb || !flatCanvasW) continue;
+      samples.push({
+        panelKey: layer.panelKey,
+        flatCanvasW,
+        meshTargetWidth: meshTb.width,
+      });
+    }
+  }
+  return samples;
+}
+
+/** Pattern mode only — one tile scale from chest/back reference panels. */
+function resolvePatternModeGarmentTileScale(template: HoodieTemplate): number | null {
+  return patternModeUniformTileScale(collectMeshScaleSamples(template));
+}
+
 /** Preview-only placement bump (does not affect print export). */
 function scaleDesignRectEffective(info: DesignRectInfo, factor: number): DesignRectInfo {
   if (factor === 1) return info;
@@ -1550,6 +1585,8 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     params.pixelsPerInch ??
     template.realWorldCalibration?.pixelsPerInch ??
     1024 / 24;
+  const patternGarmentTileScale =
+    mode === "tile" ? resolvePatternModeGarmentTileScale(template) : null;
 
   for (const layer of printLayers) {
     const subpaths = svgPathToSubpaths(layer.maskPath);
@@ -1740,10 +1777,10 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
           ppi,
           W,
           {
-            // Pattern mode: one tile size (inches × ppi) converted per panel
-            // via flatCanvasW / meshTargetWidth. Preview overscan compensation
-            // keeps hood/pocket tiles visually matched to body on the mockup.
-            meshOverscanCompensation: true,
+            // One garment-wide scale from chest/back; overscan comp would
+            // re-introduce hood/pocket/sleeve size drift in the preview.
+            meshOverscanCompensation: false,
+            mockupToFlatScaleOverride: patternGarmentTileScale ?? undefined,
           },
         );
         if (flatTile) {
@@ -2215,6 +2252,12 @@ export function finalizePulloverPrintPanelsForPrintify(
     );
     ctx.save();
     if (clipCanvasToMaskSubpaths(ctx, mappedSubpaths)) {
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, merged.width, merged.height);
+    }
+    ctx.restore();
+    ctx.save();
+    if (clipCanvasToMaskSubpaths(ctx, mappedSubpaths)) {
       drawMeshWarp(
         ctx,
         pocketEntry.canvas,
@@ -2332,6 +2375,8 @@ export function renderFlatPrintPanels(
     params.pixelsPerInch ??
     template.realWorldCalibration?.pixelsPerInch ??
     1024 / 24;
+  const patternGarmentTileScale =
+    mode === "tile" ? resolvePatternModeGarmentTileScale(template) : null;
   const artworkLongEdge = artwork
     ? Math.max(artwork.naturalWidth || artwork.width, artwork.naturalHeight || artwork.height, 1)
     : 1;
@@ -2399,6 +2444,7 @@ export function renderFlatPrintPanels(
         artCanvas = layer.mesh
           ? renderTiledFlatPanel(layer, artwork, tileSettings, ppi, canvasW, {
               outputScale,
+              mockupToFlatScaleOverride: patternGarmentTileScale ?? undefined,
             })
           : null;
         if (!artCanvas) {
