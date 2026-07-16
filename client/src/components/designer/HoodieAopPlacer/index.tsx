@@ -181,6 +181,8 @@ function buildPanelOverrides(
   for (const k of TRIM_PANEL_KEYS) out[k] = false;
   if (!state.pocketsEnabled) {
     for (const k of POCKET_PANEL_KEYS) out[k] = false;
+  } else {
+    for (const k of POCKET_PANEL_KEYS) out[k] = true;
   }
   return out;
 }
@@ -196,7 +198,7 @@ export type HoodieAopPlacerApplyResult = {
    * (renders every panel above mockup resolution), so callers should
    * invoke it lazily/deduped rather than on every preview repaint.
    */
-  renderPrintPanels: () => Array<{ position: string; dataUrl: string }> | null;
+  renderPrintPanels: (opts?: { maxLongEdgePx?: number }) => Array<{ position: string; dataUrl: string }> | null;
 };
 
 /**
@@ -452,7 +454,11 @@ function buildInitialState(
     placements: syncSleevePlacements(placements),
     enabled,
     trimEnabled: false,
-    pocketsEnabled: isHoodieBp ? false : !usesJumperNoHoodGarmentUi(template),
+    pocketsEnabled: isPulloverHoodieBlueprint(template.blueprintId)
+      ? true
+      : isHoodieBp
+        ? false
+        : !usesJumperNoHoodGarmentUi(template),
     hoodLinked: true,
     trimLinked: false,
     leftSleeveLinked: true,
@@ -1255,10 +1261,9 @@ export default function HoodieAopPlacer({
   // Flat per-panel print files for order fulfillment (Phase 5 production
   // export). Same effective template/placements/toggles as the preview, so
   // what Printify prints matches what the customer saw on the mockup.
-  const renderPrintPanelsToDataUrls = useCallback((): Array<{
-    position: string;
-    dataUrl: string;
-  }> | null => {
+  const renderPrintPanelsToDataUrls = useCallback((
+    opts?: { maxLongEdgePx?: number },
+  ): Array<{ position: string; dataUrl: string }> | null => {
     if (!data || !state || !artworkImg) return null;
     const effective = buildEffectiveRenderConfig(data.template, state);
     const panels = renderFlatPrintPanels({
@@ -1272,6 +1277,7 @@ export default function HoodieAopPlacer({
       groupEnabledOverrides: effective.enabled,
       panelEnabledOverrides: buildPanelOverrides(state, data.template),
       mockups,
+      maxLongEdgePx: opts?.maxLongEdgePx,
     });
     // Panels are bg-filled (opaque), so JPEG is safe and 5-10× smaller than
     // PNG — matters because a zip hoodie exports ~12 panels per save.

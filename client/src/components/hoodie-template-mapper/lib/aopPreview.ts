@@ -1097,12 +1097,16 @@ export function computeMeshFlatTileStretch(
   return computePreviewMeshTileStretch(meshTargetWidth, visiblePolyWidth);
 }
 
-/** Mesh target bbox preferred; falls back to mask polygon for placement math. */
+/** Mesh target bbox preferred for tile math; polygon bbox for merge placement. */
 function layerReferenceBbox(layer: MaskLayer): Aabb | null {
   if (layer.mesh) {
     const meshBb = meshTargetBbox(layer.mesh);
     if (meshBb) return meshBb;
   }
+  return aabbOf(svgPathToAnchors(layer.maskPath));
+}
+
+function layerPolygonBbox(layer: MaskLayer): Aabb | null {
   return aabbOf(svgPathToAnchors(layer.maskPath));
 }
 
@@ -1531,8 +1535,10 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     const panelMutedByCustomer = panelOverride === false;
     const pocketArtworkAllowed =
       isKangarooPocketPanelKey(layer.panelKey) && panelOverride !== false;
+    const pocketPrintForced =
+      isKangarooPocketPanelKey(layer.panelKey) && panelOverride === true;
     const skipArtwork =
-      panelMutedByCustomer ||
+      (panelMutedByCustomer && !pocketPrintForced) ||
       (mode === "single-sheet" && !groupEnabled && !pocketArtworkAllowed) ||
       (mode === "tile" && !groupEnabled && !pocketArtworkAllowed);
 
@@ -1958,6 +1964,8 @@ export function renderAopPreviewToCanvas(params: AopPreviewParams): HTMLCanvasEl
 const PRINT_PANEL_TARGET_LONG_EDGE_PX = 3200;
 /** Hard cap on exported panel long edge (memory / upload safety). */
 const PRINT_PANEL_MAX_LONG_EDGE_PX = 4800;
+/** Lighter panels for Printify mockup API — full-res print files are 10–40× larger. */
+export const MOCKUP_PANEL_MAX_LONG_EDGE_PX = 1800;
 /** Solid background-only panels compress to almost nothing; Printify scales
  *  the image to the placeholder, so a small aspect-correct fill is enough. */
 const SOLID_PRINT_PANEL_LONG_EDGE_PX = 160;
@@ -1987,6 +1995,8 @@ export type RenderFlatPrintPanelsParams = {
   /** Loaded view mockups — used only to derive each view's canvas width for
    *  tile-mode seam anchoring. Optional; falls back to template geometry. */
   mockups?: Partial<Record<HoodieView, HTMLImageElement | null>>;
+  /** Override max long edge (e.g. mockup-bound export). Defaults to print cap. */
+  maxLongEdgePx?: number;
 };
 
 /** Canvas width for a view without requiring the mockup image (mirrors
@@ -2079,7 +2089,9 @@ export function finalizePulloverPrintPanelsForPrintify(
   if (frontIdx < 0) {
     return panels.filter((p) => p.panelKey !== "front_pocket");
   }
-  if (pocketIdx < 0) return panels;
+  if (pocketIdx < 0) {
+    return panels.filter((p) => p.panelKey !== "front_pocket");
+  }
 
   const frontLayer = findFrontViewLayer(template, "front");
   const pocketLayer = findFrontViewLayer(template, "front_pocket");
@@ -2087,10 +2099,10 @@ export function finalizePulloverPrintPanelsForPrintify(
     return panels.filter((_, i) => i !== pocketIdx);
   }
 
-  const frontBb = layerReferenceBbox(frontLayer);
-  const pocketBb = layerReferenceBbox(pocketLayer);
+  const frontBb = layerPolygonBbox(frontLayer);
+  const pocketBb = layerPolygonBbox(pocketLayer);
   if (!frontBb || !pocketBb) {
-    return panels.filter((_, i) => i !== pocketIdx);
+    return panels.filter((p) => p.panelKey !== "front_pocket");
   }
 
   const frontEntry = panels[frontIdx];
@@ -2170,8 +2182,10 @@ export function renderFlatPrintPanels(
     groupPanelBiasOverrides,
     panelEnabledOverrides,
     mockups,
+    maxLongEdgePx,
   } = params;
   const bg = backgroundColor || DEFAULT_GARMENT_BACKGROUND;
+  const panelMaxLongEdge = maxLongEdgePx ?? PRINT_PANEL_MAX_LONG_EDGE_PX;
   const tileSettings = params.tileSettings ?? template.tileSettings ?? null;
   const ppi =
     params.pixelsPerInch ??
@@ -2241,7 +2255,7 @@ export function renderFlatPrintPanels(
         // by the max canvas edge. Below-1 scales are clamped (never shrink).
         const tilePxBase = Math.max(1, tileSettings.tileSizeInches * ppi);
         const wanted = artworkLongEdge / tilePxBase;
-        const capped = Math.min(wanted, PRINT_PANEL_MAX_LONG_EDGE_PX / longEdge);
+        const capped = Math.min(wanted, panelMaxLongEdge / longEdge);
         const outputScale = Math.max(1, capped);
         artCanvas = layer.mesh
           ? renderTiledFlatPanel(layer, artwork, tileSettings, ppi, canvasW, {
@@ -2266,7 +2280,7 @@ export function renderFlatPrintPanels(
       } else if (rect && rect.effective.width > 0 && rect.effective.height > 0) {
         const outputScale = Math.min(
           Math.max(1, PRINT_PANEL_TARGET_LONG_EDGE_PX / longEdge),
-          PRINT_PANEL_MAX_LONG_EDGE_PX / longEdge,
+          panelMaxLongEdge / longEdge,
         );
         if (layer.mesh) {
           const panelBias = group

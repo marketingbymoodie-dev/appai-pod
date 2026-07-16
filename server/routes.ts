@@ -2293,13 +2293,53 @@ export async function registerRoutes(
         });
       }
 
-      // Check design gallery limit (50 max)
-      const designCount = await storage.getDesignCountByCustomer(customer.id);
-      if (designCount >= 50) {
-        return res.status(400).json({ 
-          error: "Your design gallery is full (50 designs max). Please delete some designs to save new ones.",
-          galleryFull: true 
-        });
+      // Gallery limit — two different stores:
+      //   • Legacy /designs page → `designs` table (50 cap)
+      //   • Shop-connected admin generate (Art Generator Tester) → generation_jobs
+      //     saved via "Save to My Designs" — same counter the UI shows (30 cap).
+      // The tester previously checked the legacy table, so merchants with 4 saved
+      // studio designs but 50+ old tester rows hit a false "gallery full" error.
+      const genShopDomain = (req as any).shopDomain as string | undefined;
+      if (genShopDomain && !isOwner) {
+        const genInstall = await getAuthorizedInstallation(
+          genShopDomain.toLowerCase().replace(/^https?:\/\//, ""),
+        );
+        if (genInstall?.merchantId) {
+          const jobShop = genShopDomain.toLowerCase().replace(/^https?:\/\//, "");
+          const studioCustomer = await resolveMerchantStudioCustomer(
+            String(genInstall.merchantId),
+            jobShop,
+          );
+          const GALLERY_LIMIT = await getGalleryLimitForCustomer(studioCustomer.id);
+          const savedCountRows = await db
+            .select({ count: sql<number>`count(*)` })
+            .from(generationJobs)
+            .where(
+              and(
+                eq(generationJobs.shop, jobShop),
+                eq(generationJobs.customerId, studioCustomer.id),
+                eq(generationJobs.status, "complete"),
+              ),
+            );
+          const currentCount = Number(savedCountRows[0]?.count ?? 0);
+          if (currentCount >= GALLERY_LIMIT) {
+            return res.status(400).json({
+              error: "GALLERY_FULL",
+              message: `Your saved designs gallery is full (${GALLERY_LIMIT} max). Please delete some designs to generate new ones.`,
+              galleryFull: true,
+              count: currentCount,
+              limit: GALLERY_LIMIT,
+            });
+          }
+        }
+      } else if (!isOwner) {
+        const designCount = await storage.getDesignCountByCustomer(customer.id);
+        if (designCount >= 50) {
+          return res.status(400).json({
+            error: "Your design gallery is full (50 designs max). Please delete some designs to save new ones.",
+            galleryFull: true,
+          });
+        }
       }
 
       const { prompt, userPrompt: rawUserPromptAdmin, stylePreset, size, frameColor, referenceImage, productTypeId, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrl } = req.body;
@@ -2311,7 +2351,6 @@ export async function registerRoutes(
       // Per-merchant monthly plan quota. The admin "Art Generator Tester" counts
       // against the merchant's own plan allotment. Fail-open if we can't resolve
       // the shop (e.g. non-Shopify dev auth) so local testing isn't blocked.
-      const genShopDomain = (req as any).shopDomain as string | undefined;
       if (genShopDomain) {
         const genInstall = await getAuthorizedInstallation(
           genShopDomain.toLowerCase().replace(/^https?:\/\//, "")
@@ -2721,20 +2760,24 @@ console.log("[api/shopify/generate] saved image", result);
         generatedImageUrl = `data:${mimeType};base64,${data}`;
       }
 
-      // Create design record
-      const design = await storage.createDesign({
-        customerId: customer.id,
-        prompt,
-        stylePreset: stylePreset || null,
-        referenceImageUrl: referenceImage ? "uploaded" : null,
-        generatedImageUrl,
-        thumbnailImageUrl,
-        size,
-        frameColor: frameColor || "black",
-        aspectRatio: aspectRatioStr,
-        colorTier: isApparel ? colorTier : null,
-        status: "completed",
-      });
+      // Legacy /designs rows are only for the old standalone designer. Shop-connected
+      // admin generate (Art Generator Tester) uses generation_jobs instead.
+      let design: Awaited<ReturnType<typeof storage.createDesign>> | null = null;
+      if (!genShopDomain) {
+        design = await storage.createDesign({
+          customerId: customer.id,
+          prompt,
+          stylePreset: stylePreset || null,
+          referenceImageUrl: referenceImage ? "uploaded" : null,
+          generatedImageUrl,
+          thumbnailImageUrl,
+          size,
+          frameColor: frameColor || "black",
+          aspectRatio: aspectRatioStr,
+          colorTier: isApparel ? colorTier : null,
+          status: "completed",
+        });
+      }
 
       // Merchant plan quota — consume only after successful generation.
       if (genShopDomain) {
@@ -2761,7 +2804,7 @@ console.log("[api/shopify/generate] saved image", result);
       // Log generation
       await storage.createGenerationLog({
         customerId: customer.id,
-        designId: design.id,
+        designId: design?.id ?? null,
         promptLength: prompt.length,
         hadReferenceImage: !!referenceImage,
         stylePreset,
@@ -2813,7 +2856,8 @@ console.log("[api/shopify/generate] saved image", result);
       }
 
       res.json({
-        design,
+        design: design ?? undefined,
+        imageUrl: generatedImageUrl,
         creditsRemaining: isOwner ? 999999 : customer.credits - 1,
         jobId: testerJobId,
         jobShop: testerJobShop,

@@ -82,6 +82,19 @@ export default function AdminCreateProduct() {
       ) {
         await new Promise((r) => setTimeout(r, 1000));
       }
+      if (testerStatusRef.current.aopPanels === "saving") {
+        throw new Error(
+          "Print panels are still uploading — wait for Design saved, then send the test order again.",
+        );
+      }
+      if (
+        testerStatusRef.current.jobId &&
+        testerStatusRef.current.aopPanels !== "saved"
+      ) {
+        throw new Error(
+          "Print panels are not saved yet — wait for Design saved after your last edit, then try again.",
+        );
+      }
       const jobId = testerStatusRef.current.jobId;
       const response = await apiRequest(
         "POST",
