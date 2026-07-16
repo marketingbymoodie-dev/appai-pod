@@ -839,6 +839,21 @@ function synthesiseSeamAwareSourceRect(
   };
 }
 
+/** Uniform flat UV grid matching the mesh cell topology (cols × rows). */
+export function buildFlatMeshTargetPoints(mesh: MeshGrid, flatW: number, flatH: number): Pt[] {
+  const { cols, rows } = mesh;
+  const points: Pt[] = [];
+  for (let r = 0; r < rows; r += 1) {
+    for (let c = 0; c < cols; c += 1) {
+      points.push({
+        x: (c / (cols - 1)) * flatW,
+        y: (r / (rows - 1)) * flatH,
+      });
+    }
+  }
+  return points;
+}
+
 /**
  * Render the flat printable panel for one front-view layer with a
  * mesh, given the user's artwork + the front-view group rect that
@@ -949,42 +964,15 @@ export function renderHoodFlatPanel(
 
   const aw = artwork.naturalWidth || artwork.width;
   const ah = artwork.naturalHeight || artwork.height;
-  // Map the artwork slice into the matching sub-region of the flat
-  // print canvas (UV space). Stretching the slice across the full
-  // placeholder zooms split front halves on Printify vs the in-app mesh
-  // preview, which samples the slice through per-panel UV bounds.
-  const destX = (slice.x / Math.max(1, aw)) * flatW;
-  const destY = (slice.y / Math.max(1, ah)) * flatH;
-  const destW = (slice.width / Math.max(1, aw)) * flatW;
-  const destH = (slice.height / Math.max(1, ah)) * flatH;
-
-  // Honour the front-view mesh's source UV transform (rotation /
-  // flip) so the flat panel matches the orientation the admin
-  // calibrated. Without this, a 90°-rotated mesh would feed the
-  // back-view warp an unrotated image and the result would be
-  // misaligned.
-  const rotation = frontLayer.mesh.sourceRotation ?? 0;
-  const flipX = frontLayer.mesh.sourceFlipX ?? false;
-  const flipY = frontLayer.mesh.sourceFlipY ?? false;
-  ctx.save();
-  if (rotation || flipX || flipY) {
-    ctx.translate(flatW / 2, flatH / 2);
-    if (rotation) ctx.rotate((rotation * Math.PI) / 180);
-    ctx.scale(flipX ? -1 : 1, flipY ? -1 : 1);
-    ctx.translate(-flatW / 2, -flatH / 2);
-  }
-  ctx.drawImage(
-    artwork,
-    slice.x,
-    slice.y,
-    slice.width,
-    slice.height,
-    destX,
-    destY,
-    destW,
-    destH,
-  );
-  ctx.restore();
+  // Bake through the same mesh topology the live preview uses, but with
+  // targetPoints on a uniform flat grid so the entire Printify placeholder
+  // is filled. UV 0..1 maps across `slice` (synthSrc); mapping the slice
+  // into a fractional dest rect left most of the canvas white on Printify.
+  drawMeshWarp(ctx, artwork, aw, ah, {
+    ...frontLayer.mesh,
+    targetPoints: buildFlatMeshTargetPoints(frontLayer.mesh, flatW, flatH),
+    sourceRect: slice,
+  });
   return canvas;
 }
 
