@@ -50,6 +50,7 @@ import type {
 import {
   drawMockupImageInCanvas,
   findGroupForPanel,
+  migrateFrontPocketOutOfTrimGroup,
   resolveFrontBodyPanelBias,
   hoodiePanelKeyToPrintifyPosition,
   shouldRenderKangarooPocketArtwork,
@@ -2147,8 +2148,10 @@ export function finalizePulloverPrintPanelsForPrintify(
     return panels.filter((_, i) => i !== pocketIdx);
   }
 
-  const frontBb = layerPolygonBbox(frontLayer);
-  const pocketBb = layerPolygonBbox(pocketLayer);
+  // Match zip pocket_left/right: prefer mesh target bbox (calibration space),
+  // fall back to polygon when the admin has not meshed the pocket yet.
+  const frontBb = layerReferenceBbox(frontLayer);
+  const pocketBb = layerReferenceBbox(pocketLayer);
   if (!frontBb || !pocketBb) {
     return panels.filter((p) => p.panelKey !== "front_pocket");
   }
@@ -2161,6 +2164,14 @@ export function finalizePulloverPrintPanelsForPrintify(
     frontEntry.canvas.width,
     frontEntry.canvas.height,
   );
+  if (
+    dest.width < 1 ||
+    dest.height < 1 ||
+    !Number.isFinite(dest.x) ||
+    !Number.isFinite(dest.y)
+  ) {
+    return panels.filter((p) => p.panelKey !== "front_pocket");
+  }
 
   const merged = document.createElement("canvas");
   merged.width = frontEntry.canvas.width;
@@ -2219,7 +2230,7 @@ export function finalizePulloverPrintPanelsForPrintify(
 export function renderFlatPrintPanels(
   params: RenderFlatPrintPanelsParams,
 ): FlatPrintPanelExport[] {
-  const {
+  let {
     template,
     artwork,
     mode,
@@ -2233,6 +2244,17 @@ export function renderFlatPrintPanels(
     maxLongEdgePx,
   } = params;
   const bg = backgroundColor || DEFAULT_GARMENT_BACKGROUND;
+  if (
+    shouldMergePulloverPocketForPrintify(
+      template.blueprintId,
+      panelEnabledOverrides?.front_pocket !== false,
+    )
+  ) {
+    template = {
+      ...template,
+      designGroups: migrateFrontPocketOutOfTrimGroup(template.designGroups ?? []),
+    };
+  }
   const panelMaxLongEdge = maxLongEdgePx ?? PRINT_PANEL_MAX_LONG_EDGE_PX;
   const tileSettings = params.tileSettings ?? template.tileSettings ?? null;
   const ppi =
@@ -2399,16 +2421,21 @@ export function renderFlatPrintPanels(
       pctx.fillRect(0, 0, panel.width, panel.height);
       pctx.drawImage(artCanvas, 0, 0);
 
-      const withBleed = extendPanelPrintBleed(panel, panelKey, bg);
       seenPositions.add(position);
-      out.push({ position, panelKey, canvas: withBleed });
+      // Bleed runs after pullover pocket merge so overlay math matches the
+      // unshifted flat panel (same coord space as zip pocket_left export).
+      out.push({ position, panelKey, canvas: panel });
     }
   }
 
-  return finalizePulloverPrintPanelsForPrintify(
+  const merged = finalizePulloverPrintPanelsForPrintify(
     out,
     template,
     panelEnabledOverrides,
     backgroundColor,
   );
+  return merged.map((p) => ({
+    ...p,
+    canvas: extendPanelPrintBleed(p.canvas, p.panelKey, bg),
+  }));
 }

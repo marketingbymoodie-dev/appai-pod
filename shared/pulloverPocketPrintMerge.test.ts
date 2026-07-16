@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  overlayRectOnReferencePanel,
   pocketOverlayRectOnFrontPanel,
   shouldMergePulloverPocketForPrintify,
 } from "./pulloverPocketPrintMerge";
@@ -25,5 +26,13 @@ describe("pocketOverlayRectOnFrontPanel", () => {
     expect(dest.y).toBeCloseTo(700);
     expect(dest.width).toBeCloseTo(400);
     expect(dest.height).toBeCloseTo(240);
+  });
+
+  it("overlayRectOnReferencePanel matches pocketOverlayRectOnFrontPanel", () => {
+    const frontBb = { x: 100, y: 50, width: 400, height: 500 };
+    const pocketBb = { x: 200, y: 400, width: 200, height: 120 };
+    expect(overlayRectOnReferencePanel(frontBb, pocketBb, 800, 1000)).toEqual(
+      pocketOverlayRectOnFrontPanel(frontBb, pocketBb, 800, 1000),
+    );
   });
 });
