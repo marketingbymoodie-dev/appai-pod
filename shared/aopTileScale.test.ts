@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   computePreviewMeshTileStretch,
   computeTilePxOnFlatCanvas,
+  referenceMockupToFlatScale,
 } from "./aopTileScale";
 
 describe("computeTilePxOnFlatCanvas", () => {
@@ -41,6 +42,38 @@ describe("computeTilePxOnFlatCanvas", () => {
     const printPx = computeTilePxOnFlatCanvas({ ...base, meshOverscanCompensation: false });
     const previewPx = computeTilePxOnFlatCanvas({ ...base, meshOverscanCompensation: true });
     expect(previewPx).toBeCloseTo(printPx * 2, 0);
+  });
+
+  it("ignores overscan compensation when garment-wide scale override is set", () => {
+    const base = {
+      tileSizeInches: 2,
+      pixelsPerInch: 1024 / 24,
+      flatCanvasW: 4500,
+      meshTargetWidth: 500,
+      visiblePolyWidth: 250,
+      meshOverscanCompensation: true,
+      mockupToFlatScaleOverride: 9,
+    };
+    expect(computeTilePxOnFlatCanvas(base)).toBeCloseTo(85.33 * 9, 0);
+  });
+});
+
+describe("referenceMockupToFlatScale", () => {
+  it("prefers back panel scale over outlier front halves", () => {
+    const scale = referenceMockupToFlatScale([
+      { panelKey: "back", flatCanvasW: 4500, meshTargetWidth: 500 },
+      { panelKey: "front_left", flatCanvasW: 9000, meshTargetWidth: 500 },
+      { panelKey: "left_sleeve", flatCanvasW: 2000, meshTargetWidth: 500 },
+    ]);
+    expect(scale).toBeCloseTo(9, 5);
+  });
+
+  it("falls back to median of body panels when back is missing", () => {
+    const scale = referenceMockupToFlatScale([
+      { panelKey: "front_left", flatCanvasW: 4000, meshTargetWidth: 500 },
+      { panelKey: "left_sleeve", flatCanvasW: 2000, meshTargetWidth: 500 },
+    ]);
+    expect(scale).toBeCloseTo(6, 5);
   });
 });
 

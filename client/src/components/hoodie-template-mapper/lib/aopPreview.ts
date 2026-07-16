@@ -52,7 +52,7 @@ import {
   findGroupForPanel,
   resolveFrontBodyPanelBias,
   hoodiePanelKeyToPrintifyPosition,
-  isKangarooPocketPanelKey,
+  shouldRenderKangarooPocketArtwork,
   layerRenderPriority,
   mockupDrawRect,
   SEAM_PAIR_PANELS,
@@ -67,6 +67,9 @@ import {
   computeTilePxOnFlatCanvas,
   computePreviewMeshTileStretch,
   PRINT_PANEL_BOTTOM_BLEED_FRACTION,
+  PRINT_PANEL_TOP_BLEED_FRACTION,
+  referenceMockupToFlatScale,
+  type MeshScaleSample,
 } from "@shared/aopTileScale";
 import { svgPathToAnchors, svgPathToSubpaths, clipCanvasToMaskSubpaths, appendMaskSubpathsToPath, boundingBoxOfSubpaths } from "./svgPath";
 import { drawMeshWarp } from "./meshWarp";
@@ -944,6 +947,17 @@ export function renderHoodFlatPanel(
   }
   if (slice.width <= 0 || slice.height <= 0) return null;
 
+  const aw = artwork.naturalWidth || artwork.width;
+  const ah = artwork.naturalHeight || artwork.height;
+  // Map the artwork slice into the matching sub-region of the flat
+  // print canvas (UV space). Stretching the slice across the full
+  // placeholder zooms split front halves on Printify vs the in-app mesh
+  // preview, which samples the slice through per-panel UV bounds.
+  const destX = (slice.x / Math.max(1, aw)) * flatW;
+  const destY = (slice.y / Math.max(1, ah)) * flatH;
+  const destW = (slice.width / Math.max(1, aw)) * flatW;
+  const destH = (slice.height / Math.max(1, ah)) * flatH;
+
   // Honour the front-view mesh's source UV transform (rotation /
   // flip) so the flat panel matches the orientation the admin
   // calibrated. Without this, a 90°-rotated mesh would feed the
@@ -965,10 +979,10 @@ export function renderHoodFlatPanel(
     slice.y,
     slice.width,
     slice.height,
-    0,
-    0,
-    flatW,
-    flatH,
+    destX,
+    destY,
+    destW,
+    destH,
   );
   ctx.restore();
   return canvas;
@@ -1110,25 +1124,62 @@ function layerPolygonBbox(layer: MaskLayer): Aabb | null {
   return aabbOf(svgPathToAnchors(layer.maskPath));
 }
 
-function extendPanelBottomBleed(
+function extendPanelPrintBleed(
   canvas: HTMLCanvasElement,
   panelKey: HoodiePanelKey,
   bg: string,
 ): HTMLCanvasElement {
   if (!BODY_PRINT_BLEED_PANEL_KEYS.has(panelKey)) return canvas;
-  const bleedH = Math.max(
+  const topBleedH = Math.max(
+    2,
+    Math.ceil(canvas.height * PRINT_PANEL_TOP_BLEED_FRACTION),
+  );
+  const bottomBleedH = Math.max(
     2,
     Math.ceil(canvas.height * PRINT_PANEL_BOTTOM_BLEED_FRACTION),
   );
+  if (topBleedH <= 0 && bottomBleedH <= 0) return canvas;
   const next = document.createElement("canvas");
   next.width = canvas.width;
-  next.height = canvas.height + bleedH;
+  next.height = canvas.height + topBleedH + bottomBleedH;
   const ctx = next.getContext("2d");
   if (!ctx) return canvas;
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, next.width, next.height);
-  ctx.drawImage(canvas, 0, 0);
+  ctx.drawImage(canvas, 0, topBleedH);
   return next;
+}
+
+function flatCanvasWidthForLayer(layer: MaskLayer): number | null {
+  const src = layer.mesh?.sourceRect;
+  if (src && src.width > 0) return Math.max(1, Math.round(src.width));
+  if (layer.mesh) {
+    const tb = meshTargetBbox(layer.mesh);
+    if (tb) return Math.max(1, Math.round(tb.width));
+  }
+  return null;
+}
+
+function collectMeshScaleSamples(template: HoodieTemplate): MeshScaleSample[] {
+  const samples: MeshScaleSample[] = [];
+  for (const view of ["front", "back"] as HoodieView[]) {
+    for (const layer of template.views[view]?.layers ?? []) {
+      if (!layer.visible || layer.isExclusion || !layer.mesh) continue;
+      const meshTb = meshTargetBbox(layer.mesh);
+      const flatCanvasW = flatCanvasWidthForLayer(layer);
+      if (!meshTb || !flatCanvasW) continue;
+      samples.push({
+        panelKey: layer.panelKey,
+        flatCanvasW,
+        meshTargetWidth: meshTb.width,
+      });
+    }
+  }
+  return samples;
+}
+
+function resolveGarmentMockupToFlatScale(template: HoodieTemplate): number | null {
+  return referenceMockupToFlatScale(collectMeshScaleSamples(template));
 }
 
 /**
@@ -1164,7 +1215,11 @@ function renderTiledFlatPanel(
   settings: TileSettings,
   pixelsPerInch: number,
   canvasW: number,
-  opts?: { outputScale?: number; meshOverscanCompensation?: boolean },
+  opts?: {
+    outputScale?: number;
+    meshOverscanCompensation?: boolean;
+    mockupToFlatScaleOverride?: number;
+  },
 ): HTMLCanvasElement | null {
   const outputScale = opts?.outputScale ?? 1;
   const meshOverscanCompensation = opts?.meshOverscanCompensation ?? false;
@@ -1201,6 +1256,7 @@ function renderTiledFlatPanel(
     visiblePolyWidth: polyBb?.width,
     outputScale: scale,
     meshOverscanCompensation,
+    mockupToFlatScaleOverride: opts?.mockupToFlatScaleOverride,
   });
   const aw = artwork.naturalWidth || artwork.width;
   const ah = artwork.naturalHeight || artwork.height;
@@ -1499,6 +1555,8 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     params.pixelsPerInch ??
     template.realWorldCalibration?.pixelsPerInch ??
     1024 / 24;
+  const garmentMockupToFlatScale =
+    mode === "tile" ? resolveGarmentMockupToFlatScale(template) : null;
 
   for (const layer of printLayers) {
     const subpaths = svgPathToSubpaths(layer.maskPath);
@@ -1533,14 +1591,11 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
         ? params.panelEnabledOverrides[layer.panelKey]
         : undefined;
     const panelMutedByCustomer = panelOverride === false;
-    const pocketArtworkAllowed =
-      isKangarooPocketPanelKey(layer.panelKey) && panelOverride !== false;
-    const pocketPrintForced =
-      isKangarooPocketPanelKey(layer.panelKey) && panelOverride === true;
-    const skipArtwork =
-      (panelMutedByCustomer && !pocketPrintForced) ||
-      (mode === "single-sheet" && !groupEnabled && !pocketArtworkAllowed) ||
-      (mode === "tile" && !groupEnabled && !pocketArtworkAllowed);
+    const skipArtwork = shouldRenderKangarooPocketArtwork(layer.panelKey, panelOverride)
+      ? false
+      : panelMutedByCustomer ||
+        (mode === "single-sheet" && !groupEnabled) ||
+        (mode === "tile" && !groupEnabled);
 
     // Background colour fill — sits UNDER the artwork inside each
     // panel's polygon. Explicit `backgroundColor` fills every panel;
@@ -1691,7 +1746,12 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
           tileSettings,
           ppi,
           W,
-          { meshOverscanCompensation: true },
+          {
+            // Garment-wide tile scale (print + preview) — per-panel overscan
+            // compensation would inflate left/right hood halves differently.
+            meshOverscanCompensation: !garmentMockupToFlatScale,
+            mockupToFlatScaleOverride: garmentMockupToFlatScale ?? undefined,
+          },
         );
         if (flatTile) {
           drawMeshWarp(pctx, flatTile, flatTile.width, flatTile.height, {
@@ -2191,6 +2251,8 @@ export function renderFlatPrintPanels(
     params.pixelsPerInch ??
     template.realWorldCalibration?.pixelsPerInch ??
     1024 / 24;
+  const garmentMockupToFlatScale =
+    mode === "tile" ? resolveGarmentMockupToFlatScale(template) : null;
   const artworkLongEdge = artwork
     ? Math.max(artwork.naturalWidth || artwork.width, artwork.naturalHeight || artwork.height, 1)
     : 1;
@@ -2230,13 +2292,11 @@ export function renderFlatPrintPanels(
       // file matches the preview: single-sheet honours the group rect's
       // enabled flag; tile mode has no group rects (group toggles don't mute
       // there) — only customer-level panel overrides do.
-      const groupEnabled = mode === "single-sheet" && rect ? rect.enabled : true;
       const panelOverride = panelEnabledOverrides?.[panelKey];
-      const pocketArtworkAllowed =
-        isKangarooPocketPanelKey(panelKey) && panelOverride !== false;
-      const muted =
-        panelOverride === false ||
-        (mode === "single-sheet" && !groupEnabled && !pocketArtworkAllowed);
+      const muted = shouldRenderKangarooPocketArtwork(panelKey, panelOverride)
+        ? false
+        : panelOverride === false ||
+          (mode === "single-sheet" && rect != null && !rect.enabled);
 
       if (muted || !artwork || (mode === "tile" && !tileSettings)) {
         const solid = solidPanelCanvas(dims, bg);
@@ -2260,6 +2320,7 @@ export function renderFlatPrintPanels(
         artCanvas = layer.mesh
           ? renderTiledFlatPanel(layer, artwork, tileSettings, ppi, canvasW, {
               outputScale,
+              mockupToFlatScaleOverride: garmentMockupToFlatScale ?? undefined,
             })
           : null;
         if (!artCanvas) {
@@ -2350,7 +2411,7 @@ export function renderFlatPrintPanels(
       pctx.fillRect(0, 0, panel.width, panel.height);
       pctx.drawImage(artCanvas, 0, 0);
 
-      const withBleed = extendPanelBottomBleed(panel, panelKey, bg);
+      const withBleed = extendPanelPrintBleed(panel, panelKey, bg);
       seenPositions.add(position);
       out.push({ position, panelKey, canvas: withBleed });
     }

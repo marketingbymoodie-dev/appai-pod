@@ -18,6 +18,8 @@ export type AopTileScaleInput = {
   outputScale?: number;
   /** Preview-only: compensate for mesh compressing overscanned flat sheet onto polygon. */
   meshOverscanCompensation?: boolean;
+  /** When set, use this garment-wide scale instead of per-panel flatCanvasW / meshTargetWidth. */
+  mockupToFlatScaleOverride?: number;
 };
 
 /**
@@ -37,10 +39,17 @@ export function computeTilePxOnFlatCanvas(input: AopTileScaleInput): number {
 
   const tilePxMockup = Math.max(1, tileSizeInches * pixelsPerInch);
   const mockupToFlatScale =
-    meshTargetWidth > 0 ? flatCanvasW / meshTargetWidth : 1;
+    input.mockupToFlatScaleOverride ??
+    (meshTargetWidth > 0 ? flatCanvasW / meshTargetWidth : 1);
   let tilePxFlat = tilePxMockup * mockupToFlatScale * Math.max(0.01, outputScale);
 
-  if (meshOverscanCompensation && visiblePolyWidth && visiblePolyWidth > 0 && meshTargetWidth > 0) {
+  if (
+    meshOverscanCompensation &&
+    !input.mockupToFlatScaleOverride &&
+    visiblePolyWidth &&
+    visiblePolyWidth > 0 &&
+    meshTargetWidth > 0
+  ) {
     const previewStretch = Math.max(meshTargetWidth / visiblePolyWidth, 1);
     tilePxFlat *= previewStretch;
   }
@@ -67,3 +76,53 @@ export const BODY_PRINT_BLEED_PANEL_KEYS = new Set([
 
 /** Fraction of canvas height to extend solid bg at bottom (covers body→waistband gaps). */
 export const PRINT_PANEL_BOTTOM_BLEED_FRACTION = 0.025;
+
+/** Fraction of canvas height to extend solid bg at top (covers shoulder / collar gaps). */
+export const PRINT_PANEL_TOP_BLEED_FRACTION = 0.04;
+
+/** Body/sleeve/hood panels used to derive a garment-wide mockup→flat scale for uniform tiles. */
+export const TILE_SCALE_REFERENCE_PANEL_KEYS = new Set([
+  "back",
+  "front",
+  "front_left",
+  "front_right",
+  "left_sleeve",
+  "right_sleeve",
+  "left_hood",
+  "right_hood",
+]);
+
+export type MeshScaleSample = {
+  panelKey: string | null | undefined;
+  flatCanvasW: number;
+  meshTargetWidth: number;
+};
+
+export function mockupToFlatScale(flatCanvasW: number, meshTargetWidth: number): number {
+  if (meshTargetWidth <= 0 || flatCanvasW <= 0) return 1;
+  return flatCanvasW / meshTargetWidth;
+}
+
+/**
+ * Pick one mockup→flat scale for the whole garment. Prefers the back body
+ * panel (usually best calibrated); falls back to median of body/sleeve panels.
+ */
+export function referenceMockupToFlatScale(samples: MeshScaleSample[]): number | null {
+  const valid = samples.filter((s) => s.meshTargetWidth > 0 && s.flatCanvasW > 0);
+  const back = valid.find((s) => s.panelKey === "back");
+  if (back) return mockupToFlatScale(back.flatCanvasW, back.meshTargetWidth);
+
+  const body = valid.filter(
+    (s) => s.panelKey && TILE_SCALE_REFERENCE_PANEL_KEYS.has(s.panelKey),
+  );
+  if (body.length === 0) return null;
+
+  const ratios = body
+    .map((s) => mockupToFlatScale(s.flatCanvasW, s.meshTargetWidth))
+    .sort((a, b) => a - b);
+  const mid = Math.floor(ratios.length / 2);
+  if (ratios.length % 2 === 0) {
+    return (ratios[mid - 1] + ratios[mid]) / 2;
+  }
+  return ratios[mid] ?? null;
+}

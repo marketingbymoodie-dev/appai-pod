@@ -386,32 +386,42 @@ export function isKangarooPocketPanelKey(
   return !!panelKey && KANGAROO_POCKET_PANEL_KEYS.includes(panelKey);
 }
 
+/** Customer Pockets toggle on (explicit true, or unset = on). */
+export function shouldRenderKangarooPocketArtwork(
+  panelKey: HoodiePanelKey | null | undefined,
+  panelOverride: boolean | undefined,
+): boolean {
+  return isKangarooPocketPanelKey(panelKey) && panelOverride !== false;
+}
+
 /**
  * Move `front_pocket` from the always-disabled `trim` group into `front-body`
  * so toggling Pockets on can actually render / export artwork. Idempotent.
+ *
+ * Also strips duplicate `front_pocket` entries left in `trim` when both groups
+ * already list the key (stale persisted templates).
  */
 export function migrateFrontPocketOutOfTrimGroup(
   designGroups: DesignGroup[],
 ): DesignGroup[] {
   const frontBodyIdx = designGroups.findIndex((g) => g.id === "front-body");
-  const trimIdx = designGroups.findIndex((g) => g.id === "trim");
-  if (
-    frontBodyIdx < 0 ||
-    trimIdx < 0 ||
-    !designGroups[trimIdx].panelKeys.includes("front_pocket") ||
-    designGroups[frontBodyIdx].panelKeys.includes("front_pocket")
-  ) {
-    return designGroups;
-  }
-  return designGroups.map((g, i) => {
-    if (i === frontBodyIdx) {
-      return { ...g, panelKeys: [...g.panelKeys, "front_pocket"] };
-    }
-    if (i === trimIdx) {
+  if (frontBodyIdx < 0) return designGroups;
+
+  let groups = designGroups.map((g) => {
+    if (g.id === "trim") {
       return { ...g, panelKeys: g.panelKeys.filter((k) => k !== "front_pocket") };
     }
     return g;
   });
+
+  const fb = groups[frontBodyIdx];
+  if (!fb.panelKeys.includes("front_pocket")) {
+    groups = groups.map((g, i) =>
+      i === frontBodyIdx ? { ...g, panelKeys: [...g.panelKeys, "front_pocket"] } : g,
+    );
+  }
+
+  return groups;
 }
 
 export function mergePanelPlacementBiasPercent(
@@ -1156,6 +1166,14 @@ export function findGroupForPanel(
   panelKey: HoodiePanelKey | null,
 ): DesignGroup | null {
   if (!groups || !panelKey) return null;
+  // Pullover kangaroo pocket must inherit front-body placement, not trim
+  // (trim is always customer-disabled even when the key lingers in both groups).
+  if (panelKey === "front_pocket") {
+    const frontBody = groups.find(
+      (g) => g.id === "front-body" && g.panelKeys.includes("front_pocket"),
+    );
+    if (frontBody) return frontBody;
+  }
   for (const g of groups) {
     if (g.panelKeys.includes(panelKey)) return g;
   }

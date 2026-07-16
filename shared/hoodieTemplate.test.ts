@@ -33,6 +33,7 @@ import {
   mergeFrontBodyPanelPlacementBias,
   mergePanelPlacementBiasPercent,
   migrateFrontPocketOutOfTrimGroup,
+  findGroupForPanel,
   resolveFrontBodyPanelBias,
   FRONT_CHEST_PANEL_KEYS,
   FRONT_POCKET_PANEL_KEYS,
@@ -254,6 +255,25 @@ describe("pullover hoodie panel keys (bp 450)", () => {
     const migrated = migrateFrontPocketOutOfTrimGroup(groups);
     expect(migrated.find((g) => g.id === "front-body")?.panelKeys).toContain("front_pocket");
     expect(migrated.find((g) => g.id === "trim")?.panelKeys).not.toContain("front_pocket");
+  });
+
+  it("migrateFrontPocketOutOfTrimGroup strips trim duplicate when front-body already has pocket", () => {
+    const groups = defaultPulloverDesignGroups().map((g) => {
+      if (g.id === "trim") return { ...g, panelKeys: ["waistband", "front_pocket"] as const };
+      return g;
+    });
+    const migrated = migrateFrontPocketOutOfTrimGroup(groups);
+    expect(migrated.find((g) => g.id === "front-body")?.panelKeys).toContain("front_pocket");
+    expect(migrated.find((g) => g.id === "trim")?.panelKeys).toEqual(["waistband"]);
+  });
+
+  it("findGroupForPanel prefers front-body over trim for front_pocket", () => {
+    const groups = defaultPulloverDesignGroups().map((g) => {
+      if (g.id === "trim") return { ...g, panelKeys: ["waistband", "front_pocket"] as const };
+      return g;
+    });
+    const group = findGroupForPanel(groups, "front_pocket");
+    expect(group?.id).toBe("front-body");
   });
 
   it("mockupDrawRect applies x/y/scale", () => {
