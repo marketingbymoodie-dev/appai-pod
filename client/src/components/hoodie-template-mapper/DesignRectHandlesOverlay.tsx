@@ -286,8 +286,11 @@ export default function DesignRectHandlesOverlay({
   };
 
   return (
+    // Clip hit-testing to the canvas display: enlarged artwork rects can
+    // extend past the mockup and would otherwise cover nudge controls /
+    // chrome below the preview.
     <div
-      className="pointer-events-none absolute inset-0"
+      className="pointer-events-none absolute inset-0 overflow-hidden"
       data-testid="design-rect-overlay"
     >
       <div

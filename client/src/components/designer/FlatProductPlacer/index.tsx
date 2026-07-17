@@ -725,7 +725,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           }}
           data-testid="flat-placer-canvas-area"
         >
-          <div className="relative max-h-full max-w-full">
+          <div className="relative max-h-full max-w-full overflow-hidden">
             <canvas
               ref={canvasRef}
               className="block max-h-[50vh] max-w-full h-auto w-auto rounded lg:max-h-[78vh]"

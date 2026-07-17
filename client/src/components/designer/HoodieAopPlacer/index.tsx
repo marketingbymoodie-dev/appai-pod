@@ -1461,7 +1461,7 @@ export default function HoodieAopPlacer({
           data-testid="hoodie-aop-canvas-area"
           data-appai-wheel-forward="true"
         >
-          <div className="relative max-h-full max-w-full">
+          <div className="relative max-h-full max-w-full overflow-hidden">
             <canvas
               ref={canvasRef}
               className="max-h-[50vh] max-w-full rounded object-contain lg:max-h-[78vh]"
@@ -1502,7 +1502,7 @@ export default function HoodieAopPlacer({
         </div>
         {state.mode === "place" && artworkImg && activePartEnabled && (
           <FinePositionNudgeInline
-            className="border-t border-border bg-card px-3 py-2"
+            className="relative z-10 border-t border-border bg-card px-3 py-2"
             onNudge={nudgePlacement}
           />
         )}

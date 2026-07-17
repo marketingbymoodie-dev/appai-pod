@@ -241,7 +241,7 @@ export default function FlatDesignRectOverlay({
 
   return (
     <div
-      className="pointer-events-none absolute inset-0"
+      className="pointer-events-none absolute inset-0 overflow-hidden"
       data-testid="flat-rect-overlay"
     >
       {/* Full print canvas (edge-wrap outer guide). */}
