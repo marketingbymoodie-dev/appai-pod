@@ -57,7 +57,7 @@ Product: Printify blueprint **451** (`ZIP_HOODIE_BLUEPRINT_ID`), split front pla
 - `shared/aopTileScale.ts` — `patternModeUniformTileScale()` — median mockup→flat ratio of chest/back/sleeve panels
 - `client/src/components/hoodie-template-mapper/lib/aopPreview.ts` — `patternTileScaleOverrideForLayer()` / `renderTiledFlatPanel()`
 
-**Invariant:** That body/sleeve median is applied as `mockupToFlatScaleOverride` on **every** tiled panel (including hood and pockets). Do **not** skip hood/pocket for “per-panel” scale — that breaks pullover hood density and can reintroduce zip hood drift. Disable per-panel `meshOverscanCompensation` when the uniform override is set.
+**Invariant:** Body/sleeve median is applied as `mockupToFlatScaleOverride` on **chest/back/sleeves only**. Hood and pocket panels use **per-panel** flat/mesh scale (`usesPerPanelPatternTileScale`). Pullover front meshes often lack `sourceRect` — export borrows the matching back-view `sourceRect` (or Printify pocket placeholder dims) so density matches zip. Do not force the body median onto hood/pocket.
 
 ### Preview vs export paths
 
@@ -130,7 +130,7 @@ For place-on-item-only regressions, also consider restoring flat-panel helpers f
 - **Symptom:** Printify showed pattern in small blocks with large white areas; in-app preview looked fine.
 - **Fix:** mesh flat bake filling full placeholder (`5f792b6`).
 
-**Pattern mode:** Do not reintroduce `usesPerPanelPatternTileScale` skipping hood/pocket from the garment-wide override (pullover hood densifies; zip can drift).
+**Pattern mode:** Do not force the body/sleeve median onto hood/pocket when their `sourceRect` is missing or much larger than the mesh (pullover front hoods) — that enlarges hood tiles on Printify. Keep per-panel scale for hood/pocket; borrow sibling-view `sourceRect` when needed.
 
 ## Verification checklist (zip hoodie 451)
 

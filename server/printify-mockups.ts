@@ -5,6 +5,7 @@ import { buildToteFoldedPrintPng } from "./toteFoldedPrintFile";
 import {
   expandPanelImageIdsWithPocketAliases,
   isPocketLikePrintifyPosition,
+  resolvePocketFallbackImageId,
   resolvePrintifyPanelImageId,
 } from "@shared/pulloverPocketPrintMerge";
 
@@ -483,14 +484,29 @@ async function createTemporaryProduct(
         // strips on zip hoodies. If the user picked a bgColor we fill those
         // missing placeholders with a solid bgColor PNG so the mockup doesn't
         // expose the default white garment template through them.
-        if (inactivePanelFillImageId) {
-          if (isPocketLikePrintifyPosition(pos.position)) {
+        //
+        // Kangaroo pocket is special: solid white/bg looks like a blank overlay.
+        // Prefer reusing the front-body panel art when the client omitted pocket.
+        if (isPocketLikePrintifyPosition(pos.position)) {
+          const frontFallback = resolvePocketFallbackImageId(panelImageIds);
+          if (frontFallback) {
             console.warn(
-              `[Printify AOP] Blank pocket fill: placeholder "${pos.position}" unmatched. ` +
-                `panelImageIds keys=[${Array.from(panelImageIds.keys()).join(", ")}]. ` +
-                `Solid bgColor will cover the kangaroo pocket on the mockup.`,
+              `[Printify AOP] Pocket placeholder "${pos.position}" unmatched — ` +
+                `reusing front panel image (keys=[${Array.from(panelImageIds.keys()).join(", ")}]).`,
             );
+            placeholders.push({
+              position: pos.position,
+              images: [{ id: frontFallback, x: 0.5, y: 0.5, scale: 1, angle: 0 }],
+            });
+            continue;
           }
+          console.warn(
+            `[Printify AOP] Blank pocket fill: placeholder "${pos.position}" unmatched. ` +
+              `panelImageIds keys=[${Array.from(panelImageIds.keys()).join(", ")}]. ` +
+              `Solid bgColor will cover the kangaroo pocket on the mockup.`,
+          );
+        }
+        if (inactivePanelFillImageId) {
           const fillEntry = {
             id: inactivePanelFillImageId,
             x: 0.5,

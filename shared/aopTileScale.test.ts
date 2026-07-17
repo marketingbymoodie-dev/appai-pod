@@ -4,6 +4,7 @@ import {
   computeTilePxOnFlatCanvas,
   patternModeUniformTileScale,
   referenceMockupToFlatScale,
+  usesPerPanelPatternTileScale,
 } from "./aopTileScale";
 
 describe("computeTilePxOnFlatCanvas", () => {
@@ -56,7 +57,7 @@ describe("computeTilePxOnFlatCanvas", () => {
     expect(computeTilePxOnFlatCanvas(base)).toBeCloseTo(85.33 * 9, 0);
   });
 
-  it("applies the same override to any panel flat width (hood matches chest density)", () => {
+  it("applies a fixed override the same way regardless of flat width", () => {
     const override = 8.4;
     const base = {
       tileSizeInches: 1.5,
@@ -66,9 +67,16 @@ describe("computeTilePxOnFlatCanvas", () => {
       mockupToFlatScaleOverride: override,
     };
     const chestPx = computeTilePxOnFlatCanvas({ ...base, flatCanvasW: 4000 });
-    const hoodPx = computeTilePxOnFlatCanvas({ ...base, flatCanvasW: 8000 });
-    // Same physical tile inches → tilePx scales with flat canvas when override is fixed
-    expect(hoodPx).toBeCloseTo(chestPx, 5);
+    const otherPx = computeTilePxOnFlatCanvas({ ...base, flatCanvasW: 8000 });
+    expect(otherPx).toBeCloseTo(chestPx, 5);
+  });
+});
+
+describe("usesPerPanelPatternTileScale", () => {
+  it("marks hood and pocket panels for native scale", () => {
+    expect(usesPerPanelPatternTileScale("left_hood")).toBe(true);
+    expect(usesPerPanelPatternTileScale("front_pocket")).toBe(true);
+    expect(usesPerPanelPatternTileScale("front")).toBe(false);
   });
 });
 

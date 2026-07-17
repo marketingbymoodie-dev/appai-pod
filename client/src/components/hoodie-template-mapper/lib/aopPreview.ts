@@ -68,6 +68,7 @@ import {
   patternModeUniformTileScale,
   PRINT_PANEL_BOTTOM_BLEED_FRACTION,
   PRINT_PANEL_TOP_BLEED_FRACTION,
+  usesPerPanelPatternTileScale,
   type MeshScaleSample,
 } from "@shared/aopTileScale";
 import { svgPathToAnchors, svgPathToSubpaths, clipCanvasToMaskSubpaths, appendMaskSubpathsToPath, boundingBoxOfSubpaths } from "./svgPath";
@@ -1133,8 +1134,55 @@ function extendPanelPrintBleed(
   return next;
 }
 
-function flatCanvasWidthForLayer(layer: MaskLayer): number | null {
-  const src = layer.mesh?.sourceRect;
+/**
+ * Live Printify placeholder size when a layer has no calibrated sourceRect
+ * and no sibling-view borrow. Pullover kangaroo is front-only (no back twin).
+ * Dims from catalog bp 450 / provider 10 (MWW On Demand).
+ */
+const PRINTIFY_FLAT_DIM_FALLBACK: Partial<
+  Record<HoodiePanelKey, { width: number; height: number }>
+> = {
+  front_pocket: { width: 2759, height: 1467 },
+};
+
+/**
+ * Calibrated flat-panel size for a layer. Pullover front meshes often lack
+ * `sourceRect` while the matching back layer has it (same Printify sheet) —
+ * borrow that so tile density matches zip / Printify placeholder space.
+ */
+function resolveLayerSourceRect(
+  template: HoodieTemplate | null | undefined,
+  layer: MaskLayer,
+  view?: HoodieView,
+): { x: number; y: number; width: number; height: number } | null {
+  const own = layer.mesh?.sourceRect;
+  if (own && own.width > 0 && own.height > 0) return own;
+  if (layer.panelKey && template) {
+    const views: HoodieView[] =
+      view === "front"
+        ? ["back", "front"]
+        : view === "back"
+          ? ["front", "back"]
+          : ["front", "back"];
+    for (const v of views) {
+      for (const other of template.views[v]?.layers ?? []) {
+        if (other.panelKey !== layer.panelKey || other === layer) continue;
+        const src = other.mesh?.sourceRect;
+        if (src && src.width > 0 && src.height > 0) return src;
+      }
+    }
+  }
+  const fb = layer.panelKey ? PRINTIFY_FLAT_DIM_FALLBACK[layer.panelKey] : null;
+  if (fb) return { x: 0, y: 0, width: fb.width, height: fb.height };
+  return null;
+}
+
+function flatCanvasWidthForLayer(
+  layer: MaskLayer,
+  template?: HoodieTemplate | null,
+  view?: HoodieView,
+): number | null {
+  const src = resolveLayerSourceRect(template ?? null, layer, view);
   if (src && src.width > 0) return Math.max(1, Math.round(src.width));
   if (layer.mesh) {
     const tb = meshTargetBbox(layer.mesh);
@@ -1149,7 +1197,7 @@ function collectMeshScaleSamples(template: HoodieTemplate): MeshScaleSample[] {
     for (const layer of template.views[view]?.layers ?? []) {
       if (!layer.visible || layer.isExclusion || !layer.mesh) continue;
       const meshTb = meshTargetBbox(layer.mesh);
-      const flatCanvasW = flatCanvasWidthForLayer(layer);
+      const flatCanvasW = flatCanvasWidthForLayer(layer, template, view);
       if (!meshTb || !flatCanvasW) continue;
       samples.push({
         panelKey: layer.panelKey,
@@ -1161,16 +1209,19 @@ function collectMeshScaleSamples(template: HoodieTemplate): MeshScaleSample[] {
   return samples;
 }
 
-/** Pattern mode — body/sleeve median applied to every tiled panel (incl. hood/pocket). */
+/** Pattern mode — body/sleeve median for chest/sleeves only. */
 function resolvePatternModeBodyTileScale(template: HoodieTemplate): number | null {
   return patternModeUniformTileScale(collectMeshScaleSamples(template));
 }
 
 function patternTileScaleOverrideForLayer(
-  _panelKey: HoodiePanelKey | null | undefined,
+  panelKey: HoodiePanelKey | null | undefined,
   bodyScale: number | null,
 ): number | undefined {
-  return bodyScale ?? undefined;
+  if (bodyScale == null) return undefined;
+  // Hood/pocket: native flat/mesh (zip pockets + pullover hoods after sourceRect borrow).
+  if (usesPerPanelPatternTileScale(panelKey)) return undefined;
+  return bodyScale;
 }
 
 /** Preview-only placement bump (does not affect print export). */
@@ -1242,6 +1293,9 @@ function renderTiledFlatPanel(
     outputScale?: number;
     meshOverscanCompensation?: boolean;
     mockupToFlatScaleOverride?: number;
+    /** When set, borrow calibrated sourceRect from the sibling view if missing. */
+    template?: HoodieTemplate | null;
+    view?: HoodieView;
   },
 ): HTMLCanvasElement | null {
   const outputScale = opts?.outputScale ?? 1;
@@ -1255,7 +1309,7 @@ function renderTiledFlatPanel(
   let flatW: number;
   let flatH: number;
   let flatCanvasWBase: number;
-  const src = layer.mesh.sourceRect;
+  const src = resolveLayerSourceRect(opts?.template ?? null, layer, opts?.view);
   if (src && src.width > 0 && src.height > 0) {
     flatCanvasWBase = Math.max(1, Math.round(src.width));
     flatW = flatCanvasWBase;
@@ -1775,13 +1829,14 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
           ppi,
           W,
           {
-            // One garment-wide scale from chest/back; overscan comp would
-            // re-introduce hood/pocket/sleeve size drift in the preview.
+            // Body/sleeve median on chest/sleeves; hood/pocket stay per-panel.
             meshOverscanCompensation: false,
             mockupToFlatScaleOverride: patternTileScaleOverrideForLayer(
               layer.panelKey,
               patternBodyTileScale,
             ),
+            template,
+            view,
           },
         );
         if (flatTile) {
@@ -2114,10 +2169,14 @@ function viewCanvasWidth(
   return Math.max(1, Math.round(maxX));
 }
 
-/** Base (unscaled) flat-panel dims for a layer: calibrated sourceRect first,
- *  then the mesh's projected bbox, then the polygon bbox. */
-function flatPanelBaseDims(layer: MaskLayer): { width: number; height: number } | null {
-  const src = layer.mesh?.sourceRect;
+/** Base (unscaled) flat-panel dims for a layer: calibrated sourceRect first
+ *  (including sibling-view borrow), then mesh target bbox, then polygon AABB. */
+function flatPanelBaseDims(
+  layer: MaskLayer,
+  template?: HoodieTemplate | null,
+  view?: HoodieView,
+): { width: number; height: number } | null {
+  const src = resolveLayerSourceRect(template ?? null, layer, view);
   if (src && src.width > 0 && src.height > 0) {
     return { width: Math.round(src.width), height: Math.round(src.height) };
   }
@@ -2262,7 +2321,7 @@ export function renderFlatPrintPanels(
       const position = hoodiePanelKeyToPrintifyPosition(panelKey);
       if (seenPositions.has(position)) continue;
 
-      const dims = flatPanelBaseDims(layer);
+      const dims = flatPanelBaseDims(layer, template, view);
       if (!dims) continue;
 
       const group = findGroupForPanel(template.designGroups, panelKey);
@@ -2305,6 +2364,8 @@ export function renderFlatPrintPanels(
                 panelKey,
                 patternBodyTileScale,
               ),
+              template,
+              view,
             })
           : null;
         if (!artCanvas) {

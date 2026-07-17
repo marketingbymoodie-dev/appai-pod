@@ -57,11 +57,33 @@ export function resolvePrintifyPanelImageId(
 ): string | undefined {
   if (panelImageIds.has(position)) return panelImageIds.get(position);
   const aliases = PRINTIFY_PANEL_POSITION_ALIASES[position];
-  if (!aliases) return undefined;
-  for (const alias of aliases) {
-    if (panelImageIds.has(alias)) return panelImageIds.get(alias);
+  if (aliases) {
+    for (const alias of aliases) {
+      if (panelImageIds.has(alias)) return panelImageIds.get(alias);
+    }
+  }
+  // Any pocket-like placeholder ↔ any uploaded pocket-like panel.
+  if (isPocketLikePrintifyPosition(position)) {
+    for (const [key, id] of panelImageIds) {
+      if (isPocketLikePrintifyPosition(key)) return id;
+    }
   }
   return undefined;
+}
+
+/**
+ * When the client omitted the kangaroo panel, reuse the front-body print
+ * image instead of solid bgColor — blank white pockets are worse than a
+ * slightly mismatched tile scale on the pocket overlay.
+ */
+export function resolvePocketFallbackImageId(
+  panelImageIds: Map<string, string>,
+): string | undefined {
+  return (
+    panelImageIds.get("front") ??
+    panelImageIds.get("front_left") ??
+    panelImageIds.get("front_right")
+  );
 }
 
 /** Placeholder position → accepted client panelUrl position names. */

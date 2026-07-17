@@ -406,6 +406,10 @@ describe("hoodiePanelKeyToPrintifyPosition", () => {
     expect(hoodiePanelKeyToPrintifyPosition("collar_back")).toBe("collar");
     expect(hoodiePanelKeyToPrintifyPosition("front")).toBe("front");
   });
+
+  it("maps pullover kangaroo front_pocket to Printify pocket", () => {
+    expect(hoodiePanelKeyToPrintifyPosition("front_pocket")).toBe("pocket");
+  });
 });
 
 describe("mesh grid limits", () => {

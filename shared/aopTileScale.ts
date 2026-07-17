@@ -105,8 +105,8 @@ export function mockupToFlatScale(flatCanvasW: number, meshTargetWidth: number):
 
 /**
  * Chest/back (+ sleeves) — reference panels for the garment-wide pattern-mode
- * tile scale. That median is then applied to every panel (including hood/pocket)
- * so zip and pullover stay visually uniform.
+ * tile scale. Applied as override on those panels only; hood/pocket keep
+ * per-panel flat/mesh ratio (see `usesPerPanelPatternTileScale`).
  */
 export const PATTERN_TILE_BODY_REFERENCE_KEYS = new Set([
   "front",
@@ -118,8 +118,28 @@ export const PATTERN_TILE_BODY_REFERENCE_KEYS = new Set([
 ]);
 
 /**
+ * Hood + pocket panels — keep native flat/mesh tile scale. Body median override
+ * on these blows up density when `sourceRect` is missing or much larger than
+ * the mesh (pullover front hoods/pocket), while zip pockets already match with
+ * per-panel scale.
+ */
+export const PATTERN_TILE_PER_PANEL_KEYS = new Set([
+  "left_hood",
+  "right_hood",
+  "front_pocket",
+  "pocket_left",
+  "pocket_right",
+]);
+
+export function usesPerPanelPatternTileScale(
+  panelKey: string | null | undefined,
+): boolean {
+  return !!panelKey && PATTERN_TILE_PER_PANEL_KEYS.has(panelKey);
+}
+
+/**
  * One mockup→flat scale for pattern mode: median of chest/back/sleeve panels.
- * Apply as `mockupToFlatScaleOverride` on every tiled panel (hood/pocket included).
+ * Apply as `mockupToFlatScaleOverride` on body/sleeve panels only.
  */
 export function patternModeUniformTileScale(samples: MeshScaleSample[]): number | null {
   const body = samples.filter(

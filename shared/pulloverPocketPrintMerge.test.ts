@@ -3,6 +3,7 @@ import {
   expandPanelImageIdsWithPocketAliases,
   isPocketLikePrintifyPosition,
   pocketOverlayRectOnFrontPanel,
+  resolvePocketFallbackImageId,
   resolvePrintifyPanelImageId,
   shouldExportPulloverPocketAsPrintifyPanel,
   shouldMergePulloverPocketForPrintify,
@@ -43,6 +44,20 @@ describe("resolvePrintifyPanelImageId", () => {
   it("matches pocket alias when Printify uses pocket and client uploads front_pocket", () => {
     const ids = new Map([["front_pocket", "img-pocket"]]);
     expect(resolvePrintifyPanelImageId("pocket", ids)).toBe("img-pocket");
+  });
+
+  it("fuzzy-matches any pocket-like upload to any pocket-like placeholder", () => {
+    const ids = new Map([["outer_pocket", "img-x"]]);
+    expect(resolvePrintifyPanelImageId("pocket", ids)).toBe("img-x");
+  });
+});
+
+describe("resolvePocketFallbackImageId", () => {
+  it("prefers front then split front halves", () => {
+    expect(resolvePocketFallbackImageId(new Map([["front", "f"]]))).toBe("f");
+    expect(
+      resolvePocketFallbackImageId(new Map([["front_left", "fl"], ["back", "b"]])),
+    ).toBe("fl");
   });
 });
 
