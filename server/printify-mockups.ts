@@ -2,7 +2,11 @@ import sharp from "sharp";
 import pRetry from "p-retry";
 import crypto from "crypto";
 import { buildToteFoldedPrintPng } from "./toteFoldedPrintFile";
-import { resolvePrintifyPanelImageId } from "@shared/pulloverPocketPrintMerge";
+import {
+  expandPanelImageIdsWithPocketAliases,
+  isPocketLikePrintifyPosition,
+  resolvePrintifyPanelImageId,
+} from "@shared/pulloverPocketPrintMerge";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 const MAX_RETRIES = 3;
@@ -480,6 +484,13 @@ async function createTemporaryProduct(
         // missing placeholders with a solid bgColor PNG so the mockup doesn't
         // expose the default white garment template through them.
         if (inactivePanelFillImageId) {
+          if (isPocketLikePrintifyPosition(pos.position)) {
+            console.warn(
+              `[Printify AOP] Blank pocket fill: placeholder "${pos.position}" unmatched. ` +
+                `panelImageIds keys=[${Array.from(panelImageIds.keys()).join(", ")}]. ` +
+                `Solid bgColor will cover the kangaroo pocket on the mockup.`,
+            );
+          }
           const fillEntry = {
             id: inactivePanelFillImageId,
             x: 0.5,
@@ -1010,8 +1021,13 @@ export async function generatePrintifyMockup(
         }
       }
 
+      // Pullover kangaroo may upload as front_pocket while Printify discovers
+      // "pocket" / "kangaroo_pocket" — register the same image under all aliases.
+      expandPanelImageIdsWithPocketAliases(panelImageIds);
+
       console.log(
-        `[Printify AOP] Upload summary: ${panelImageIds.size}/${request.panelUrls.length} panels uploaded successfully.`
+        `[Printify AOP] Upload summary: ${panelImageIds.size}/${request.panelUrls.length} panels uploaded successfully` +
+          ` (keys: ${Array.from(panelImageIds.keys()).join(", ")})`,
       );
 
       // If client supplied panels for an AOP product but every upload failed, return an

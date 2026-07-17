@@ -4,7 +4,6 @@ import {
   computeTilePxOnFlatCanvas,
   patternModeUniformTileScale,
   referenceMockupToFlatScale,
-  usesPerPanelPatternTileScale,
 } from "./aopTileScale";
 
 describe("computeTilePxOnFlatCanvas", () => {
@@ -56,6 +55,21 @@ describe("computeTilePxOnFlatCanvas", () => {
     };
     expect(computeTilePxOnFlatCanvas(base)).toBeCloseTo(85.33 * 9, 0);
   });
+
+  it("applies the same override to any panel flat width (hood matches chest density)", () => {
+    const override = 8.4;
+    const base = {
+      tileSizeInches: 1.5,
+      pixelsPerInch: 1024 / 24,
+      meshTargetWidth: 500,
+      outputScale: 1,
+      mockupToFlatScaleOverride: override,
+    };
+    const chestPx = computeTilePxOnFlatCanvas({ ...base, flatCanvasW: 4000 });
+    const hoodPx = computeTilePxOnFlatCanvas({ ...base, flatCanvasW: 8000 });
+    // Same physical tile inches → tilePx scales with flat canvas when override is fixed
+    expect(hoodPx).toBeCloseTo(chestPx, 5);
+  });
 });
 
 describe("patternModeUniformTileScale", () => {
@@ -70,16 +84,6 @@ describe("patternModeUniformTileScale", () => {
     ]);
     // median of [8, 8.2, 8.4, 9] = (8.2+8.4)/2 = 8.3
     expect(scale).toBeCloseTo(8.3, 5);
-  });
-});
-
-describe("usesPerPanelPatternTileScale", () => {
-  it("marks hood and pocket panels for per-panel scale", () => {
-    expect(usesPerPanelPatternTileScale("left_hood")).toBe(true);
-    expect(usesPerPanelPatternTileScale("front_pocket")).toBe(true);
-    expect(usesPerPanelPatternTileScale("pocket_left")).toBe(true);
-    expect(usesPerPanelPatternTileScale("front")).toBe(false);
-    expect(usesPerPanelPatternTileScale("left_sleeve")).toBe(false);
   });
 });
 

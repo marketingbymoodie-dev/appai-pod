@@ -66,10 +66,45 @@ export function resolvePrintifyPanelImageId(
 
 /** Placeholder position → accepted client panelUrl position names. */
 export const PRINTIFY_PANEL_POSITION_ALIASES: Record<string, string[]> = {
-  front_pocket: ["front_pocket", "pocket", "kangaroo_pocket"],
-  pocket: ["pocket", "front_pocket", "kangaroo_pocket"],
-  kangaroo_pocket: ["kangaroo_pocket", "front_pocket", "pocket"],
+  front_pocket: ["front_pocket", "pocket", "kangaroo_pocket", "front_pocket_panel"],
+  pocket: ["pocket", "front_pocket", "kangaroo_pocket", "front_pocket_panel"],
+  kangaroo_pocket: ["kangaroo_pocket", "front_pocket", "pocket", "front_pocket_panel"],
+  front_pocket_panel: ["front_pocket_panel", "front_pocket", "pocket", "kangaroo_pocket"],
 };
+
+const POCKET_ALIAS_NAMES = new Set(
+  Object.keys(PRINTIFY_PANEL_POSITION_ALIASES).concat(
+    ...Object.values(PRINTIFY_PANEL_POSITION_ALIASES),
+  ),
+);
+
+export function isPocketLikePrintifyPosition(position: string): boolean {
+  return /pocket/i.test(position) || POCKET_ALIAS_NAMES.has(position);
+}
+
+/**
+ * After uploading client panelUrls, register each pocket image under every
+ * known alias so live bp 450 placeholder names cannot miss the art.
+ */
+export function expandPanelImageIdsWithPocketAliases(
+  panelImageIds: Map<string, string>,
+): void {
+  const additions: Array<[string, string]> = [];
+  for (const [position, imageId] of panelImageIds) {
+    if (!isPocketLikePrintifyPosition(position)) continue;
+    const aliases =
+      PRINTIFY_PANEL_POSITION_ALIASES[position] ??
+      Array.from(POCKET_ALIAS_NAMES);
+    for (const alias of aliases) {
+      if (!panelImageIds.has(alias)) {
+        additions.push([alias, imageId]);
+      }
+    }
+  }
+  for (const [alias, imageId] of additions) {
+    panelImageIds.set(alias, imageId);
+  }
+}
 
 /** Map overlay rect using reference bboxes (mesh target or polygon) in mockup space. */
 export function overlayRectOnReferencePanel(

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  expandPanelImageIdsWithPocketAliases,
+  isPocketLikePrintifyPosition,
   pocketOverlayRectOnFrontPanel,
   resolvePrintifyPanelImageId,
   shouldExportPulloverPocketAsPrintifyPanel,
@@ -41,6 +43,24 @@ describe("resolvePrintifyPanelImageId", () => {
   it("matches pocket alias when Printify uses pocket and client uploads front_pocket", () => {
     const ids = new Map([["front_pocket", "img-pocket"]]);
     expect(resolvePrintifyPanelImageId("pocket", ids)).toBe("img-pocket");
+  });
+});
+
+describe("expandPanelImageIdsWithPocketAliases", () => {
+  it("registers front_pocket upload under pocket aliases", () => {
+    const ids = new Map([["front_pocket", "img-pocket"], ["front", "img-front"]]);
+    expandPanelImageIdsWithPocketAliases(ids);
+    expect(ids.get("pocket")).toBe("img-pocket");
+    expect(ids.get("kangaroo_pocket")).toBe("img-pocket");
+    expect(ids.get("front")).toBe("img-front");
+  });
+});
+
+describe("isPocketLikePrintifyPosition", () => {
+  it("detects pocket-related placeholder names", () => {
+    expect(isPocketLikePrintifyPosition("front_pocket")).toBe(true);
+    expect(isPocketLikePrintifyPosition("pocket")).toBe(true);
+    expect(isPocketLikePrintifyPosition("left_sleeve")).toBe(false);
   });
 });
 

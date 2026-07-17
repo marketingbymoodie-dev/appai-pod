@@ -68,7 +68,6 @@ import {
   patternModeUniformTileScale,
   PRINT_PANEL_BOTTOM_BLEED_FRACTION,
   PRINT_PANEL_TOP_BLEED_FRACTION,
-  usesPerPanelPatternTileScale,
   type MeshScaleSample,
 } from "@shared/aopTileScale";
 import { svgPathToAnchors, svgPathToSubpaths, clipCanvasToMaskSubpaths, appendMaskSubpathsToPath, boundingBoxOfSubpaths } from "./svgPath";
@@ -1162,19 +1161,16 @@ function collectMeshScaleSamples(template: HoodieTemplate): MeshScaleSample[] {
   return samples;
 }
 
-/** Pattern mode — body/sleeve median; hood/pocket use per-panel scale instead. */
+/** Pattern mode — body/sleeve median applied to every tiled panel (incl. hood/pocket). */
 function resolvePatternModeBodyTileScale(template: HoodieTemplate): number | null {
   return patternModeUniformTileScale(collectMeshScaleSamples(template));
 }
 
 function patternTileScaleOverrideForLayer(
-  panelKey: HoodiePanelKey | null | undefined,
+  _panelKey: HoodiePanelKey | null | undefined,
   bodyScale: number | null,
 ): number | undefined {
-  if (bodyScale == null) return undefined;
-  // Hood/pocket keep native flat/mesh ratio (zip pockets work this way).
-  if (usesPerPanelPatternTileScale(panelKey)) return undefined;
-  return bodyScale;
+  return bodyScale ?? undefined;
 }
 
 /** Preview-only placement bump (does not affect print export). */
