@@ -99,6 +99,15 @@ export type HoodieAopPlacerProps = {
    * customer edit still auto-applies normally.
    */
   skipInitialAutoApply?: boolean;
+  /**
+   * Printify placeholder sizes from the product type — used so flat print
+   * panels export at the catalog aspect (avoids Printify re-stretching).
+   */
+  placeholderPositions?: ReadonlyArray<{
+    position: string;
+    width: number;
+    height: number;
+  }>;
 };
 
 /**
@@ -613,6 +622,7 @@ export default function HoodieAopPlacer({
   onApply,
   onChange,
   skipInitialAutoApply = false,
+  placeholderPositions,
 }: HoodieAopPlacerProps) {
   // ---------- Template fetch ----------
   const [data, setData] = useState<ApiResponse | null>(null);
@@ -1278,6 +1288,7 @@ export default function HoodieAopPlacer({
       panelEnabledOverrides: buildPanelOverrides(state, data.template),
       mockups,
       maxLongEdgePx: opts?.maxLongEdgePx,
+      placeholderPositions,
     });
     // Panels are bg-filled (opaque), so JPEG is safe and 5-10× smaller than
     // PNG — matters because a zip hoodie exports ~12 panels per save.
@@ -1285,7 +1296,7 @@ export default function HoodieAopPlacer({
       position: p.position,
       dataUrl: p.canvas.toDataURL("image/jpeg", 0.92),
     }));
-  }, [data, state, mockups, artworkImg]);
+  }, [data, state, mockups, artworkImg, placeholderPositions]);
 
   const handleApply = useCallback(() => {
     if (!state) return;

@@ -44,28 +44,28 @@ export const ZIP_HOODIE_BLUEPRINT_ID = 451;
 /** Printify blueprint 433 (men's bomber jacket AOP) — zip-style split fronts. */
 export const BOMBER_JACKET_BLUEPRINT_ID = 433;
 /**
- * Place-on-item (preview + print): widen bomber front-body design rect so each
- * half samples less artwork width — un-stretches X on front_left / front_right
- * toward back-panel proportions.
+ * Place-on-item (preview + print): X scale on bomber front-body design rect.
+ * Values < 1 narrow the rect so each zipper half samples more artwork width —
+ * un-does horizontal stretch vs the back panel (widening >1 made stretch worse).
  */
-export const BOMBER_FRONT_BODY_ASPECT_X_SCALE = 1.28;
+export const BOMBER_FRONT_BODY_ASPECT_X_SCALE = 0.82;
 /** Place-on-item (preview + print): enlarge bomber front art for shoulder coverage. */
-export const BOMBER_FRONT_BODY_PLACEMENT_SCALE = 1.18;
+export const BOMBER_FRONT_BODY_PLACEMENT_SCALE = 1.22;
 /**
  * Place-on-item (preview + print): shift bomber front-body rect up as a fraction
  * of rect height (fill bare shoulder triangles near collar).
  */
-export const BOMBER_FRONT_BODY_OFFSET_Y_FRAC = -0.09;
+export const BOMBER_FRONT_BODY_OFFSET_Y_FRAC = -0.11;
 /**
  * Preview-only: bomber back body ~10% larger to match Printify
  * (print export stays 1.0). Merchant: back size is good at this level.
  */
 export const BOMBER_BACK_PREVIEW_PLACEMENT_SCALE = 1.1;
 /**
- * Preview-only: bomber sleeves — another +10% on top of the initial 1.1
- * (1.1 × 1.1) so app mockup matches Printify sleeve crop (print stays 1.0).
+ * Preview-only: bomber sleeves vs Printify (print stays 1.0).
+ * 1.1 → 1.21 (+10%) → 1.452 (+20% more).
  */
-export const BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE = 1.21;
+export const BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE = 1.452;
 /** Printify blueprint 449 (unisex sweatshirt AOP) — collar + cuffs, no hood. */
 export const SWEATSHIRT_BLUEPRINT_ID = 449;
 /**

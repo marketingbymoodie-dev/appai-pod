@@ -9058,6 +9058,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     // back in via initialState below.
                     key={`hap-${productTypeConfig?.id ?? 0}-${generatedDesign?.id ?? aopPendingMotifUrl}`}
                     templateName={productTypeConfig.panelMappingTemplate}
+                    placeholderPositions={productTypeConfig.placeholderPositions}
                     initialState={{
                       ...(hoodieAopPlacerState ?? {}),
                       // Always seed the latest AI-generated motif as the

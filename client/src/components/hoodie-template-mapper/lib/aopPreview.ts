@@ -1270,8 +1270,8 @@ function offsetDesignRectEffectiveY(info: DesignRectInfo, yFrac: number): Design
 }
 
 /**
- * Bomber front-body (preview + print): widen aspect to un-stretch X, enlarge for
- * shoulder coverage, then nudge up (~1–2" on mockup).
+ * Bomber front-body (preview + print): narrow X so front halves don't stretch
+ * vs back, then enlarge + nudge up for shoulder coverage.
  */
 function applyBomberFrontBodyPlacement(
   template: HoodieTemplate,
@@ -2269,7 +2269,46 @@ export type RenderFlatPrintPanelsParams = {
   mockups?: Partial<Record<HoodieView, HTMLImageElement | null>>;
   /** Override max long edge (e.g. mockup-bound export). Defaults to print cap. */
   maxLongEdgePx?: number;
+  /**
+   * Printify catalog placeholder sizes (from product type / blueprint).
+   * When set, flat export canvases use these aspects so Printify does not
+   * re-stretch panels (back already matched; front halves often need this).
+   */
+  placeholderPositions?: ReadonlyArray<{
+    position: string;
+    width: number;
+    height: number;
+  }>;
 };
+
+function placeholderDimsByPosition(
+  positions: RenderFlatPrintPanelsParams["placeholderPositions"],
+): Map<string, { width: number; height: number }> {
+  const map = new Map<string, { width: number; height: number }>();
+  for (const p of positions ?? []) {
+    if (!p?.position || !(p.width > 0) || !(p.height > 0)) continue;
+    map.set(p.position, { width: p.width, height: p.height });
+    map.set(p.position.toLowerCase(), { width: p.width, height: p.height });
+  }
+  return map;
+}
+
+/** Prefer Printify placeholder aspect; fall back to mesh/mask calibration dims. */
+function resolveExportPanelDims(
+  layer: MaskLayer,
+  panelKey: HoodiePanelKey,
+  template: HoodieTemplate | null | undefined,
+  view: HoodieView | undefined,
+  placeholders: Map<string, { width: number; height: number }>,
+): { width: number; height: number } | null {
+  const position = hoodiePanelKeyToPrintifyPosition(panelKey);
+  const ph =
+    placeholders.get(position) ?? placeholders.get(position.toLowerCase());
+  if (ph) {
+    return { width: Math.round(ph.width), height: Math.round(ph.height) };
+  }
+  return flatPanelBaseDims(layer, template, view);
+}
 
 /** Canvas width for a view without requiring the mockup image (mirrors
  *  resolveAopPreviewCanvasBounds' extents using stored template geometry). */
@@ -2468,6 +2507,7 @@ export function renderFlatPrintPanels(
 
   const out: FlatPrintPanelExport[] = [];
   const exportLayers = collectPrintExportLayers(template);
+  const placeholders = placeholderDimsByPosition(params.placeholderPositions);
   const rectsByView = new Map<HoodieView, Map<string, DesignRectInfo>>();
   if (mode === "single-sheet") {
     for (const view of ["front", "back"] as HoodieView[]) {
@@ -2483,7 +2523,13 @@ export function renderFlatPrintPanels(
 
   for (const { view, layer, panelKey } of exportLayers) {
     const position = hoodiePanelKeyToPrintifyPosition(panelKey);
-    const dims = flatPanelBaseDims(layer, template, view);
+    const dims = resolveExportPanelDims(
+      layer,
+      panelKey,
+      template,
+      view,
+      placeholders,
+    );
     if (!dims) continue;
 
     const rects = rectsByView.get(view) ?? new Map<string, DesignRectInfo>();
