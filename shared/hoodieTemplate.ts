@@ -29,7 +29,7 @@ export type HoodieView = "front" | "back";
  * Stable canonical panel keys. The admin tool exposes the user-facing
  * subset per view; these keys are the source of truth for the JSON.
  */
-/** Printify blueprint 450 (pullover) — single full front body placeholder. */
+/** Printify blueprint 450 (pullover) — front/back/sleeves + kangaroo pocket panel. */
 export const PULOVER_HOODIE_BLUEPRINT_ID = 450;
 /** Preview-only: pullover front chest placement renders ~5% larger to match Printify. */
 export const PULOVER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE = 1.05;

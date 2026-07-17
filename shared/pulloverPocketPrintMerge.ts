@@ -1,6 +1,4 @@
-import type { MeshGrid } from "./hoodieTemplate";
 import { isPulloverHoodieBlueprint } from "./hoodieTemplate";
-import { mockupPointToMeshFlatPixel } from "./meshFlatInverse";
 
 export type PulloverPocketOverlayRect = {
   x: number;
@@ -18,8 +16,13 @@ export type MockupBbox = {
 
 export type MockupPoint = { x: number; y: number };
 
-/** Printify bp 450 only accepts front/back/sleeves — pocket art must bake into `front`. */
-export function shouldMergePulloverPocketForPrintify(
+/**
+ * Pullover kangaroo pocket is exported as its own Printify panel (like zip
+ * `pocket_left` / `pocket_right`), not baked into `front`. Live bp 450
+ * placeholders include a pocket slot — omitting it makes the mockup server
+ * fill that slot with solid bgColor (blank pocket overlay).
+ */
+export function shouldExportPulloverPocketAsPrintifyPanel(
   blueprintId: number | null | undefined,
   pocketsEnabled: boolean,
   hoodieType?: string | null,
@@ -31,6 +34,43 @@ export function shouldMergePulloverPocketForPrintify(
   );
 }
 
+/** @deprecated Use shouldExportPulloverPocketAsPrintifyPanel */
+export function shouldMergePulloverPocketForPrintify(
+  blueprintId: number | null | undefined,
+  pocketsEnabled: boolean,
+  hoodieType?: string | null,
+): boolean {
+  return shouldExportPulloverPocketAsPrintifyPanel(
+    blueprintId,
+    pocketsEnabled,
+    hoodieType,
+  );
+}
+
+/**
+ * Printify may name the pullover kangaroo placeholder `front_pocket`, `pocket`,
+ * or similar. Match uploaded panel URLs onto discovered placeholder positions.
+ */
+export function resolvePrintifyPanelImageId(
+  position: string,
+  panelImageIds: Map<string, string>,
+): string | undefined {
+  if (panelImageIds.has(position)) return panelImageIds.get(position);
+  const aliases = PRINTIFY_PANEL_POSITION_ALIASES[position];
+  if (!aliases) return undefined;
+  for (const alias of aliases) {
+    if (panelImageIds.has(alias)) return panelImageIds.get(alias);
+  }
+  return undefined;
+}
+
+/** Placeholder position → accepted client panelUrl position names. */
+export const PRINTIFY_PANEL_POSITION_ALIASES: Record<string, string[]> = {
+  front_pocket: ["front_pocket", "pocket", "kangaroo_pocket"],
+  pocket: ["pocket", "front_pocket", "kangaroo_pocket"],
+  kangaroo_pocket: ["kangaroo_pocket", "front_pocket", "pocket"],
+};
+
 /** Map overlay rect using reference bboxes (mesh target or polygon) in mockup space. */
 export function overlayRectOnReferencePanel(
   hostBb: MockupBbox,
@@ -41,10 +81,6 @@ export function overlayRectOnReferencePanel(
   return pocketOverlayRectOnFrontPanel(hostBb, overlayBb, hostCanvasW, hostCanvasH);
 }
 
-/**
- * Map one mockup pixel into the host panel's flat print canvas. The host
- * reference bbox is the front mesh target extent (same frame as preview).
- */
 export function mapMockupPointToFrontFlat(
   p: MockupPoint,
   hostBb: MockupBbox,
@@ -66,38 +102,6 @@ export function mapMockupPointsToFrontFlat(
   return points.map((p) => mapMockupPointToFrontFlat(p, hostBb, flatW, flatH));
 }
 
-/**
- * Map mockup points onto the host panel's flat print canvas using the
- * host mesh inverse (correct for Printify UV space). Falls back to linear
- * bbox stretch when a point lies outside the meshed region.
- */
-export function mapMockupPointsToHostFlat(
-  points: MockupPoint[],
-  hostMesh: MeshGrid | null | undefined,
-  hostBb: MockupBbox,
-  canvasW: number,
-  canvasH: number,
-): MockupPoint[] {
-  const src = hostMesh?.sourceRect;
-  const srcW = src && src.width > 0 ? src.width : canvasW;
-  const srcH = src && src.height > 0 ? src.height : canvasH;
-  const sx = canvasW / Math.max(1, srcW);
-  const sy = canvasH / Math.max(1, srcH);
-
-  return points.map((p) => {
-    if (hostMesh) {
-      const mapped = mockupPointToMeshFlatPixel(p, hostMesh, srcW, srcH);
-      if (mapped) {
-        return { x: mapped.x * sx, y: mapped.y * sy };
-      }
-    }
-    return mapMockupPointToFrontFlat(p, hostBb, canvasW, canvasH);
-  });
-}
-
-export { mockupPointToMeshFlatPixel };
-
-/** Fill a rectangle on a canvas — used to punch out underlying art before overlay. */
 export function punchOutRectOnCanvas(
   ctx: CanvasRenderingContext2D,
   rect: PulloverPocketOverlayRect,
@@ -107,7 +111,6 @@ export function punchOutRectOnCanvas(
   ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
 }
 
-/** Map the pocket mask bbox into front-panel canvas pixels (mockup-calibrated). */
 export function pocketOverlayRectOnFrontPanel(
   frontBb: MockupBbox,
   pocketBb: MockupBbox,

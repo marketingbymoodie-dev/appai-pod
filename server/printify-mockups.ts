@@ -2,6 +2,7 @@ import sharp from "sharp";
 import pRetry from "p-retry";
 import crypto from "crypto";
 import { buildToteFoldedPrintPng } from "./toteFoldedPrintFile";
+import { resolvePrintifyPanelImageId } from "@shared/pulloverPocketPrintMerge";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 const MAX_RETRIES = 3;
@@ -454,8 +455,12 @@ async function createTemporaryProduct(
     for (const pos of aopPositions) {
       const isRightPanel = pos.position.startsWith("right");
       let useImageId: string;
-      if (panelImageIds && panelImageIds.has(pos.position)) {
-        useImageId = panelImageIds.get(pos.position)!;
+      const resolvedPanelId =
+        panelImageIds && panelImageIds.size > 0
+          ? resolvePrintifyPanelImageId(pos.position, panelImageIds)
+          : undefined;
+      if (resolvedPanelId) {
+        useImageId = resolvedPanelId;
         // Per-panel images are already correctly sized for the panel.
         // Printify scale uses 0-2 range where 1 = 100%. Using scale=1
         // so the image fills the panel at its native resolution.

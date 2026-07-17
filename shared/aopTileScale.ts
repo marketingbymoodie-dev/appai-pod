@@ -20,18 +20,6 @@ export type AopTileScaleInput = {
   meshOverscanCompensation?: boolean;
   /** When set, use this garment-wide scale instead of per-panel flatCanvasW / meshTargetWidth. */
   mockupToFlatScaleOverride?: number;
-  /**
-   * Pattern mode: one body reference ratio × (flatCanvasW / refFlatW) so every
-   * panel gets the same physical tile inches (hood/pocket/sleeves match chest).
-   */
-  patternModeScaleRef?: PatternModeTileScaleRef;
-};
-
-export type PatternModeTileScaleRef = {
-  /** Median mockup→flat ratio from chest/back body panels. */
-  uniformRatio: number;
-  /** Median flat canvas width of those reference panels. */
-  referenceFlatCanvasW: number;
 };
 
 /**
@@ -50,21 +38,13 @@ export function computeTilePxOnFlatCanvas(input: AopTileScaleInput): number {
   } = input;
 
   const tilePxMockup = Math.max(1, tileSizeInches * pixelsPerInch);
-  let mockupToFlatScale: number;
-  if (input.patternModeScaleRef) {
-    const { uniformRatio, referenceFlatCanvasW } = input.patternModeScaleRef;
-    mockupToFlatScale =
-      uniformRatio * (flatCanvasW / Math.max(1, referenceFlatCanvasW));
-  } else if (input.mockupToFlatScaleOverride != null) {
-    mockupToFlatScale = input.mockupToFlatScaleOverride;
-  } else {
-    mockupToFlatScale = meshTargetWidth > 0 ? flatCanvasW / meshTargetWidth : 1;
-  }
+  const mockupToFlatScale =
+    input.mockupToFlatScaleOverride ??
+    (meshTargetWidth > 0 ? flatCanvasW / meshTargetWidth : 1);
   let tilePxFlat = tilePxMockup * mockupToFlatScale * Math.max(0.01, outputScale);
 
   if (
     meshOverscanCompensation &&
-    !input.patternModeScaleRef &&
     input.mockupToFlatScaleOverride == null &&
     visiblePolyWidth &&
     visiblePolyWidth > 0 &&
@@ -123,49 +103,52 @@ export function mockupToFlatScale(flatCanvasW: number, meshTargetWidth: number):
   return flatCanvasW / meshTargetWidth;
 }
 
-/** Body panels used to derive one garment-wide tile scale in pattern mode. */
+/**
+ * Chest/back (+ sleeves) — panels that should share one pattern-mode tile scale.
+ * Hood/pocket keep per-panel flat/mesh ratios so their fabric UV isn't forced
+ * onto the body reference (that made hood tiles tiny after flat-width scaling).
+ */
 export const PATTERN_TILE_BODY_REFERENCE_KEYS = new Set([
   "front",
   "back",
   "front_left",
   "front_right",
+  "left_sleeve",
+  "right_sleeve",
 ]);
 
-/**
- * One mockup→flat scale for pattern mode: median of chest/back body panels
- * (excludes hood, pockets, sleeves whose mesh overscan skews per-panel ratios).
- * Applied to every panel so 1.5" tiles look uniform on the garment.
- */
-export function patternModeUniformTileScale(samples: MeshScaleSample[]): number | null {
-  return patternModeTileScaleRef(samples)?.uniformRatio ?? null;
+/** Hood + pocket — use native per-panel mockup→flat scale in pattern mode. */
+export const PATTERN_TILE_PER_PANEL_KEYS = new Set([
+  "left_hood",
+  "right_hood",
+  "front_pocket",
+  "pocket_left",
+  "pocket_right",
+]);
+
+export function usesPerPanelPatternTileScale(panelKey: string | null | undefined): boolean {
+  return !!panelKey && PATTERN_TILE_PER_PANEL_KEYS.has(panelKey);
 }
 
-/** Body reference ratio + flat width for pattern-mode tile px on every panel. */
-export function patternModeTileScaleRef(
-  samples: MeshScaleSample[],
-): PatternModeTileScaleRef | null {
+/**
+ * One mockup→flat scale for pattern mode body/sleeves: median of chest/back/sleeve
+ * panels. Hood and pocket intentionally excluded — they use per-panel scale.
+ */
+export function patternModeUniformTileScale(samples: MeshScaleSample[]): number | null {
   const body = samples.filter(
     (s) => s.panelKey && PATTERN_TILE_BODY_REFERENCE_KEYS.has(s.panelKey),
   );
-  if (body.length === 0) return null;
-
-  const ratios = body
-    .map((s) => mockupToFlatScale(s.flatCanvasW, s.meshTargetWidth))
-    .sort((a, b) => a - b);
-  const flats = body.map((s) => s.flatCanvasW).sort((a, b) => a - b);
-  const mid = Math.floor(body.length / 2);
-
-  const uniformRatio =
-    body.length % 2 === 0
-      ? (ratios[mid - 1] + ratios[mid]) / 2
-      : (ratios[mid] ?? ratios[0]);
-  const referenceFlatCanvasW =
-    body.length % 2 === 0
-      ? (flats[mid - 1] + flats[mid]) / 2
-      : (flats[mid] ?? flats[0]);
-
-  if (!uniformRatio || !referenceFlatCanvasW) return null;
-  return { uniformRatio, referenceFlatCanvasW };
+  if (body.length > 0) {
+    const ratios = body
+      .map((s) => mockupToFlatScale(s.flatCanvasW, s.meshTargetWidth))
+      .sort((a, b) => a - b);
+    const mid = Math.floor(ratios.length / 2);
+    if (ratios.length % 2 === 0) {
+      return (ratios[mid - 1] + ratios[mid]) / 2;
+    }
+    return ratios[mid] ?? null;
+  }
+  return referenceMockupToFlatScale(samples);
 }
 
 /**

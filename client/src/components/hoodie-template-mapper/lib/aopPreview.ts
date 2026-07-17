@@ -60,21 +60,16 @@ import {
   mockupDrawRect,
   SEAM_PAIR_PANELS,
 } from "@shared/hoodieTemplate";
-import {
-  mapMockupPointsToHostFlat,
-  pocketOverlayRectOnFrontPanel,
-  shouldMergePulloverPocketForPrintify,
-  type PulloverPocketOverlayRect,
-} from "@shared/pulloverPocketPrintMerge";
+import { shouldExportPulloverPocketAsPrintifyPanel } from "@shared/pulloverPocketPrintMerge";
 import {
   BODY_PRINT_BLEED_PANEL_KEYS,
   computeTilePxOnFlatCanvas,
   computePreviewMeshTileStretch,
-  patternModeTileScaleRef,
+  patternModeUniformTileScale,
   PRINT_PANEL_BOTTOM_BLEED_FRACTION,
   PRINT_PANEL_TOP_BLEED_FRACTION,
+  usesPerPanelPatternTileScale,
   type MeshScaleSample,
-  type PatternModeTileScaleRef,
 } from "@shared/aopTileScale";
 import { svgPathToAnchors, svgPathToSubpaths, clipCanvasToMaskSubpaths, appendMaskSubpathsToPath, boundingBoxOfSubpaths } from "./svgPath";
 import { drawMeshWarp } from "./meshWarp";
@@ -1113,10 +1108,6 @@ function layerReferenceBbox(layer: MaskLayer): Aabb | null {
   return aabbOf(svgPathToAnchors(layer.maskPath));
 }
 
-function layerPolygonBbox(layer: MaskLayer): Aabb | null {
-  return aabbOf(svgPathToAnchors(layer.maskPath));
-}
-
 function extendPanelPrintBleed(
   canvas: HTMLCanvasElement,
   panelKey: HoodiePanelKey,
@@ -1171,11 +1162,19 @@ function collectMeshScaleSamples(template: HoodieTemplate): MeshScaleSample[] {
   return samples;
 }
 
-/** Pattern mode only — one tile scale from chest/back reference panels. */
-function resolvePatternModeTileScaleRef(
-  template: HoodieTemplate,
-): PatternModeTileScaleRef | null {
-  return patternModeTileScaleRef(collectMeshScaleSamples(template));
+/** Pattern mode — body/sleeve median; hood/pocket use per-panel scale instead. */
+function resolvePatternModeBodyTileScale(template: HoodieTemplate): number | null {
+  return patternModeUniformTileScale(collectMeshScaleSamples(template));
+}
+
+function patternTileScaleOverrideForLayer(
+  panelKey: HoodiePanelKey | null | undefined,
+  bodyScale: number | null,
+): number | undefined {
+  if (bodyScale == null) return undefined;
+  // Hood/pocket keep native flat/mesh ratio (zip pockets work this way).
+  if (usesPerPanelPatternTileScale(panelKey)) return undefined;
+  return bodyScale;
 }
 
 /** Preview-only placement bump (does not affect print export). */
@@ -1247,7 +1246,6 @@ function renderTiledFlatPanel(
     outputScale?: number;
     meshOverscanCompensation?: boolean;
     mockupToFlatScaleOverride?: number;
-    patternModeScaleRef?: PatternModeTileScaleRef;
   },
 ): HTMLCanvasElement | null {
   const outputScale = opts?.outputScale ?? 1;
@@ -1286,7 +1284,6 @@ function renderTiledFlatPanel(
     outputScale: scale,
     meshOverscanCompensation,
     mockupToFlatScaleOverride: opts?.mockupToFlatScaleOverride,
-    patternModeScaleRef: opts?.patternModeScaleRef,
   });
   const aw = artwork.naturalWidth || artwork.width;
   const ah = artwork.naturalHeight || artwork.height;
@@ -1590,8 +1587,8 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     params.pixelsPerInch ??
     template.realWorldCalibration?.pixelsPerInch ??
     1024 / 24;
-  const patternModeScaleRef =
-    mode === "tile" ? resolvePatternModeTileScaleRef(template) : null;
+  const patternBodyTileScale =
+    mode === "tile" ? resolvePatternModeBodyTileScale(template) : null;
 
   for (const layer of printLayers) {
     const subpaths = svgPathToSubpaths(layer.maskPath);
@@ -1785,7 +1782,10 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
             // One garment-wide scale from chest/back; overscan comp would
             // re-introduce hood/pocket/sleeve size drift in the preview.
             meshOverscanCompensation: false,
-            patternModeScaleRef: patternModeScaleRef ?? undefined,
+            mockupToFlatScaleOverride: patternTileScaleOverrideForLayer(
+              layer.panelKey,
+              patternBodyTileScale,
+            ),
           },
         );
         if (flatTile) {
@@ -2152,31 +2152,21 @@ function solidPanelCanvas(
   return canvas;
 }
 
-function findFrontViewLayer(
-  template: HoodieTemplate,
-  panelKey: HoodiePanelKey,
-): MaskLayer | null {
-  for (const layer of template.views.front?.layers ?? []) {
-    if (layer.visible && !layer.isExclusion && layer.panelKey === panelKey) {
-      return layer;
-    }
-  }
-  return null;
-}
-
 /**
- * Printify blueprint 450 has no `front_pocket` placeholder — bake pocket art
- * into the `front` print file at mockup-calibrated offset before upload.
+ * Pullover kangaroo pocket — mirror zip hoodie: keep `front_pocket` as its own
+ * Printify panel upload. Live bp 450 placeholders include a pocket slot; when
+ * we omit it the mockup server fills that slot with solid bgColor (blank pocket).
+ * When pockets are off, drop the panel so the fill stays garment colour.
  */
 export function finalizePulloverPrintPanelsForPrintify(
   panels: FlatPrintPanelExport[],
   template: HoodieTemplate,
   panelEnabledOverrides?: Partial<Record<string, boolean>>,
-  backgroundColor?: string | null,
+  _backgroundColor?: string | null,
 ): FlatPrintPanelExport[] {
   const pocketsEnabled = panelEnabledOverrides?.front_pocket !== false;
   if (
-    !shouldMergePulloverPocketForPrintify(
+    !shouldExportPulloverPocketAsPrintifyPanel(
       template.blueprintId,
       pocketsEnabled,
       template.hoodieType,
@@ -2184,122 +2174,12 @@ export function finalizePulloverPrintPanelsForPrintify(
   ) {
     return panels.filter((p) => p.panelKey !== "front_pocket");
   }
-
-  const frontIdx = panels.findIndex((p) => p.panelKey === "front");
-  const pocketIdx = panels.findIndex((p) => p.panelKey === "front_pocket");
-  if (frontIdx < 0) {
-    return panels.filter((p) => p.panelKey !== "front_pocket");
-  }
-  if (pocketIdx < 0) {
-    return panels.filter((p) => p.panelKey !== "front_pocket");
-  }
-
-  const frontLayer = findFrontViewLayer(template, "front");
-  const pocketLayer = findFrontViewLayer(template, "front_pocket");
-  if (!frontLayer || !pocketLayer) {
-    return panels.filter((_, i) => i !== pocketIdx);
-  }
-
-  // Match zip pocket_left/right: prefer mesh target bbox (calibration space),
-  // fall back to polygon when the admin has not meshed the pocket yet.
-  const frontBb = layerReferenceBbox(frontLayer);
-  const pocketBb = layerReferenceBbox(pocketLayer);
-  if (!frontBb || !pocketBb) {
-    return panels.filter((p) => p.panelKey !== "front_pocket");
-  }
-
-  const frontEntry = panels[frontIdx];
-  const pocketEntry = panels[pocketIdx];
-
-  const merged = document.createElement("canvas");
-  merged.width = frontEntry.canvas.width;
-  merged.height = frontEntry.canvas.height;
-  const ctx = merged.getContext("2d");
-  if (!ctx) {
-    return panels.filter((_, i) => i !== pocketIdx);
-  }
-
-  const bg = backgroundColor || DEFAULT_GARMENT_BACKGROUND;
-  ctx.drawImage(frontEntry.canvas, 0, 0);
-
-  const pocketPolyBb = layerPolygonBbox(pocketLayer);
-  const pocketSubpaths = svgPathToSubpaths(pocketLayer.maskPath);
-  const mappedSubpaths = pocketSubpaths.map((path) =>
-    path.map((p) => {
-      const [mapped] = mapMockupPointsToHostFlat(
-        [p],
-        frontLayer.mesh,
-        frontBb,
-        merged.width,
-        merged.height,
-      );
-      return (
-        mapped ?? {
-          x: ((p.x - frontBb.x) / Math.max(1, frontBb.width)) * merged.width,
-          y: ((p.y - frontBb.y) / Math.max(1, frontBb.height)) * merged.height,
-        }
-      );
-    }),
+  // Ensure position string matches Printify (and server aliases).
+  return panels.map((p) =>
+    p.panelKey === "front_pocket"
+      ? { ...p, position: hoodiePanelKeyToPrintifyPosition("front_pocket") }
+      : p,
   );
-
-  const clipBb = aabbOf(mappedSubpaths.flat());
-  let dest: PulloverPocketOverlayRect | null = null;
-  if (clipBb && clipBb.width >= 1 && clipBb.height >= 1) {
-    dest = {
-      x: clipBb.x,
-      y: clipBb.y,
-      width: clipBb.width,
-      height: clipBb.height,
-    };
-  } else if (pocketPolyBb) {
-    dest = pocketOverlayRectOnFrontPanel(
-      frontBb,
-      pocketPolyBb,
-      merged.width,
-      merged.height,
-    );
-  }
-  if (
-    !dest ||
-    dest.width < 1 ||
-    dest.height < 1 ||
-    !Number.isFinite(dest.x) ||
-    !Number.isFinite(dest.y)
-  ) {
-    return panels.filter((p) => p.panelKey !== "front_pocket");
-  }
-
-  // Zip hoodie sends a full pocket_left/right flat file to its own Printify
-  // placeholder. Pullover bp 450 has no pocket slot — stretch the pocket flat
-  // panel into the pocket sub-rect on the front canvas (same tile scale).
-  ctx.save();
-  if (clipCanvasToMaskSubpaths(ctx, mappedSubpaths)) {
-    ctx.fillStyle = bg;
-    ctx.fillRect(0, 0, merged.width, merged.height);
-    ctx.drawImage(
-      pocketEntry.canvas,
-      0,
-      0,
-      pocketEntry.canvas.width,
-      pocketEntry.canvas.height,
-      dest.x,
-      dest.y,
-      dest.width,
-      dest.height,
-    );
-  }
-  ctx.restore();
-
-  const next = panels.filter((_, i) => i !== pocketIdx);
-  const newFrontIdx = next.findIndex((p) => p.panelKey === "front");
-  if (newFrontIdx >= 0) {
-    next[newFrontIdx] = {
-      ...next[newFrontIdx],
-      position: "front",
-      canvas: merged,
-    };
-  }
-  return next;
 }
 
 /**
@@ -2339,7 +2219,7 @@ export function renderFlatPrintPanels(
   } = params;
   const bg = backgroundColor || DEFAULT_GARMENT_BACKGROUND;
   if (
-    shouldMergePulloverPocketForPrintify(
+    shouldExportPulloverPocketAsPrintifyPanel(
       template.blueprintId,
       panelEnabledOverrides?.front_pocket !== false,
       template.hoodieType,
@@ -2356,8 +2236,8 @@ export function renderFlatPrintPanels(
     params.pixelsPerInch ??
     template.realWorldCalibration?.pixelsPerInch ??
     1024 / 24;
-  const patternModeScaleRef =
-    mode === "tile" ? resolvePatternModeTileScaleRef(template) : null;
+  const patternBodyTileScale =
+    mode === "tile" ? resolvePatternModeBodyTileScale(template) : null;
   const artworkLongEdge = artwork
     ? Math.max(artwork.naturalWidth || artwork.width, artwork.naturalHeight || artwork.height, 1)
     : 1;
@@ -2425,7 +2305,10 @@ export function renderFlatPrintPanels(
         artCanvas = layer.mesh
           ? renderTiledFlatPanel(layer, artwork, tileSettings, ppi, canvasW, {
               outputScale,
-              patternModeScaleRef: patternModeScaleRef ?? undefined,
+              mockupToFlatScaleOverride: patternTileScaleOverrideForLayer(
+                panelKey,
+                patternBodyTileScale,
+              ),
             })
           : null;
         if (!artCanvas) {
