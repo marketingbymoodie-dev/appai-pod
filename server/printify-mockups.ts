@@ -466,7 +466,13 @@ async function createTemporaryProduct(
           ? resolvePrintifyPanelImageId(pos.position, panelImageIds)
           : undefined;
       if (resolvedPanelId) {
-        useImageId = resolvedPanelId;
+        // Collar strips from the client were sometimes ~160×14 (solid-panel
+        // downscale of a ~11:1 placeholder). Printify ignores those and the
+        // neck rib stays white — prefer the 1024² bgColor solid when present.
+        useImageId =
+          inactivePanelFillImageId && /collar/i.test(pos.position)
+            ? inactivePanelFillImageId
+            : resolvedPanelId;
         // Per-panel images are already correctly sized for the panel.
         // Printify scale uses 0-2 range where 1 = 100%. Using scale=1
         // so the image fills the panel at its native resolution.

@@ -2104,8 +2104,12 @@ const PRINT_PANEL_MAX_LONG_EDGE_PX = 4800;
 /** Lighter panels for Printify mockup API — full-res print files are 10–40× larger. */
 export const MOCKUP_PANEL_MAX_LONG_EDGE_PX = 1800;
 /** Solid background-only panels compress to almost nothing; Printify scales
- *  the image to the placeholder, so a small aspect-correct fill is enough. */
-const SOLID_PRINT_PANEL_LONG_EDGE_PX = 160;
+ *  the image to the placeholder, so a modest aspect-correct fill is enough.
+ *  Keep this large enough that wide strips (collar ~11:1) retain a usable
+ *  short edge — sub-~64px heights are ignored and leave white trim. */
+const SOLID_PRINT_PANEL_LONG_EDGE_PX = 1024;
+/** Minimum short-edge px after scaling solid fills (collar / waistband strips). */
+const SOLID_PRINT_PANEL_MIN_SHORT_EDGE_PX = 128;
 
 export type FlatPrintPanelExport = {
   /** Printify placeholder position (e.g. `front_left`, `left_cuff_panel`). */
@@ -2187,10 +2191,18 @@ function solidPanelCanvas(
   fill: string,
 ): HTMLCanvasElement | null {
   const long = Math.max(dims.width, dims.height, 1);
-  const s = SOLID_PRINT_PANEL_LONG_EDGE_PX / long;
+  let s = SOLID_PRINT_PANEL_LONG_EDGE_PX / long;
+  let width = Math.max(1, Math.round(dims.width * s));
+  let height = Math.max(1, Math.round(dims.height * s));
+  const short = Math.min(width, height);
+  if (short < SOLID_PRINT_PANEL_MIN_SHORT_EDGE_PX) {
+    const boost = SOLID_PRINT_PANEL_MIN_SHORT_EDGE_PX / short;
+    width = Math.max(1, Math.round(width * boost));
+    height = Math.max(1, Math.round(height * boost));
+  }
   const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(dims.width * s));
-  canvas.height = Math.max(1, Math.round(dims.height * s));
+  canvas.width = width;
+  canvas.height = height;
   const ctx = canvas.getContext("2d");
   if (!ctx) return null;
   ctx.fillStyle = fill;
@@ -2246,16 +2258,9 @@ export function finalizeSweatshirtPrintPanelsForPrintify(
       p.panelKey !== "collar_front" &&
       p.panelKey !== "collar_back",
   );
-  const existing = panels.find(
-    (p) =>
-      p.position === "collar" ||
-      p.panelKey === "collar_front" ||
-      p.panelKey === "collar_back",
-  );
-  const dims = existing
-    ? { width: existing.canvas.width, height: existing.canvas.height }
-    : { ...SWEATSHIRT_COLLAR_PRINT_DIMS };
-  const solid = solidPanelCanvas(dims, bg);
+  // Always size from the live Printify collar aspect — never reuse a prior
+  // tiny solid canvas (those were ignored and left the neck rib white).
+  const solid = solidPanelCanvas({ ...SWEATSHIRT_COLLAR_PRINT_DIMS }, bg);
   if (!solid) return withoutCollar;
   return [
     ...withoutCollar,
