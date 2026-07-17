@@ -9,6 +9,7 @@ Per-product **signed-off** pins on `production`. Each entry records the commit (
 | Product | Blueprint | Signed off | Pin commit | Doc |
 |---------|-----------|------------|------------|-----|
 | Zip hoodie | 451 | 2026-07-17 | `aabd9b6` | [zip-hoodie-bp451.md](./zip-hoodie-bp451.md) |
+| Pullover hoodie | 450 | 2026-07-17 | `e636838` | [pullover-hoodie-bp450.md](./pullover-hoodie-bp450.md) |
 
 *Add a row when a product gets merchant sign-off.*
 
