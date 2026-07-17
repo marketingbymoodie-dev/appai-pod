@@ -48,10 +48,11 @@ import type {
   TileSettings,
 } from "@shared/hoodieTemplate";
 import {
-  BOMBER_BACK_SLEEVES_PREVIEW_PLACEMENT_SCALE,
+  BOMBER_BACK_PREVIEW_PLACEMENT_SCALE,
   BOMBER_FRONT_BODY_ASPECT_X_SCALE,
   BOMBER_FRONT_BODY_OFFSET_Y_FRAC,
   BOMBER_FRONT_BODY_PLACEMENT_SCALE,
+  BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE,
   drawMockupImageInCanvas,
   findGroupForPanel,
   isBomberJacketBlueprint,
@@ -1304,12 +1305,19 @@ function applyFrontBodyPreviewPlacementScale(
     return;
   }
   if (isBomberJacketBlueprint(template.blueprintId)) {
-    for (const groupId of ["back-body", "left-sleeve", "right-sleeve"] as const) {
+    const back = rects.get("back-body");
+    if (back) {
+      rects.set(
+        "back-body",
+        scaleDesignRectEffective(back, BOMBER_BACK_PREVIEW_PLACEMENT_SCALE),
+      );
+    }
+    for (const groupId of ["left-sleeve", "right-sleeve"] as const) {
       const info = rects.get(groupId);
       if (info) {
         rects.set(
           groupId,
-          scaleDesignRectEffective(info, BOMBER_BACK_SLEEVES_PREVIEW_PLACEMENT_SCALE),
+          scaleDesignRectEffective(info, BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE),
         );
       }
     }

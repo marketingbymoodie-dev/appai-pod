@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-  BOMBER_BACK_SLEEVES_PREVIEW_PLACEMENT_SCALE,
+  BOMBER_BACK_PREVIEW_PLACEMENT_SCALE,
   BOMBER_FRONT_BODY_ASPECT_X_SCALE,
   BOMBER_FRONT_BODY_OFFSET_Y_FRAC,
   BOMBER_FRONT_BODY_PLACEMENT_SCALE,
   BOMBER_JACKET_BLUEPRINT_ID,
+  BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE,
   PULOVER_HOODIE_BLUEPRINT_ID,
   SWEATSHIRT_BLUEPRINT_ID,
   ZIP_HOODIE_BLUEPRINT_ID,
@@ -413,10 +414,11 @@ describe("bomber jacket blueprint", () => {
     expect(isBomberJacketBlueprint(433)).toBe(true);
     expect(isBomberJacketBlueprint(451)).toBe(false);
     expect(defaultHoodieTypeForBlueprint(433)).toBe("bomber-jacket-aop");
-    expect(BOMBER_FRONT_BODY_ASPECT_X_SCALE).toBe(1.12);
-    expect(BOMBER_FRONT_BODY_PLACEMENT_SCALE).toBe(1.08);
-    expect(BOMBER_FRONT_BODY_OFFSET_Y_FRAC).toBe(-0.04);
-    expect(BOMBER_BACK_SLEEVES_PREVIEW_PLACEMENT_SCALE).toBe(1.1);
+    expect(BOMBER_FRONT_BODY_ASPECT_X_SCALE).toBe(1.28);
+    expect(BOMBER_FRONT_BODY_PLACEMENT_SCALE).toBe(1.18);
+    expect(BOMBER_FRONT_BODY_OFFSET_Y_FRAC).toBe(-0.09);
+    expect(BOMBER_BACK_PREVIEW_PLACEMENT_SCALE).toBe(1.1);
+    expect(BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE).toBe(1.21);
     const eligible = panelsEligibleForView("front", BOMBER_JACKET_BLUEPRINT_ID);
     expect(eligible).not.toContain("front");
     expect(eligible).toContain("front_left");
