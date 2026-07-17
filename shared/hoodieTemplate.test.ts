@@ -23,12 +23,14 @@ import {
   resolvePrintFileLayout,
   resolveGarmentLayout,
   usesJumperNoHoodGarmentUi,
+  shouldForceSolidSweatshirtCollar,
   isPillowWrapBlueprint,
   isPillowWrapTemplate,
   migrateSweatshirtDesignGroups,
   mockupDrawRect,
   normalizeHoodieTemplate,
   panelsEligibleForView,
+  SWEATSHIRT_FRONT_BODY_PREVIEW_PLACEMENT_SCALE,
   SWEATSHIRT_TRIM_PANEL_KEYS,
   mergeFrontBodyPanelPlacementBias,
   mergePanelPlacementBiasPercent,
@@ -405,6 +407,30 @@ describe("hoodiePanelKeyToPrintifyPosition", () => {
     expect(hoodiePanelKeyToPrintifyPosition("collar_front")).toBe("collar");
     expect(hoodiePanelKeyToPrintifyPosition("collar_back")).toBe("collar");
     expect(hoodiePanelKeyToPrintifyPosition("front")).toBe("front");
+  });
+
+  it("forces solid collar fill for sweatshirt / jumper-no-hood", () => {
+    expect(SWEATSHIRT_FRONT_BODY_PREVIEW_PLACEMENT_SCALE).toBe(1.05);
+    expect(
+      shouldForceSolidSweatshirtCollar({
+        blueprintId: SWEATSHIRT_BLUEPRINT_ID,
+        placerEditor: "hoodie",
+      }),
+    ).toBe(true);
+    expect(
+      shouldForceSolidSweatshirtCollar({
+        blueprintId: ZIP_HOODIE_BLUEPRINT_ID,
+        garmentLayout: "jumper-no-hood",
+        placerEditor: "hoodie",
+      }),
+    ).toBe(true);
+    expect(
+      shouldForceSolidSweatshirtCollar({
+        blueprintId: ZIP_HOODIE_BLUEPRINT_ID,
+        garmentLayout: "hoodie",
+        placerEditor: "hoodie",
+      }),
+    ).toBe(false);
   });
 
   it("maps pullover kangaroo front_pocket to Printify pocket", () => {

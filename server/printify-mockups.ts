@@ -1146,23 +1146,25 @@ export async function generatePrintifyMockup(
 
     // Merge the DB's placeholderPositions list with Printify's actual variant
     // placeholders. The DB list can be incomplete (e.g. zip hoodie missing
-    // waistband_external / *_cuff_external / inner hood positions), and any
-    // placeholder we don't include in print_areas[].placeholders renders the
-    // default white garment template — which is what produces the visible
-    // white bands. Discovering the live list and filling the missing ones with
-    // the bgColor solid PNG closes that gap.
+    // waistband_external / *_cuff_external / inner hood positions, sweatshirt
+    // missing collar), and any placeholder we don't include in
+    // print_areas[].placeholders renders the default white garment template —
+    // which is what produces the visible white bands. Discovering the live
+    // list and filling the missing ones with the bgColor solid PNG closes that
+    // gap. Also merge any position the client already uploaded (e.g. solid
+    // collar) so panelUrls aren't dropped when the DB list is incomplete.
     let effectiveAopPositions = request.aopPositions;
-    if (isAop && inactivePanelFillImageId) {
+    if (isAop && (inactivePanelFillImageId || panelImageIds.size > 0)) {
       const discovered = await getBlueprintVariantPlaceholders(
         blueprintId,
         providerId,
         variantId,
         printifyApiToken,
       );
+      const seen = new Set((request.aopPositions ?? []).map((p) => p.position));
+      const merged = [...(request.aopPositions ?? [])];
+      const added: string[] = [];
       if (discovered && discovered.length > 0) {
-        const seen = new Set((request.aopPositions ?? []).map((p) => p.position));
-        const merged = [...(request.aopPositions ?? [])];
-        const added: string[] = [];
         for (const p of discovered) {
           if (!seen.has(p.position)) {
             merged.push(p);
@@ -1170,13 +1172,25 @@ export async function generatePrintifyMockup(
             added.push(p.position);
           }
         }
-        if (added.length > 0) {
-          console.log(
-            `[Printify AOP] Augmented aopPositions with ${added.length} blueprint-only placeholder(s): ${added.join(", ")}`,
-          );
-        }
-        effectiveAopPositions = merged;
       }
+      for (const position of panelImageIds.keys()) {
+        if (!seen.has(position)) {
+          const ref = panelImageRefs.get(position);
+          merged.push({
+            position,
+            width: ref?.width ?? 0,
+            height: ref?.height ?? 0,
+          });
+          seen.add(position);
+          added.push(position);
+        }
+      }
+      if (added.length > 0) {
+        console.log(
+          `[Printify AOP] Augmented aopPositions with ${added.length} placeholder(s): ${added.join(", ")}`,
+        );
+      }
+      effectiveAopPositions = merged;
     }
 
     let effectivePrintPlacement = printPlacement ?? (doubleSided ? "both" : "front");

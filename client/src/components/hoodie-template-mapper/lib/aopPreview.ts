@@ -51,12 +51,16 @@ import {
   drawMockupImageInCanvas,
   findGroupForPanel,
   isPulloverHoodieBlueprint,
+  isSweatshirtBlueprint,
   migrateFrontPocketOutOfTrimGroup,
   PULOVER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE,
   PULOVER_FRONT_BODY_PRINT_ARTWORK_SCALE,
   resolveFrontBodyPanelBias,
   hoodiePanelKeyToPrintifyPosition,
+  shouldForceSolidSweatshirtCollar,
   shouldRenderKangarooPocketArtwork,
+  SWEATSHIRT_COLLAR_PRINT_DIMS,
+  SWEATSHIRT_FRONT_BODY_PREVIEW_PLACEMENT_SCALE,
   layerRenderPriority,
   mockupDrawRect,
   SEAM_PAIR_PANELS,
@@ -1228,22 +1232,24 @@ function scaleDesignRectEffective(info: DesignRectInfo, factor: number): DesignR
   };
 }
 
-function applyPulloverFrontBodyPreviewPlacementScale(
+/** Preview-only front-body placement bump (does not affect print export). */
+function applyFrontBodyPreviewPlacementScale(
   template: HoodieTemplate,
   rects: Map<string, DesignRectInfo>,
 ): void {
+  let factor = 1;
   if (
-    !isPulloverHoodieBlueprint(template.blueprintId) &&
-    template.hoodieType !== "pullover-hoodie-aop"
+    isPulloverHoodieBlueprint(template.blueprintId) ||
+    template.hoodieType === "pullover-hoodie-aop"
   ) {
-    return;
+    factor = PULOVER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE;
+  } else if (isSweatshirtBlueprint(template.blueprintId)) {
+    factor = SWEATSHIRT_FRONT_BODY_PREVIEW_PLACEMENT_SCALE;
   }
+  if (factor === 1) return;
   const fb = rects.get("front-body");
   if (fb) {
-    rects.set(
-      "front-body",
-      scaleDesignRectEffective(fb, PULOVER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE),
-    );
+    rects.set("front-body", scaleDesignRectEffective(fb, factor));
   }
 }
 
@@ -1571,7 +1577,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
           legacyPlacement: artworkPlacement,
         })
       : new Map<string, DesignRectInfo>();
-  applyPulloverFrontBodyPreviewPlacementScale(template, groupRects);
+  applyFrontBodyPreviewPlacementScale(template, groupRects);
   // Helper: which design rect should this layer sample from?
   const rectForLayer = (layer: MaskLayer): DesignRectInfo | null => {
     const group = findGroupForPanel(template.designGroups, layer.panelKey);
@@ -1598,7 +1604,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
                 enabledOverrides: params.groupEnabledOverrides,
                 legacyPlacement: artworkPlacement,
               });
-              applyPulloverFrontBodyPreviewPlacementScale(template, rects);
+              applyFrontBodyPreviewPlacementScale(template, rects);
               return rects;
             })()
           : new Map<string, DesignRectInfo>();
@@ -2223,6 +2229,45 @@ export function finalizePulloverPrintPanelsForPrintify(
 }
 
 /**
+ * Sweatshirt collar is often missing from the mesh template (or muted without
+ * dims). Printify still has a `collar` placeholder — without a solid bg upload
+ * the neck rib stays white on mockups and orders. Always force a cream/bg fill.
+ */
+export function finalizeSweatshirtPrintPanelsForPrintify(
+  panels: FlatPrintPanelExport[],
+  template: HoodieTemplate,
+  backgroundColor?: string | null,
+): FlatPrintPanelExport[] {
+  if (!shouldForceSolidSweatshirtCollar(template)) return panels;
+  const bg = backgroundColor || DEFAULT_GARMENT_BACKGROUND;
+  const withoutCollar = panels.filter(
+    (p) =>
+      p.position !== "collar" &&
+      p.panelKey !== "collar_front" &&
+      p.panelKey !== "collar_back",
+  );
+  const existing = panels.find(
+    (p) =>
+      p.position === "collar" ||
+      p.panelKey === "collar_front" ||
+      p.panelKey === "collar_back",
+  );
+  const dims = existing
+    ? { width: existing.canvas.width, height: existing.canvas.height }
+    : { ...SWEATSHIRT_COLLAR_PRINT_DIMS };
+  const solid = solidPanelCanvas(dims, bg);
+  if (!solid) return withoutCollar;
+  return [
+    ...withoutCollar,
+    {
+      position: "collar",
+      panelKey: "collar_front",
+      canvas: solid,
+    },
+  ];
+}
+
+/**
  * Export the flat per-panel print files for a template + customer state —
  * the "Phase 5 production export" counterpart of `renderAopPreview`. These
  * are the images submitted to Printify order `print_areas` (one per
@@ -2463,10 +2508,15 @@ export function renderFlatPrintPanels(
     out.push({ position, panelKey, canvas: panel });
   }
 
-  const merged = finalizePulloverPrintPanelsForPrintify(
+  const afterPullover = finalizePulloverPrintPanelsForPrintify(
     out,
     template,
     panelEnabledOverrides,
+    backgroundColor,
+  );
+  const merged = finalizeSweatshirtPrintPanelsForPrintify(
+    afterPullover,
+    template,
     backgroundColor,
   );
   return merged.map((p) => ({

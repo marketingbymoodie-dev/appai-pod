@@ -43,6 +43,16 @@ export const PULOVER_FRONT_BODY_PRINT_ARTWORK_SCALE = 0.8835;
 export const ZIP_HOODIE_BLUEPRINT_ID = 451;
 /** Printify blueprint 449 (unisex sweatshirt AOP) — collar + cuffs, no hood. */
 export const SWEATSHIRT_BLUEPRINT_ID = 449;
+/**
+ * Preview-only: sweatshirt front chest placement renders ~5% larger so the
+ * in-app mockup matches Printify (print export scale stays 1.0).
+ */
+export const SWEATSHIRT_FRONT_BODY_PREVIEW_PLACEMENT_SCALE = 1.05;
+/**
+ * Typical live Printify bp 449 `collar` placeholder aspect (wide rib strip).
+ * Used when the template has no collar mesh/mask to size a solid bg fill.
+ */
+export const SWEATSHIRT_COLLAR_PRINT_DIMS = { width: 3769, height: 338 } as const;
 /** Printify blueprint 220 (spun polyester pillow wrap AOP) — two faces, wide print canvas. */
 export const PILLOW_WRAP_BLUEPRINT_ID = 220;
 /** Printify blueprint 223 (faux suede square pillow AOP) — same two-face wrap layout as bp 220. */
@@ -994,6 +1004,18 @@ export function usesJumperNoHoodGarmentUi(
 ): boolean {
   if (!template) return false;
   if (resolvePlacerEditor(template) !== "hoodie") return false;
+  return resolveGarmentLayout(template) === "jumper-no-hood";
+}
+
+/**
+ * Sweatshirt / jumper-no-hood: customer never prints artwork on the neck rib —
+ * Printify's `collar` placeholder must always get a solid garment bg fill.
+ */
+export function shouldForceSolidSweatshirtCollar(
+  template: GarmentLayoutTemplateLike | null | undefined,
+): boolean {
+  if (!template) return false;
+  if (isSweatshirtBlueprint(template.blueprintId)) return true;
   return resolveGarmentLayout(template) === "jumper-no-hood";
 }
 
