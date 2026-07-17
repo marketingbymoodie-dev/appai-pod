@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useEffect, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/hooks/use-auth";
 import { useQuery } from "@tanstack/react-query";
@@ -18,6 +18,7 @@ import {
   SidebarTrigger,
   SidebarHeader,
   SidebarFooter,
+  SidebarInset,
 } from "@/components/ui/sidebar";
 import { 
   Settings, 
@@ -67,10 +68,33 @@ const customerLinks = [
   { title: "My Orders", url: "/orders", icon: ShoppingCart },
 ];
 
+/** Routes where the customizer / gallery needs max desktop width. */
+const WIDE_CONTENT_PREFIXES = [
+  "/admin/create-product",
+  "/admin/design-studio",
+  "/designs",
+  "/my-designs",
+] as const;
+
+function prefersCollapsedSidebar(path: string): boolean {
+  const bare = path.split("?")[0] || path;
+  return WIDE_CONTENT_PREFIXES.some(
+    (prefix) => bare === prefix || bare.startsWith(`${prefix}/`),
+  );
+}
+
 export default function AdminLayout({ children }: AdminLayoutProps) {
   const { isAuthenticated, isLoading: authLoading, user, logout } = useAuth();
   const [location] = useLocation();
   const embedded = isShopifyEmbedded();
+  const wideContent = prefersCollapsedSidebar(location);
+  const [sidebarOpen, setSidebarOpen] = useState(() => !prefersCollapsedSidebar(location));
+
+  // Generator Tester + My Designs / Design Studio: collapse for canvas space.
+  // Other admin pages: expand again so navigation stays obvious.
+  useEffect(() => {
+    setSidebarOpen(!wideContent);
+  }, [wideContent]);
 
   // In embedded Shopify Admin the Shopify JWT is the auth — enable regardless of app-level auth
   const { data: merchant, isLoading: merchantLoading } = useQuery<Merchant>({
@@ -116,26 +140,53 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
   };
 
   return (
-    <SidebarProvider style={style as React.CSSProperties}>
-      <div className="flex h-screen w-full">
-        <Sidebar>
-          <SidebarHeader className="border-b px-4 py-3">
-            <div className="flex items-center gap-2">
-              <Store className="h-5 w-5 text-primary" />
-              <span className="font-semibold text-sm">AI Art Studio</span>
-            </div>
-            <span className="text-xs text-muted-foreground mt-1">
-              Merchant Portal
-            </span>
-          </SidebarHeader>
-          <SidebarContent>
+    <SidebarProvider
+      style={style as React.CSSProperties}
+      open={sidebarOpen}
+      onOpenChange={setSidebarOpen}
+      defaultOpen={!wideContent}
+      className="h-svh"
+    >
+      <Sidebar collapsible="offcanvas">
+        <SidebarHeader className="border-b px-4 py-3">
+          <div className="flex items-center gap-2">
+            <Store className="h-5 w-5 text-primary" />
+            <span className="font-semibold text-sm">AI Art Studio</span>
+          </div>
+          <span className="text-xs text-muted-foreground mt-1">
+            Merchant Portal
+          </span>
+        </SidebarHeader>
+        <SidebarContent>
+          <SidebarGroup>
+            <SidebarGroupLabel>Menu</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {menuItems.map((item) => {
+                  const isActive = location === item.url ||
+                    (item.url !== "/admin" && location.startsWith(item.url));
+                  return (
+                    <SidebarMenuItem key={item.title}>
+                      <SidebarMenuButton asChild data-active={isActive}>
+                        <Link href={item.url} onClick={() => handleNavClick(item.url)}>
+                          <item.icon className="h-4 w-4" />
+                          <span>{item.title}</span>
+                        </Link>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  );
+                })}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+          {platformStatus?.isPlatformAdmin && (
             <SidebarGroup>
-              <SidebarGroupLabel>Menu</SidebarGroupLabel>
+              <SidebarGroupLabel>Platform (operator)</SidebarGroupLabel>
               <SidebarGroupContent>
                 <SidebarMenu>
-                  {menuItems.map((item) => {
-                    const isActive = location === item.url || 
-                      (item.url !== "/admin" && location.startsWith(item.url));
+                  {platformMenuItems.map((item) => {
+                    const isActive =
+                      location === item.url || location.startsWith(item.url);
                     return (
                       <SidebarMenuItem key={item.title}>
                         <SidebarMenuButton asChild data-active={isActive}>
@@ -150,120 +201,101 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
                 </SidebarMenu>
               </SidebarGroupContent>
             </SidebarGroup>
-            {platformStatus?.isPlatformAdmin && (
-              <SidebarGroup>
-                <SidebarGroupLabel>Platform (operator)</SidebarGroupLabel>
-                <SidebarGroupContent>
-                  <SidebarMenu>
-                    {platformMenuItems.map((item) => {
-                      const isActive =
-                        location === item.url || location.startsWith(item.url);
-                      return (
-                        <SidebarMenuItem key={item.title}>
-                          <SidebarMenuButton asChild data-active={isActive}>
-                            <Link href={item.url} onClick={() => handleNavClick(item.url)}>
-                              <item.icon className="h-4 w-4" />
-                              <span>{item.title}</span>
-                            </Link>
-                          </SidebarMenuButton>
-                        </SidebarMenuItem>
-                      );
-                    })}
-                  </SidebarMenu>
-                </SidebarGroupContent>
-              </SidebarGroup>
-            )}
-            {import.meta.env.DEV && (
-              <SidebarGroup>
-                <SidebarGroupLabel>Dev tools</SidebarGroupLabel>
-                <SidebarGroupContent>
-                  <SidebarMenu>
-                    <SidebarMenuItem>
-                      <SidebarMenuButton asChild data-active={location.startsWith("/admin/aop-calibration-mapper")}>
-                        <Link href="/admin/aop-calibration-mapper" onClick={() => handleNavClick("/admin/aop-calibration-mapper")}>
-                          <Crosshair className="h-4 w-4" />
-                          <span>AOP Calibration Mapper</span>
-                        </Link>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  </SidebarMenu>
-                </SidebarGroupContent>
-              </SidebarGroup>
-            )}
-            {customizerPagesData?.pages && customizerPagesData.pages.length > 0 && (
-              <SidebarGroup>
-                <SidebarGroupLabel>Customizer Pages</SidebarGroupLabel>
-                <SidebarGroupContent>
-                  <SidebarMenu>
-                    {customizerPagesData.pages.map((page) => {
-                      const pageUrl = `/admin/customizer-pages`;
-                      const isActive = location === pageUrl;
-                      return (
-                        <SidebarMenuItem key={page.id}>
-                          <SidebarMenuButton asChild data-active={isActive}>
-                            <Link href={pageUrl} onClick={() => handleNavClick(pageUrl)}>
-                              <Globe className="h-4 w-4" />
-                              <span>{page.title}</span>
-                            </Link>
-                          </SidebarMenuButton>
-                        </SidebarMenuItem>
-                      );
-                    })}
-                  </SidebarMenu>
-                </SidebarGroupContent>
-              </SidebarGroup>
-            )}
+          )}
+          {import.meta.env.DEV && (
             <SidebarGroup>
-              <SidebarGroupLabel>Customer Pages</SidebarGroupLabel>
+              <SidebarGroupLabel>Dev tools</SidebarGroupLabel>
               <SidebarGroupContent>
                 <SidebarMenu>
-                  {customerLinks.map((item) => (
-                    <SidebarMenuItem key={item.title}>
-                      <SidebarMenuButton asChild>
-                        <Link href={item.url}>
-                          <item.icon className="h-4 w-4" />
-                          <span>{item.title}</span>
-                        </Link>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  ))}
+                  <SidebarMenuItem>
+                    <SidebarMenuButton asChild data-active={location.startsWith("/admin/aop-calibration-mapper")}>
+                      <Link href="/admin/aop-calibration-mapper" onClick={() => handleNavClick("/admin/aop-calibration-mapper")}>
+                        <Crosshair className="h-4 w-4" />
+                        <span>AOP Calibration Mapper</span>
+                      </Link>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
                 </SidebarMenu>
               </SidebarGroupContent>
             </SidebarGroup>
-          </SidebarContent>
-          <SidebarFooter className="border-t p-4">
-            <div className="flex flex-col gap-2">
-              <div className="text-sm text-muted-foreground">
-                {user?.firstName || user?.email}
-              </div>
-              <Button 
-                variant="ghost" 
-                size="sm" 
-                onClick={() => logout()}
-                className="justify-start"
-                data-testid="button-logout"
-              >
-                <LogOut className="h-4 w-4 mr-2" />
-                Logout
-              </Button>
+          )}
+          {customizerPagesData?.pages && customizerPagesData.pages.length > 0 && (
+            <SidebarGroup>
+              <SidebarGroupLabel>Customizer Pages</SidebarGroupLabel>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  {customizerPagesData.pages.map((page) => {
+                    const pageUrl = `/admin/customizer-pages`;
+                    const isActive = location === pageUrl;
+                    return (
+                      <SidebarMenuItem key={page.id}>
+                        <SidebarMenuButton asChild data-active={isActive}>
+                          <Link href={pageUrl} onClick={() => handleNavClick(pageUrl)}>
+                            <Globe className="h-4 w-4" />
+                            <span>{page.title}</span>
+                          </Link>
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                    );
+                  })}
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+          )}
+          <SidebarGroup>
+            <SidebarGroupLabel>Customer Pages</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {customerLinks.map((item) => (
+                  <SidebarMenuItem key={item.title}>
+                    <SidebarMenuButton asChild>
+                      <Link href={item.url}>
+                        <item.icon className="h-4 w-4" />
+                        <span>{item.title}</span>
+                      </Link>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        </SidebarContent>
+        <SidebarFooter className="border-t p-4">
+          <div className="flex flex-col gap-2">
+            <div className="text-sm text-muted-foreground">
+              {user?.firstName || user?.email}
             </div>
-          </SidebarFooter>
-        </Sidebar>
-        <div className="flex flex-col flex-1 overflow-hidden">
-          <header className="flex items-center gap-4 border-b px-4 py-3 bg-background">
-            <SidebarTrigger data-testid="button-sidebar-toggle" />
-            <div className="flex-1" />
-            {merchant?.storeName && (
-              <span className="text-sm text-muted-foreground">
-                {merchant.storeName}
-              </span>
-            )}
-          </header>
-          <main className="flex-1 overflow-auto p-6">
-            {children}
-          </main>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => logout()}
+              className="justify-start"
+              data-testid="button-logout"
+            >
+              <LogOut className="h-4 w-4 mr-2" />
+              Logout
+            </Button>
+          </div>
+        </SidebarFooter>
+      </Sidebar>
+      <SidebarInset className="overflow-hidden">
+        <header className="flex items-center gap-4 border-b px-4 py-3 bg-background shrink-0">
+          <SidebarTrigger
+            data-testid="button-sidebar-toggle"
+            title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
+            aria-label={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
+          />
+          <div className="flex-1" />
+          {merchant?.storeName && (
+            <span className="text-sm text-muted-foreground">
+              {merchant.storeName}
+            </span>
+          )}
+        </header>
+        <div className={`flex-1 overflow-auto ${wideContent ? "p-3 md:p-4" : "p-6"}`}>
+          {children}
         </div>
-      </div>
+      </SidebarInset>
 
       {/* Dev-only debug banner — remove or disable in production */}
       {import.meta.env.DEV && (
