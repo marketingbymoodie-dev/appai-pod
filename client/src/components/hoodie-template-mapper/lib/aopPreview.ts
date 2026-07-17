@@ -48,8 +48,13 @@ import type {
   TileSettings,
 } from "@shared/hoodieTemplate";
 import {
+  BOMBER_BACK_SLEEVES_PREVIEW_PLACEMENT_SCALE,
+  BOMBER_FRONT_BODY_ASPECT_X_SCALE,
+  BOMBER_FRONT_BODY_OFFSET_Y_FRAC,
+  BOMBER_FRONT_BODY_PLACEMENT_SCALE,
   drawMockupImageInCanvas,
   findGroupForPanel,
+  isBomberJacketBlueprint,
   isPulloverHoodieBlueprint,
   isSweatshirtBlueprint,
   migrateFrontPocketOutOfTrimGroup,
@@ -1223,7 +1228,7 @@ function resolveLayerSourceRect(
   return null;
 }
 
-/** Preview-only placement bump (does not affect print export). */
+/** Scale effective rect about its center (preview and/or print, depending on caller). */
 function scaleDesignRectEffective(info: DesignRectInfo, factor: number): DesignRectInfo {
   if (factor === 1) return info;
   const cx = info.effective.x + info.effective.width / 2;
@@ -1234,6 +1239,50 @@ function scaleDesignRectEffective(info: DesignRectInfo, factor: number): DesignR
     ...info,
     effective: { x: cx - w / 2, y: cy - h / 2, width: w, height: h },
   };
+}
+
+/** Widen effective rect on X only (about center) — un-stretches split-front panels. */
+function scaleDesignRectEffectiveX(info: DesignRectInfo, factor: number): DesignRectInfo {
+  if (factor === 1) return info;
+  const cx = info.effective.x + info.effective.width / 2;
+  const w = info.effective.width * factor;
+  return {
+    ...info,
+    effective: {
+      ...info.effective,
+      x: cx - w / 2,
+      width: w,
+    },
+  };
+}
+
+/** Shift effective rect vertically by a fraction of its height. */
+function offsetDesignRectEffectiveY(info: DesignRectInfo, yFrac: number): DesignRectInfo {
+  if (yFrac === 0) return info;
+  return {
+    ...info,
+    effective: {
+      ...info.effective,
+      y: info.effective.y + info.effective.height * yFrac,
+    },
+  };
+}
+
+/**
+ * Bomber front-body (preview + print): widen aspect to un-stretch X, enlarge for
+ * shoulder coverage, then nudge up (~1–2" on mockup).
+ */
+function applyBomberFrontBodyPlacement(
+  template: HoodieTemplate,
+  rects: Map<string, DesignRectInfo>,
+): void {
+  if (!isBomberJacketBlueprint(template.blueprintId)) return;
+  const fb = rects.get("front-body");
+  if (!fb) return;
+  let next = scaleDesignRectEffectiveX(fb, BOMBER_FRONT_BODY_ASPECT_X_SCALE);
+  next = scaleDesignRectEffective(next, BOMBER_FRONT_BODY_PLACEMENT_SCALE);
+  next = offsetDesignRectEffectiveY(next, BOMBER_FRONT_BODY_OFFSET_Y_FRAC);
+  rects.set("front-body", next);
 }
 
 /** Preview-only body placement bump (does not affect print export). */
@@ -1251,6 +1300,18 @@ function applyFrontBodyPreviewPlacementScale(
         "front-body",
         scaleDesignRectEffective(fb, PULOVER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE),
       );
+    }
+    return;
+  }
+  if (isBomberJacketBlueprint(template.blueprintId)) {
+    for (const groupId of ["back-body", "left-sleeve", "right-sleeve"] as const) {
+      const info = rects.get(groupId);
+      if (info) {
+        rects.set(
+          groupId,
+          scaleDesignRectEffective(info, BOMBER_BACK_SLEEVES_PREVIEW_PLACEMENT_SCALE),
+        );
+      }
     }
     return;
   }
@@ -1625,6 +1686,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
           legacyPlacement: artworkPlacement,
         })
       : new Map<string, DesignRectInfo>();
+  applyBomberFrontBodyPlacement(template, groupRects);
   applyFrontBodyPreviewPlacementScale(template, groupRects);
   // Helper: which design rect should this layer sample from?
   const rectForLayer = (layer: MaskLayer): DesignRectInfo | null => {
@@ -1652,6 +1714,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
                 enabledOverrides: params.groupEnabledOverrides,
                 legacyPlacement: artworkPlacement,
               });
+              applyBomberFrontBodyPlacement(template, rects);
               applyFrontBodyPreviewPlacementScale(template, rects);
               return rects;
             })()
@@ -2400,14 +2463,13 @@ export function renderFlatPrintPanels(
   const rectsByView = new Map<HoodieView, Map<string, DesignRectInfo>>();
   if (mode === "single-sheet") {
     for (const view of ["front", "back"] as HoodieView[]) {
-      rectsByView.set(
-        view,
-        computeGroupRects(template, view, artwork, {
-          placementOverrides: groupPlacementOverrides,
-          seamOverrides: groupSeamOverrides,
-          enabledOverrides: groupEnabledOverrides,
-        }),
-      );
+      const rects = computeGroupRects(template, view, artwork, {
+        placementOverrides: groupPlacementOverrides,
+        seamOverrides: groupSeamOverrides,
+        enabledOverrides: groupEnabledOverrides,
+      });
+      applyBomberFrontBodyPlacement(template, rects);
+      rectsByView.set(view, rects);
     }
   }
 

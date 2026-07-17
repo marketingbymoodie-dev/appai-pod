@@ -41,6 +41,25 @@ export const PULOVER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE = 1.05;
 export const PULOVER_FRONT_BODY_PRINT_ARTWORK_SCALE = 0.8835;
 /** Printify blueprint 451 (zip) — split front_left / front_right placeholders. */
 export const ZIP_HOODIE_BLUEPRINT_ID = 451;
+/** Printify blueprint 433 (men's bomber jacket AOP) — zip-style split fronts. */
+export const BOMBER_JACKET_BLUEPRINT_ID = 433;
+/**
+ * Place-on-item (preview + print): widen bomber front-body design rect so each
+ * half samples less artwork width — un-stretches X on front_left / front_right.
+ */
+export const BOMBER_FRONT_BODY_ASPECT_X_SCALE = 1.12;
+/** Place-on-item (preview + print): enlarge bomber front art for shoulder coverage. */
+export const BOMBER_FRONT_BODY_PLACEMENT_SCALE = 1.08;
+/**
+ * Place-on-item (preview + print): shift bomber front-body rect up as a fraction
+ * of rect height (~1–2" on mockup).
+ */
+export const BOMBER_FRONT_BODY_OFFSET_Y_FRAC = -0.04;
+/**
+ * Preview-only: bomber back + sleeves render ~10% larger to match Printify
+ * (print export stays 1.0).
+ */
+export const BOMBER_BACK_SLEEVES_PREVIEW_PLACEMENT_SCALE = 1.1;
 /** Printify blueprint 449 (unisex sweatshirt AOP) — collar + cuffs, no hood. */
 export const SWEATSHIRT_BLUEPRINT_ID = 449;
 /**
@@ -908,6 +927,10 @@ export function isZipHoodieBlueprint(blueprintId: number | null | undefined): bo
   return blueprintId === ZIP_HOODIE_BLUEPRINT_ID;
 }
 
+export function isBomberJacketBlueprint(blueprintId: number | null | undefined): boolean {
+  return blueprintId === BOMBER_JACKET_BLUEPRINT_ID;
+}
+
 export function isSweatshirtBlueprint(blueprintId: number | null | undefined): boolean {
   return blueprintId === SWEATSHIRT_BLUEPRINT_ID;
 }
@@ -1115,7 +1138,9 @@ export function designGroupsForBlueprint(
     (isSweatshirtBlueprint(blueprintId) ? "jumper-no-hood" : "hoodie");
   if (layout === "jumper-no-hood") return defaultJumperNoHoodDesignGroups();
   if (isPulloverHoodieBlueprint(blueprintId)) return defaultPulloverDesignGroups();
-  if (isZipHoodieBlueprint(blueprintId)) return defaultDesignGroups();
+  if (isZipHoodieBlueprint(blueprintId) || isBomberJacketBlueprint(blueprintId)) {
+    return defaultDesignGroups();
+  }
   return defaultDesignGroups();
 }
 
@@ -1169,7 +1194,7 @@ export function panelsEligibleForView(
   if (isPulloverHoodieBlueprint(blueprintId)) {
     return all.filter((k) => !ZIP_ONLY_FRONT_PANEL_KEYS.includes(k));
   }
-  if (isZipHoodieBlueprint(blueprintId)) {
+  if (isZipHoodieBlueprint(blueprintId) || isBomberJacketBlueprint(blueprintId)) {
     return all.filter((k) => k !== "front");
   }
   return all;
@@ -1323,6 +1348,7 @@ export function defaultHoodieTypeForBlueprint(blueprintId: number): string {
   if (isPillowWrapBlueprint(blueprintId)) return "pillow-wrap-aop";
   if (isPulloverHoodieBlueprint(blueprintId)) return "pullover-hoodie-aop";
   if (isZipHoodieBlueprint(blueprintId)) return "zip-hoodie-aop";
+  if (isBomberJacketBlueprint(blueprintId)) return "bomber-jacket-aop";
   return `aop-bp-${blueprintId}`;
 }
 

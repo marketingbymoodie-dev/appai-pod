@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  BOMBER_BACK_SLEEVES_PREVIEW_PLACEMENT_SCALE,
+  BOMBER_FRONT_BODY_ASPECT_X_SCALE,
+  BOMBER_FRONT_BODY_OFFSET_Y_FRAC,
+  BOMBER_FRONT_BODY_PLACEMENT_SCALE,
+  BOMBER_JACKET_BLUEPRINT_ID,
   PULOVER_HOODIE_BLUEPRINT_ID,
   SWEATSHIRT_BLUEPRINT_ID,
   ZIP_HOODIE_BLUEPRINT_ID,
@@ -14,6 +19,7 @@ import {
   designGroupsForBlueprint,
   drawMockupImageInCanvas,
   hoodiePanelKeyToPrintifyPosition,
+  isBomberJacketBlueprint,
   isValidAopTemplateSlug,
   normalizeAopTemplateSlugInput,
   MAX_MESH_COLS,
@@ -398,6 +404,25 @@ describe("sweatshirt hoodie panel keys (bp 449)", () => {
     expect(normalized.designGroups?.find((g) => g.id === "trim")?.panelKeys).toEqual([
       ...SWEATSHIRT_TRIM_PANEL_KEYS,
     ]);
+  });
+});
+
+describe("bomber jacket blueprint", () => {
+  it("registers bp 433 with zip-style front panels and placement constants", () => {
+    expect(BOMBER_JACKET_BLUEPRINT_ID).toBe(433);
+    expect(isBomberJacketBlueprint(433)).toBe(true);
+    expect(isBomberJacketBlueprint(451)).toBe(false);
+    expect(defaultHoodieTypeForBlueprint(433)).toBe("bomber-jacket-aop");
+    expect(BOMBER_FRONT_BODY_ASPECT_X_SCALE).toBe(1.12);
+    expect(BOMBER_FRONT_BODY_PLACEMENT_SCALE).toBe(1.08);
+    expect(BOMBER_FRONT_BODY_OFFSET_Y_FRAC).toBe(-0.04);
+    expect(BOMBER_BACK_SLEEVES_PREVIEW_PLACEMENT_SCALE).toBe(1.1);
+    const eligible = panelsEligibleForView("front", BOMBER_JACKET_BLUEPRINT_ID);
+    expect(eligible).not.toContain("front");
+    expect(eligible).toContain("front_left");
+    expect(eligible).toContain("front_right");
+    const groups = designGroupsForBlueprint(BOMBER_JACKET_BLUEPRINT_ID);
+    expect(groups.some((g) => g.id === "front-body")).toBe(true);
   });
 });
 
