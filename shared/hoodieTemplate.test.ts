@@ -409,16 +409,17 @@ describe("sweatshirt hoodie panel keys (bp 449)", () => {
 });
 
 describe("bomber jacket blueprint", () => {
-  it("registers bp 433 with zip-style front panels and placement constants", () => {
+  it("registers bp 433 — preview may use split fronts; Printify catalog is single front", () => {
     expect(BOMBER_JACKET_BLUEPRINT_ID).toBe(433);
     expect(isBomberJacketBlueprint(433)).toBe(true);
     expect(isBomberJacketBlueprint(451)).toBe(false);
     expect(defaultHoodieTypeForBlueprint(433)).toBe("bomber-jacket-aop");
-    expect(BOMBER_FRONT_BODY_ASPECT_X_SCALE).toBe(0.82);
-    expect(BOMBER_FRONT_BODY_PLACEMENT_SCALE).toBe(1.22);
-    expect(BOMBER_FRONT_BODY_OFFSET_Y_FRAC).toBe(-0.11);
+    expect(BOMBER_FRONT_BODY_ASPECT_X_SCALE).toBe(1);
+    expect(BOMBER_FRONT_BODY_PLACEMENT_SCALE).toBe(1.32);
+    expect(BOMBER_FRONT_BODY_OFFSET_Y_FRAC).toBe(-0.14);
     expect(BOMBER_BACK_PREVIEW_PLACEMENT_SCALE).toBe(1.1);
     expect(BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE).toBe(1.452);
+    // Mapper/preview templates still use zip-style L/R meshes; export composites to `front`.
     const eligible = panelsEligibleForView("front", BOMBER_JACKET_BLUEPRINT_ID);
     expect(eligible).not.toContain("front");
     expect(eligible).toContain("front_left");

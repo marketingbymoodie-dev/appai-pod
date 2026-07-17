@@ -41,21 +41,25 @@ export const PULOVER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE = 1.05;
 export const PULOVER_FRONT_BODY_PRINT_ARTWORK_SCALE = 0.8835;
 /** Printify blueprint 451 (zip) — split front_left / front_right placeholders. */
 export const ZIP_HOODIE_BLUEPRINT_ID = 451;
-/** Printify blueprint 433 (men's bomber jacket AOP) — zip-style split fronts. */
+/**
+ * Printify blueprint 433 (men's bomber jacket AOP).
+ * Catalog placeholders are a single `front` (+ back + sleeves) — not zip
+ * `front_left`/`front_right`. Preview meshes may still be split; print export
+ * must composite halves into one `front` panel.
+ */
 export const BOMBER_JACKET_BLUEPRINT_ID = 433;
 /**
- * Place-on-item (preview + print): X scale on bomber front-body design rect.
- * Values < 1 narrow the rect so each zipper half samples more artwork width —
- * un-does horizontal stretch vs the back panel (widening >1 made stretch worse).
+ * Place-on-item (preview + print): keep 1 so front sampling matches back
+ * (artwork-aspect fit). Do not widen/narrow — wrong exports were the stretch.
  */
-export const BOMBER_FRONT_BODY_ASPECT_X_SCALE = 0.82;
+export const BOMBER_FRONT_BODY_ASPECT_X_SCALE = 1;
 /** Place-on-item (preview + print): enlarge bomber front art for shoulder coverage. */
-export const BOMBER_FRONT_BODY_PLACEMENT_SCALE = 1.22;
+export const BOMBER_FRONT_BODY_PLACEMENT_SCALE = 1.32;
 /**
  * Place-on-item (preview + print): shift bomber front-body rect up as a fraction
  * of rect height (fill bare shoulder triangles near collar).
  */
-export const BOMBER_FRONT_BODY_OFFSET_Y_FRAC = -0.11;
+export const BOMBER_FRONT_BODY_OFFSET_Y_FRAC = -0.14;
 /**
  * Preview-only: bomber back body ~10% larger to match Printify
  * (print export stays 1.0). Merchant: back size is good at this level.

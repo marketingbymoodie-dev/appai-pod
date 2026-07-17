@@ -2411,6 +2411,90 @@ export function finalizePulloverPrintPanelsForPrintify(
 }
 
 /**
+ * Bomber bp 433 Printify catalog has a single `front` placeholder (e.g. XL
+ * ~4011×5025), not zip-style `front_left`/`front_right`. Uploading one half
+ * onto `front` stretches/squashes the art and leaves shoulders bare.
+ * Composite L+R into one edge-to-edge `front` canvas (back already matches).
+ */
+export function finalizeBomberPrintPanelsForPrintify(
+  panels: FlatPrintPanelExport[],
+  template: HoodieTemplate,
+  backgroundColor?: string | null,
+  placeholderPositions?: ReadonlyArray<{
+    position: string;
+    width: number;
+    height: number;
+  }>,
+): FlatPrintPanelExport[] {
+  if (!isBomberJacketBlueprint(template.blueprintId)) return panels;
+
+  const left = panels.find((p) => p.panelKey === "front_left");
+  const right = panels.find((p) => p.panelKey === "front_right");
+  const existingFront = panels.find(
+    (p) => p.panelKey === "front" || p.position === "front",
+  );
+  const rest = panels.filter(
+    (p) =>
+      p.panelKey !== "front_left" &&
+      p.panelKey !== "front_right" &&
+      p.panelKey !== "front" &&
+      p.position !== "front",
+  );
+
+  // Template already exports a true single front — just normalize position.
+  if (existingFront && !left && !right) {
+    return [
+      ...rest,
+      { ...existingFront, position: "front", panelKey: "front" },
+    ];
+  }
+
+  if (!left && !right) return panels;
+
+  const ph = placeholderPositions?.find(
+    (p) => p.position === "front" || p.position.toLowerCase() === "front",
+  );
+  const fallbackW =
+    (left?.canvas.width ?? 0) + (right?.canvas.width ?? 0) || 1024;
+  const fallbackH = Math.max(
+    left?.canvas.height ?? 0,
+    right?.canvas.height ?? 0,
+    1024,
+  );
+  const targetW = Math.max(1, Math.round(ph && ph.width > 0 ? ph.width : fallbackW));
+  const targetH = Math.max(1, Math.round(ph && ph.height > 0 ? ph.height : fallbackH));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = targetW;
+  canvas.height = targetH;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return panels;
+
+  const bg = backgroundColor || DEFAULT_GARMENT_BACKGROUND;
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, targetW, targetH);
+
+  // Printify bomber front is one pattern piece: left body | zipper | right body.
+  // Equal halves reconstruct the place-on-item design across the zipper.
+  const halfW = targetW / 2;
+  if (left) {
+    ctx.drawImage(left.canvas, 0, 0, halfW, targetH);
+  }
+  if (right) {
+    ctx.drawImage(right.canvas, halfW, 0, halfW, targetH);
+  } else if (left) {
+    // Only one half — mirror into the empty side so Printify still gets coverage.
+    ctx.save();
+    ctx.translate(targetW, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(left.canvas, 0, 0, halfW, targetH);
+    ctx.restore();
+  }
+
+  return [...rest, { position: "front", panelKey: "front", canvas }];
+}
+
+/**
  * Sweatshirt collar is often missing from the mesh template (or muted without
  * dims). Printify still has a `collar` placeholder — without a solid bg upload
  * the neck rib stays white on mockups and orders. Always force a cream/bg fill.
@@ -2704,8 +2788,14 @@ export function renderFlatPrintPanels(
     panelEnabledOverrides,
     backgroundColor,
   );
-  const merged = finalizeSweatshirtPrintPanelsForPrintify(
+  const afterBomber = finalizeBomberPrintPanelsForPrintify(
     afterPullover,
+    template,
+    backgroundColor,
+    params.placeholderPositions,
+  );
+  const merged = finalizeSweatshirtPrintPanelsForPrintify(
+    afterBomber,
     template,
     backgroundColor,
   );
