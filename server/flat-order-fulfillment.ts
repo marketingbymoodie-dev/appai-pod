@@ -804,21 +804,28 @@ export async function submitFlatOrderToPrintify(
         target.printifyVariantId,
         printifyToken!,
       );
-      const allowedPositions = validPlaceholderPositions
-        ? new Set(validPlaceholderPositions.map((p) => p.position))
+      // Map lowercase → canonical Printify spelling (bp 449 uses `Collar`).
+      const allowedByLower = validPlaceholderPositions
+        ? new Map(
+            validPlaceholderPositions.map((p) => [p.position.toLowerCase(), p.position] as const),
+          )
         : null;
 
       const printAreas: Record<string, PrintAreaImage[]> = {};
       for (const panel of resolved.design.panels) {
-        if (allowedPositions && !allowedPositions.has(panel.position)) {
+        const canonicalPosition = allowedByLower
+          ? allowedByLower.get(panel.position.toLowerCase())
+          : panel.position;
+        if (allowedByLower && !canonicalPosition) {
           console.warn(
-            `[flat-order-fulfillment] Skipping AOP panel "${panel.position}" — not a Printify placeholder for variant ${target.printifyVariantId} (allowed: ${[...allowedPositions].join(", ")})`,
+            `[flat-order-fulfillment] Skipping AOP panel "${panel.position}" — not a Printify placeholder for variant ${target.printifyVariantId} (allowed: ${[...allowedByLower.values()].join(", ")})`,
           );
           continue;
         }
+        const position = canonicalPosition ?? panel.position;
         const src = toAbsolutePrintUrl(panel.url);
-        printAreas[panel.position] = [{ src, scale: 1, x: 0.5, y: 0.5, angle: 0 }];
-        allUrls[`${designId}:${panel.position}`] = src;
+        printAreas[position] = [{ src, scale: 1, x: 0.5, y: 0.5, angle: 0 }];
+        allUrls[`${designId}:${position}`] = src;
       }
       if (Object.keys(printAreas).length === 0) {
         skippedReasons.push(

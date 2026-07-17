@@ -56,10 +56,20 @@ export function resolvePrintifyPanelImageId(
   panelImageIds: Map<string, string>,
 ): string | undefined {
   if (panelImageIds.has(position)) return panelImageIds.get(position);
-  const aliases = PRINTIFY_PANEL_POSITION_ALIASES[position];
+  // Case-insensitive exact key (bp 449 uses `Collar`, client historically sent `collar`).
+  const lower = position.toLowerCase();
+  for (const [key, id] of panelImageIds) {
+    if (key.toLowerCase() === lower) return id;
+  }
+  const aliases =
+    PRINTIFY_PANEL_POSITION_ALIASES[position] ??
+    PRINTIFY_PANEL_POSITION_ALIASES[lower];
   if (aliases) {
     for (const alias of aliases) {
       if (panelImageIds.has(alias)) return panelImageIds.get(alias);
+      for (const [key, id] of panelImageIds) {
+        if (key.toLowerCase() === alias.toLowerCase()) return id;
+      }
     }
   }
   // Any pocket-like placeholder ↔ any uploaded pocket-like panel.
@@ -92,6 +102,9 @@ export const PRINTIFY_PANEL_POSITION_ALIASES: Record<string, string[]> = {
   pocket: ["pocket", "front_pocket", "kangaroo_pocket", "front_pocket_panel"],
   kangaroo_pocket: ["kangaroo_pocket", "front_pocket", "pocket", "front_pocket_panel"],
   front_pocket_panel: ["front_pocket_panel", "front_pocket", "pocket", "kangaroo_pocket"],
+  // bp 449 sweatshirt — Printify catalog uses title-case `Collar`.
+  Collar: ["Collar", "collar"],
+  collar: ["collar", "Collar"],
 };
 
 const POCKET_ALIAS_NAMES = new Set(
@@ -118,6 +131,24 @@ export function expandPanelImageIdsWithPocketAliases(
       PRINTIFY_PANEL_POSITION_ALIASES[position] ??
       Array.from(POCKET_ALIAS_NAMES);
     for (const alias of aliases) {
+      if (!panelImageIds.has(alias)) {
+        additions.push([alias, imageId]);
+      }
+    }
+  }
+  for (const [alias, imageId] of additions) {
+    panelImageIds.set(alias, imageId);
+  }
+}
+
+/** Register collar uploads under both `Collar` (bp 449) and `collar`. */
+export function expandPanelImageIdsWithCollarAliases(
+  panelImageIds: Map<string, string>,
+): void {
+  const additions: Array<[string, string]> = [];
+  for (const [position, imageId] of panelImageIds) {
+    if (!/collar/i.test(position)) continue;
+    for (const alias of ["Collar", "collar"]) {
       if (!panelImageIds.has(alias)) {
         additions.push([alias, imageId]);
       }

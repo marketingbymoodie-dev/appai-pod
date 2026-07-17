@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   expandHoodPanelImageIdsWithSiblingFallback,
+  expandPanelImageIdsWithCollarAliases,
   expandPanelImageIdsWithPocketAliases,
   isPocketLikePrintifyPosition,
   pocketOverlayRectOnFrontPanel,
@@ -50,6 +51,20 @@ describe("resolvePrintifyPanelImageId", () => {
   it("fuzzy-matches any pocket-like upload to any pocket-like placeholder", () => {
     const ids = new Map([["outer_pocket", "img-x"]]);
     expect(resolvePrintifyPanelImageId("pocket", ids)).toBe("img-x");
+  });
+
+  it("matches bp 449 title-case Collar to lowercase collar upload", () => {
+    const ids = new Map([["collar", "img-collar"]]);
+    expect(resolvePrintifyPanelImageId("Collar", ids)).toBe("img-collar");
+  });
+});
+
+describe("expandPanelImageIdsWithCollarAliases", () => {
+  it("registers collar under both Collar and collar", () => {
+    const ids = new Map([["collar", "img-c"]]);
+    expandPanelImageIdsWithCollarAliases(ids);
+    expect(ids.get("Collar")).toBe("img-c");
+    expect(ids.get("collar")).toBe("img-c");
   });
 });
 

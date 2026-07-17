@@ -1183,7 +1183,8 @@ export function panelsEligibleForView(
 export function hoodiePanelKeyToPrintifyPosition(panelKey: HoodiePanelKey): string {
   if (panelKey === "left_cuff") return "left_cuff_panel";
   if (panelKey === "right_cuff") return "right_cuff_panel";
-  if (panelKey === "collar_front" || panelKey === "collar_back") return "collar";
+  // Live bp 449 placeholder is title-cased `Collar` (not `collar`).
+  if (panelKey === "collar_front" || panelKey === "collar_back") return "Collar";
   // Printify catalog bp 450 names the kangaroo slot `pocket`.
   if (panelKey === "front_pocket") return "pocket";
   return panelKey;

@@ -404,8 +404,8 @@ describe("sweatshirt hoodie panel keys (bp 449)", () => {
 describe("hoodiePanelKeyToPrintifyPosition", () => {
   it("maps cuff and collar keys to Printify placeholder names", () => {
     expect(hoodiePanelKeyToPrintifyPosition("left_cuff")).toBe("left_cuff_panel");
-    expect(hoodiePanelKeyToPrintifyPosition("collar_front")).toBe("collar");
-    expect(hoodiePanelKeyToPrintifyPosition("collar_back")).toBe("collar");
+    expect(hoodiePanelKeyToPrintifyPosition("collar_front")).toBe("Collar");
+    expect(hoodiePanelKeyToPrintifyPosition("collar_back")).toBe("Collar");
     expect(hoodiePanelKeyToPrintifyPosition("front")).toBe("front");
   });
 

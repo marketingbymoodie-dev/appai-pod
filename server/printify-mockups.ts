@@ -7,6 +7,7 @@ import {
   expandPanelImageIdsWithPocketAliases,
   isPocketLikePrintifyPosition,
   resolvePocketFallbackImageId,
+  expandPanelImageIdsWithCollarAliases,
   resolvePrintifyPanelImageId,
 } from "@shared/pulloverPocketPrintMerge";
 
@@ -1064,6 +1065,8 @@ export async function generatePrintifyMockup(
       // Pullover kangaroo may upload as front_pocket while Printify discovers
       // "pocket" / "kangaroo_pocket" — register the same image under all aliases.
       expandPanelImageIdsWithPocketAliases(panelImageIds);
+      // bp 449 uses title-case `Collar`; client may still upload `collar`.
+      expandPanelImageIdsWithCollarAliases(panelImageIds);
       // Blank true-left/true-right hood when one half never arrived.
       expandHoodPanelImageIdsWithSiblingFallback(panelImageIds);
 

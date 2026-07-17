@@ -2254,18 +2254,19 @@ export function finalizeSweatshirtPrintPanelsForPrintify(
   const bg = backgroundColor || DEFAULT_GARMENT_BACKGROUND;
   const withoutCollar = panels.filter(
     (p) =>
-      p.position !== "collar" &&
+      p.position.toLowerCase() !== "collar" &&
       p.panelKey !== "collar_front" &&
       p.panelKey !== "collar_back",
   );
   // Always size from the live Printify collar aspect — never reuse a prior
   // tiny solid canvas (those were ignored and left the neck rib white).
+  // Position must be title-case `Collar` (bp 449 live placeholder name).
   const solid = solidPanelCanvas({ ...SWEATSHIRT_COLLAR_PRINT_DIMS }, bg);
   if (!solid) return withoutCollar;
   return [
     ...withoutCollar,
     {
-      position: "collar",
+      position: hoodiePanelKeyToPrintifyPosition("collar_front"),
       panelKey: "collar_front",
       canvas: solid,
     },
