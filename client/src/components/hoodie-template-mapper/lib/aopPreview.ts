@@ -60,7 +60,7 @@ import {
   shouldForceSolidSweatshirtCollar,
   shouldRenderKangarooPocketArtwork,
   SWEATSHIRT_COLLAR_PRINT_DIMS,
-  SWEATSHIRT_FRONT_BODY_PREVIEW_PLACEMENT_SCALE,
+  SWEATSHIRT_BODY_PREVIEW_PLACEMENT_SCALE,
   layerRenderPriority,
   mockupDrawRect,
   SEAM_PAIR_PANELS,
@@ -1232,24 +1232,33 @@ function scaleDesignRectEffective(info: DesignRectInfo, factor: number): DesignR
   };
 }
 
-/** Preview-only front-body placement bump (does not affect print export). */
+/** Preview-only body placement bump (does not affect print export). */
 function applyFrontBodyPreviewPlacementScale(
   template: HoodieTemplate,
   rects: Map<string, DesignRectInfo>,
 ): void {
-  let factor = 1;
   if (
     isPulloverHoodieBlueprint(template.blueprintId) ||
     template.hoodieType === "pullover-hoodie-aop"
   ) {
-    factor = PULOVER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE;
-  } else if (isSweatshirtBlueprint(template.blueprintId)) {
-    factor = SWEATSHIRT_FRONT_BODY_PREVIEW_PLACEMENT_SCALE;
+    const fb = rects.get("front-body");
+    if (fb) {
+      rects.set(
+        "front-body",
+        scaleDesignRectEffective(fb, PULOVER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE),
+      );
+    }
+    return;
   }
-  if (factor === 1) return;
-  const fb = rects.get("front-body");
-  if (fb) {
-    rects.set("front-body", scaleDesignRectEffective(fb, factor));
+  if (!isSweatshirtBlueprint(template.blueprintId)) return;
+  for (const groupId of ["front-body", "back-body"] as const) {
+    const info = rects.get(groupId);
+    if (info) {
+      rects.set(
+        groupId,
+        scaleDesignRectEffective(info, SWEATSHIRT_BODY_PREVIEW_PLACEMENT_SCALE),
+      );
+    }
   }
 }
 

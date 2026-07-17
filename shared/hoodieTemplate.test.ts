@@ -30,7 +30,7 @@ import {
   mockupDrawRect,
   normalizeHoodieTemplate,
   panelsEligibleForView,
-  SWEATSHIRT_FRONT_BODY_PREVIEW_PLACEMENT_SCALE,
+  SWEATSHIRT_BODY_PREVIEW_PLACEMENT_SCALE,
   SWEATSHIRT_TRIM_PANEL_KEYS,
   mergeFrontBodyPanelPlacementBias,
   mergePanelPlacementBiasPercent,
@@ -410,7 +410,7 @@ describe("hoodiePanelKeyToPrintifyPosition", () => {
   });
 
   it("forces solid collar fill for sweatshirt / jumper-no-hood", () => {
-    expect(SWEATSHIRT_FRONT_BODY_PREVIEW_PLACEMENT_SCALE).toBe(1.05);
+    expect(SWEATSHIRT_BODY_PREVIEW_PLACEMENT_SCALE).toBe(0.9765);
     expect(
       shouldForceSolidSweatshirtCollar({
         blueprintId: SWEATSHIRT_BLUEPRINT_ID,

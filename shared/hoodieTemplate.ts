@@ -44,10 +44,10 @@ export const ZIP_HOODIE_BLUEPRINT_ID = 451;
 /** Printify blueprint 449 (unisex sweatshirt AOP) — collar + cuffs, no hood. */
 export const SWEATSHIRT_BLUEPRINT_ID = 449;
 /**
- * Preview-only: sweatshirt front chest placement renders ~5% larger so the
- * in-app mockup matches Printify (print export scale stays 1.0).
+ * Preview-only: sweatshirt front + back body placement (print export stays 1.0).
+ * Was 1.05 (+5%); merchant asked another −7% so app matches Printify (1.05×0.93).
  */
-export const SWEATSHIRT_FRONT_BODY_PREVIEW_PLACEMENT_SCALE = 1.05;
+export const SWEATSHIRT_BODY_PREVIEW_PLACEMENT_SCALE = 0.9765;
 /**
  * Typical live Printify bp 449 `collar` placeholder aspect (wide rib strip).
  * Used when the template has no collar mesh/mask to size a solid bg fill.
