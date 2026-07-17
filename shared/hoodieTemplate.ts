@@ -33,6 +33,11 @@ export type HoodieView = "front" | "back";
 export const PULOVER_HOODIE_BLUEPRINT_ID = 450;
 /** Preview-only: pullover front chest placement renders ~5% larger to match Printify. */
 export const PULOVER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE = 1.05;
+/**
+ * Place-on-item print export only: shrink pullover main `front` artwork so the
+ * chest print file lines up with the kangaroo pocket scale on Printify.
+ */
+export const PULOVER_FRONT_BODY_PRINT_ARTWORK_SCALE = 0.93;
 /** Printify blueprint 451 (zip) — split front_left / front_right placeholders. */
 export const ZIP_HOODIE_BLUEPRINT_ID = 451;
 /** Printify blueprint 449 (unisex sweatshirt AOP) — collar + cuffs, no hood. */

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  expandHoodPanelImageIdsWithSiblingFallback,
   expandPanelImageIdsWithPocketAliases,
   isPocketLikePrintifyPosition,
   pocketOverlayRectOnFrontPanel,
@@ -58,6 +59,20 @@ describe("resolvePocketFallbackImageId", () => {
     expect(
       resolvePocketFallbackImageId(new Map([["front_left", "fl"], ["back", "b"]])),
     ).toBe("fl");
+  });
+});
+
+describe("expandHoodPanelImageIdsWithSiblingFallback", () => {
+  it("fills missing left_hood from right_hood", () => {
+    const ids = new Map([["right_hood", "img-r"]]);
+    expandHoodPanelImageIdsWithSiblingFallback(ids);
+    expect(ids.get("left_hood")).toBe("img-r");
+  });
+
+  it("fills missing right_hood from left_hood", () => {
+    const ids = new Map([["left_hood", "img-l"]]);
+    expandHoodPanelImageIdsWithSiblingFallback(ids);
+    expect(ids.get("right_hood")).toBe("img-l");
   });
 });
 

@@ -3,6 +3,7 @@ import pRetry from "p-retry";
 import crypto from "crypto";
 import { buildToteFoldedPrintPng } from "./toteFoldedPrintFile";
 import {
+  expandHoodPanelImageIdsWithSiblingFallback,
   expandPanelImageIdsWithPocketAliases,
   isPocketLikePrintifyPosition,
   resolvePocketFallbackImageId,
@@ -505,6 +506,23 @@ async function createTemporaryProduct(
               `panelImageIds keys=[${Array.from(panelImageIds.keys()).join(", ")}]. ` +
               `Solid bgColor will cover the kangaroo pocket on the mockup.`,
           );
+        }
+        // Hood halves: never solid-fill one side when the sibling has art.
+        if (pos.position === "left_hood" || pos.position === "right_hood") {
+          const sibling =
+            pos.position === "left_hood"
+              ? panelImageIds.get("right_hood")
+              : panelImageIds.get("left_hood");
+          if (sibling) {
+            console.warn(
+              `[Printify AOP] Hood placeholder "${pos.position}" unmatched — reusing sibling hood image.`,
+            );
+            placeholders.push({
+              position: pos.position,
+              images: [{ id: sibling, x: 0.5, y: 0.5, scale: 1, angle: 0 }],
+            });
+            continue;
+          }
         }
         if (inactivePanelFillImageId) {
           const fillEntry = {
@@ -1040,6 +1058,8 @@ export async function generatePrintifyMockup(
       // Pullover kangaroo may upload as front_pocket while Printify discovers
       // "pocket" / "kangaroo_pocket" — register the same image under all aliases.
       expandPanelImageIdsWithPocketAliases(panelImageIds);
+      // Blank true-left/true-right hood when one half never arrived.
+      expandHoodPanelImageIdsWithSiblingFallback(panelImageIds);
 
       console.log(
         `[Printify AOP] Upload summary: ${panelImageIds.size}/${request.panelUrls.length} panels uploaded successfully` +

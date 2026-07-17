@@ -53,6 +53,7 @@ import {
   isPulloverHoodieBlueprint,
   migrateFrontPocketOutOfTrimGroup,
   PULOVER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE,
+  PULOVER_FRONT_BODY_PRINT_ARTWORK_SCALE,
   resolveFrontBodyPanelBias,
   hoodiePanelKeyToPrintifyPosition,
   shouldRenderKangarooPocketArtwork,
@@ -1002,6 +1003,58 @@ function findFrontLayerByPanelKey(
     }
   }
   return null;
+}
+
+/** Higher score wins when the same Printify position exists on front + back. */
+function scorePrintExportLayer(
+  panelKey: HoodiePanelKey,
+  view: HoodieView,
+  layer: MaskLayer,
+): number {
+  let score = 0;
+  if (layer.mesh) score += 10;
+  if (layer.mesh?.sourceRect && layer.mesh.sourceRect.width > 0) score += 100;
+  // Pullover front hoods are often uncalibrated; back hoods have sourceRect.
+  if (
+    (panelKey === "left_hood" || panelKey === "right_hood") &&
+    view === "back"
+  ) {
+    score += 50;
+  } else if (view === "front") {
+    score += 20;
+  }
+  return score;
+}
+
+/**
+ * One export layer per Printify position. Prefers calibrated back hoods so
+ * left/right hood print files aren't taken from coarse front meshes that can
+ * land as blank/solid on Printify.
+ */
+function collectPrintExportLayers(
+  template: HoodieTemplate,
+): Array<{ view: HoodieView; layer: MaskLayer; panelKey: HoodiePanelKey }> {
+  const best = new Map<
+    string,
+    { view: HoodieView; layer: MaskLayer; panelKey: HoodiePanelKey; score: number }
+  >();
+  for (const view of ["front", "back"] as HoodieView[]) {
+    for (const layer of template.views[view]?.layers ?? []) {
+      if (!layer.visible || layer.isExclusion || !layer.panelKey) continue;
+      const panelKey = layer.panelKey as HoodiePanelKey;
+      const position = hoodiePanelKeyToPrintifyPosition(panelKey);
+      const score = scorePrintExportLayer(panelKey, view, layer);
+      const prev = best.get(position);
+      if (!prev || score > prev.score) {
+        best.set(position, { view, layer, panelKey, score });
+      }
+    }
+  }
+  return Array.from(best.values()).map(({ view, layer, panelKey }) => ({
+    view,
+    layer,
+    panelKey,
+  }));
 }
 
 /**
@@ -2228,165 +2281,186 @@ export function renderFlatPrintPanels(
     : 1;
 
   const out: FlatPrintPanelExport[] = [];
-  const seenPositions = new Set<string>();
+  const exportLayers = collectPrintExportLayers(template);
+  const rectsByView = new Map<HoodieView, Map<string, DesignRectInfo>>();
+  if (mode === "single-sheet") {
+    for (const view of ["front", "back"] as HoodieView[]) {
+      rectsByView.set(
+        view,
+        computeGroupRects(template, view, artwork, {
+          placementOverrides: groupPlacementOverrides,
+          seamOverrides: groupSeamOverrides,
+          enabledOverrides: groupEnabledOverrides,
+        }),
+      );
+    }
+  }
 
-  for (const view of ["front", "back"] as HoodieView[]) {
-    const layers = (template.views[view]?.layers ?? []).filter(
-      (l) => l.visible && !l.isExclusion && l.panelKey,
-    );
-    if (layers.length === 0) continue;
+  for (const { view, layer, panelKey } of exportLayers) {
+    const position = hoodiePanelKeyToPrintifyPosition(panelKey);
+    const dims = flatPanelBaseDims(layer, template, view);
+    if (!dims) continue;
 
-    const rects =
-      mode === "single-sheet"
-        ? computeGroupRects(template, view, artwork, {
-            placementOverrides: groupPlacementOverrides,
-            seamOverrides: groupSeamOverrides,
-            enabledOverrides: groupEnabledOverrides,
-          })
-        : new Map<string, DesignRectInfo>();
+    const rects = rectsByView.get(view) ?? new Map<string, DesignRectInfo>();
     const canvasW = viewCanvasWidth(template, view, mockups?.[view]);
+    const group = findGroupForPanel(template.designGroups, panelKey);
+    let rect = group
+      ? rects.get(group.id) ?? null
+      : rects.get("__legacy__") ?? rects.get("__ungrouped__") ?? null;
+    // Place-on-item: pullover chest print files read a bit large vs pocket on
+    // Printify — shrink only the main front panel export (not preview/pocket).
+    if (
+      mode === "single-sheet" &&
+      panelKey === "front" &&
+      rect &&
+      (isPulloverHoodieBlueprint(template.blueprintId) ||
+        template.hoodieType === "pullover-hoodie-aop")
+    ) {
+      rect = scaleDesignRectEffective(rect, PULOVER_FRONT_BODY_PRINT_ARTWORK_SCALE);
+    }
+    // Mirror renderAopPreview's skipArtwork semantics exactly so the print
+    // file matches the preview: single-sheet honours the group rect's
+    // enabled flag; tile mode has no group rects (group toggles don't mute
+    // there) — only customer-level panel overrides do.
+    const panelOverride = panelEnabledOverrides?.[panelKey];
+    const muted = shouldRenderKangarooPocketArtwork(panelKey, panelOverride)
+      ? false
+      : panelOverride === false ||
+        (mode === "single-sheet" && rect != null && !rect.enabled);
 
-    for (const layer of layers) {
-      const panelKey = layer.panelKey as HoodiePanelKey;
-      const position = hoodiePanelKeyToPrintifyPosition(panelKey);
-      if (seenPositions.has(position)) continue;
-
-      const dims = flatPanelBaseDims(layer, template, view);
-      if (!dims) continue;
-
-      const group = findGroupForPanel(template.designGroups, panelKey);
-      const rect = group
-        ? rects.get(group.id) ?? null
-        : rects.get("__legacy__") ?? rects.get("__ungrouped__") ?? null;
-      // Mirror renderAopPreview's skipArtwork semantics exactly so the print
-      // file matches the preview: single-sheet honours the group rect's
-      // enabled flag; tile mode has no group rects (group toggles don't mute
-      // there) — only customer-level panel overrides do.
-      const panelOverride = panelEnabledOverrides?.[panelKey];
-      const muted = shouldRenderKangarooPocketArtwork(panelKey, panelOverride)
-        ? false
-        : panelOverride === false ||
-          (mode === "single-sheet" && rect != null && !rect.enabled);
-
-      if (muted || !artwork || (mode === "tile" && !tileSettings)) {
-        const solid = solidPanelCanvas(dims, bg);
-        if (solid) {
-          seenPositions.add(position);
-          out.push({ position, panelKey, canvas: solid });
-        }
-        continue;
+    if (muted || !artwork || (mode === "tile" && !tileSettings)) {
+      const solid = solidPanelCanvas(dims, bg);
+      if (solid) {
+        out.push({ position, panelKey, canvas: solid });
       }
+      continue;
+    }
 
-      const longEdge = Math.max(dims.width, dims.height, 1);
-      let artCanvas: HTMLCanvasElement | null = null;
+    const longEdge = Math.max(dims.width, dims.height, 1);
+    let artCanvas: HTMLCanvasElement | null = null;
 
-      if (mode === "tile" && tileSettings) {
-        // Density target: one tile ≈ the artwork's native resolution, capped
-        // by the max canvas edge. Below-1 scales are clamped (never shrink).
-        const tilePxBase = Math.max(1, tileSettings.tileSizeInches * ppi);
-        const wanted = artworkLongEdge / tilePxBase;
-        const capped = Math.min(wanted, panelMaxLongEdge / longEdge);
-        const outputScale = Math.max(1, capped);
-        artCanvas = layer.mesh
-          ? renderTiledFlatPanel(layer, artwork, tileSettings, ppi, canvasW, {
-              outputScale,
-              template,
-              view,
-            })
-          : null;
-        if (!artCanvas) {
-          // No mesh — tile straight into an upscaled polygon-bbox canvas.
-          const c = document.createElement("canvas");
-          c.width = Math.max(1, Math.round(dims.width * outputScale));
-          c.height = Math.max(1, Math.round(dims.height * outputScale));
-          const cctx = c.getContext("2d");
-          if (cctx) {
-            const bb = { x: 0, y: 0, width: c.width, height: c.height };
-            drawTileFlat(cctx, artwork, bb, tileSettings, ppi * outputScale, {
-              x: c.width / 2,
-              y: c.height / 2,
-            });
-            artCanvas = c;
-          }
-        }
-      } else if (rect && rect.effective.width > 0 && rect.effective.height > 0) {
-        const outputScale = Math.min(
-          Math.max(1, PRINT_PANEL_TARGET_LONG_EDGE_PX / longEdge),
-          panelMaxLongEdge / longEdge,
-        );
-        if (layer.mesh) {
-          const panelBias = group
-            ? resolveFrontBodyPanelBias(group, panelKey, groupPanelBiasOverrides?.[group.id])
-            : null;
-          artCanvas = renderHoodFlatPanel(layer, artwork, rect, {
-            fallbackSize: dims,
+    if (mode === "tile" && tileSettings) {
+      // Density target: one tile ≈ the artwork's native resolution, capped
+      // by the max canvas edge. Below-1 scales are clamped (never shrink).
+      const tilePxBase = Math.max(1, tileSettings.tileSizeInches * ppi);
+      const wanted = artworkLongEdge / tilePxBase;
+      const capped = Math.min(wanted, panelMaxLongEdge / longEdge);
+      const outputScale = Math.max(1, capped);
+      artCanvas = layer.mesh
+        ? renderTiledFlatPanel(layer, artwork, tileSettings, ppi, canvasW, {
             outputScale,
-            panelPlacementBias: panelBias,
+            template,
+            view,
+          })
+        : null;
+      if (!artCanvas) {
+        // No mesh — tile straight into an upscaled polygon-bbox canvas.
+        const c = document.createElement("canvas");
+        c.width = Math.max(1, Math.round(dims.width * outputScale));
+        c.height = Math.max(1, Math.round(dims.height * outputScale));
+        const cctx = c.getContext("2d");
+        if (cctx) {
+          const bb = { x: 0, y: 0, width: c.width, height: c.height };
+          drawTileFlat(cctx, artwork, bb, tileSettings, ppi * outputScale, {
+            x: c.width / 2,
+            y: c.height / 2,
           });
-        } else {
-          // No mesh — draw the seam-aware artwork slice straight into the
-          // polygon-bbox canvas (same slice the flat-stretch preview uses).
-          const bb = aabbOf(svgPathToAnchors(layer.maskPath));
-          if (bb) {
-            const aw = artwork.naturalWidth || artwork.width;
-            const ah = artwork.naturalHeight || artwork.height;
-            const side: "left" | "right" | "none" = SEAM_PAIR_PANELS.left.includes(panelKey)
-              ? "left"
-              : SEAM_PAIR_PANELS.right.includes(panelKey)
-                ? "right"
-                : "none";
-            const sampleBb = rect
-              ? samplingBboxForLayer(bb, layer, rect, template, groupPanelBiasOverrides)
-              : bb;
-            const slice = synthesiseSeamAwareSourceRect(sampleBb, rect, aw, ah, side);
-            if (slice.width > 0 && slice.height > 0) {
-              const c = document.createElement("canvas");
-              c.width = Math.max(1, Math.round(dims.width * outputScale));
-              c.height = Math.max(1, Math.round(dims.height * outputScale));
-              const cctx = c.getContext("2d");
-              if (cctx) {
-                cctx.drawImage(
-                  artwork,
-                  slice.x,
-                  slice.y,
-                  slice.width,
-                  slice.height,
-                  0,
-                  0,
-                  c.width,
-                  c.height,
-                );
-                artCanvas = c;
-              }
+          artCanvas = c;
+        }
+      }
+    } else if (rect && rect.effective.width > 0 && rect.effective.height > 0) {
+      const outputScale = Math.min(
+        Math.max(1, PRINT_PANEL_TARGET_LONG_EDGE_PX / longEdge),
+        panelMaxLongEdge / longEdge,
+      );
+      // Place-on-item hood/sleeve bridge: bake from the front layer when
+      // exporting a back-view mesh so both sides share one flat UV.
+      let bakeLayer = layer;
+      let bakeRect = rect;
+      if (
+        view === "back" &&
+        FLAT_PANEL_BRIDGE_PANEL_KEYS.has(panelKey) &&
+        layer.mesh
+      ) {
+        const frontLayer = findFrontLayerByPanelKey(template, panelKey);
+        const frontRects = rectsByView.get("front");
+        const frontGroup = findGroupForPanel(template.designGroups, panelKey);
+        const frontRect = frontGroup
+          ? frontRects?.get(frontGroup.id) ?? null
+          : frontRects?.get("__legacy__") ?? frontRects?.get("__ungrouped__") ?? null;
+        if (frontLayer?.mesh && frontRect) {
+          bakeLayer = frontLayer;
+          bakeRect = frontRect;
+        }
+      }
+      if (bakeLayer.mesh) {
+        const panelBias = group
+          ? resolveFrontBodyPanelBias(group, panelKey, groupPanelBiasOverrides?.[group.id])
+          : null;
+        artCanvas = renderHoodFlatPanel(bakeLayer, artwork, bakeRect, {
+          fallbackSize: dims,
+          outputScale,
+          panelPlacementBias: panelBias,
+        });
+      } else {
+        // No mesh — draw the seam-aware artwork slice straight into the
+        // polygon-bbox canvas (same slice the flat-stretch preview uses).
+        const bb = aabbOf(svgPathToAnchors(layer.maskPath));
+        if (bb) {
+          const aw = artwork.naturalWidth || artwork.width;
+          const ah = artwork.naturalHeight || artwork.height;
+          const side: "left" | "right" | "none" = SEAM_PAIR_PANELS.left.includes(panelKey)
+            ? "left"
+            : SEAM_PAIR_PANELS.right.includes(panelKey)
+              ? "right"
+              : "none";
+          const sampleBb = rect
+            ? samplingBboxForLayer(bb, layer, rect, template, groupPanelBiasOverrides)
+            : bb;
+          const slice = synthesiseSeamAwareSourceRect(sampleBb, rect, aw, ah, side);
+          if (slice.width > 0 && slice.height > 0) {
+            const c = document.createElement("canvas");
+            c.width = Math.max(1, Math.round(dims.width * outputScale));
+            c.height = Math.max(1, Math.round(dims.height * outputScale));
+            const cctx = c.getContext("2d");
+            if (cctx) {
+              cctx.drawImage(
+                artwork,
+                slice.x,
+                slice.y,
+                slice.width,
+                slice.height,
+                0,
+                0,
+                c.width,
+                c.height,
+              );
+              artCanvas = c;
             }
           }
         }
       }
-
-      if (!artCanvas) {
-        const solid = solidPanelCanvas(dims, bg);
-        if (solid) {
-          seenPositions.add(position);
-          out.push({ position, panelKey, canvas: solid });
-        }
-        continue;
-      }
-
-      // Composite: opaque background colour under the artwork.
-      const panel = document.createElement("canvas");
-      panel.width = artCanvas.width;
-      panel.height = artCanvas.height;
-      const pctx = panel.getContext("2d");
-      if (!pctx) continue;
-      pctx.fillStyle = bg;
-      pctx.fillRect(0, 0, panel.width, panel.height);
-      pctx.drawImage(artCanvas, 0, 0);
-
-      seenPositions.add(position);
-      // Bleed runs after pullover pocket merge so overlay math matches the
-      // unshifted flat panel (same coord space as zip pocket_left export).
-      out.push({ position, panelKey, canvas: panel });
     }
+
+    if (!artCanvas) {
+      const solid = solidPanelCanvas(dims, bg);
+      if (solid) {
+        out.push({ position, panelKey, canvas: solid });
+      }
+      continue;
+    }
+
+    // Composite: opaque background colour under the artwork.
+    const panel = document.createElement("canvas");
+    panel.width = artCanvas.width;
+    panel.height = artCanvas.height;
+    const pctx = panel.getContext("2d");
+    if (!pctx) continue;
+    pctx.fillStyle = bg;
+    pctx.fillRect(0, 0, panel.width, panel.height);
+    pctx.drawImage(artCanvas, 0, 0);
+
+    out.push({ position, panelKey, canvas: panel });
   }
 
   const merged = finalizePulloverPrintPanelsForPrintify(

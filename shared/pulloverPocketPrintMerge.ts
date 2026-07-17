@@ -128,6 +128,19 @@ export function expandPanelImageIdsWithPocketAliases(
   }
 }
 
+/**
+ * If one hood half uploaded and the other didn't, reuse the sibling image.
+ * Prevents a blank true-left/true-right hood when a single panel is omitted.
+ */
+export function expandHoodPanelImageIdsWithSiblingFallback(
+  panelImageIds: Map<string, string>,
+): void {
+  const left = panelImageIds.get("left_hood");
+  const right = panelImageIds.get("right_hood");
+  if (left && !right) panelImageIds.set("right_hood", left);
+  if (right && !left) panelImageIds.set("left_hood", right);
+}
+
 /** Map overlay rect using reference bboxes (mesh target or polygon) in mockup space. */
 export function overlayRectOnReferencePanel(
   hostBb: MockupBbox,
