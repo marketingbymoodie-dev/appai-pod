@@ -1424,11 +1424,6 @@ export default function HoodieAopPlacer({
       : viewButtonCount === 3
         ? "grid-cols-3"
         : "grid-cols-2";
-  const bodyViewActive =
-    state.activeGroupId !== "hood" &&
-    state.activeGroupId !== "collar" &&
-    state.activeGroupId !== SLEEVES_PART_ID;
-
   const hoodSelected = state.activeGroupId === "hood";
   const hoodTooltip = state.hoodLinked
     ? hoodSelected
@@ -1541,9 +1536,9 @@ export default function HoodieAopPlacer({
               <button
                 key={v}
                 onClick={() => setView(v)}
-                aria-pressed={state.view === v && bodyViewActive}
+                aria-pressed={state.view === v}
                 className={`rounded px-2 py-1.5 text-xs font-semibold border ${placerSegmentClass(
-                  state.view === v && bodyViewActive,
+                  state.view === v,
                 )}`}
               >
                 {v === "front" ? "Front" : "Back"}

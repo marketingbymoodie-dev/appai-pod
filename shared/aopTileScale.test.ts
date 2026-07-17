@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   computePreviewMeshTileStretch,
   computeTilePxOnFlatCanvas,
+  patternModeTileScaleRef,
   patternModeUniformTileScale,
   referenceMockupToFlatScale,
 } from "./aopTileScale";
@@ -59,6 +60,37 @@ describe("computeTilePxOnFlatCanvas", () => {
   });
 });
 
+describe("patternModeTileScaleRef", () => {
+  it("returns body median ratio and flat width for uniform physical tiles", () => {
+    const ref = patternModeTileScaleRef([
+      { panelKey: "front_left", flatCanvasW: 4000, meshTargetWidth: 500 },
+      { panelKey: "front_right", flatCanvasW: 4200, meshTargetWidth: 500 },
+      { panelKey: "back", flatCanvasW: 4500, meshTargetWidth: 500 },
+      { panelKey: "left_hood", flatCanvasW: 9000, meshTargetWidth: 500 },
+    ]);
+    expect(ref?.uniformRatio).toBeCloseTo(8.4, 5);
+    expect(ref?.referenceFlatCanvasW).toBeCloseTo(4200, 5);
+  });
+
+  it("scales tile px with flat canvas width so hood matches chest density", () => {
+    const ref = patternModeTileScaleRef([
+      { panelKey: "front", flatCanvasW: 4000, meshTargetWidth: 500 },
+      { panelKey: "back", flatCanvasW: 4000, meshTargetWidth: 500 },
+    ]);
+    expect(ref).not.toBeNull();
+    const base = {
+      tileSizeInches: 1.5,
+      pixelsPerInch: 1024 / 24,
+      meshTargetWidth: 500,
+      outputScale: 1,
+      patternModeScaleRef: ref!,
+    };
+    const chestPx = computeTilePxOnFlatCanvas({ ...base, flatCanvasW: 4000 });
+    const hoodPx = computeTilePxOnFlatCanvas({ ...base, flatCanvasW: 8000 });
+    expect(hoodPx / 8000).toBeCloseTo(chestPx / 4000, 5);
+  });
+});
+
 describe("patternModeUniformTileScale", () => {
   it("uses median of chest/back body panels, not hood or pocket outliers", () => {
     const scale = patternModeUniformTileScale([
@@ -68,7 +100,6 @@ describe("patternModeUniformTileScale", () => {
       { panelKey: "left_hood", flatCanvasW: 9000, meshTargetWidth: 500 },
       { panelKey: "pocket_left", flatCanvasW: 2000, meshTargetWidth: 500 },
     ]);
-    // median of [8, 8.4, 9] = 8.4
     expect(scale).toBeCloseTo(8.4, 5);
   });
 });
