@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   computePreviewMeshTileStretch,
   computeTilePxOnFlatCanvas,
+  patternModeFrontBodyTileScale,
   patternModeUniformTileScale,
   referenceMockupToFlatScale,
+  usesFrontMatchedBodyPatternTileScale,
   usesPerPanelPatternTileScale,
 } from "./aopTileScale";
 
@@ -77,6 +79,36 @@ describe("usesPerPanelPatternTileScale", () => {
     expect(usesPerPanelPatternTileScale("left_hood")).toBe(true);
     expect(usesPerPanelPatternTileScale("front_pocket")).toBe(true);
     expect(usesPerPanelPatternTileScale("front")).toBe(false);
+  });
+});
+
+describe("patternModeFrontBodyTileScale", () => {
+  it("uses full-front scale so back can match front density", () => {
+    expect(
+      patternModeFrontBodyTileScale([
+        { panelKey: "front", flatCanvasW: 4200, meshTargetWidth: 500 },
+        { panelKey: "back", flatCanvasW: 4500, meshTargetWidth: 600 },
+        { panelKey: "left_sleeve", flatCanvasW: 3000, meshTargetWidth: 400 },
+      ]),
+    ).toBeCloseTo(8.4, 5);
+  });
+
+  it("falls back to median of front halves when full front is missing", () => {
+    expect(
+      patternModeFrontBodyTileScale([
+        { panelKey: "front_left", flatCanvasW: 4000, meshTargetWidth: 500 },
+        { panelKey: "front_right", flatCanvasW: 4400, meshTargetWidth: 500 },
+        { panelKey: "back", flatCanvasW: 9000, meshTargetWidth: 500 },
+      ]),
+    ).toBeCloseTo(8.4, 5);
+  });
+});
+
+describe("usesFrontMatchedBodyPatternTileScale", () => {
+  it("covers front/back body panels only", () => {
+    expect(usesFrontMatchedBodyPatternTileScale("front")).toBe(true);
+    expect(usesFrontMatchedBodyPatternTileScale("back")).toBe(true);
+    expect(usesFrontMatchedBodyPatternTileScale("left_sleeve")).toBe(false);
   });
 });
 

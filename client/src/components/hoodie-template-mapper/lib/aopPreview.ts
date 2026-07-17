@@ -70,8 +70,12 @@ import {
   BODY_PRINT_BLEED_PANEL_KEYS,
   computeTilePxOnFlatCanvas,
   computePreviewMeshTileStretch,
+  patternModeFrontBodyTileScale,
   PRINT_PANEL_BOTTOM_BLEED_FRACTION,
   PRINT_PANEL_TOP_BLEED_FRACTION,
+  usesFrontMatchedBodyPatternTileScale,
+  usesPerPanelPatternTileScale,
+  type MeshScaleSample,
 } from "@shared/aopTileScale";
 import { svgPathToAnchors, svgPathToSubpaths, clipCanvasToMaskSubpaths, appendMaskSubpathsToPath, boundingBoxOfSubpaths } from "./svgPath";
 import { drawMeshWarp } from "./meshWarp";
@@ -1289,6 +1293,41 @@ function applyFrontBodyPreviewPlacementScale(
  * Returns `null` if the layer has no mesh, the mesh is degenerate, or
  * the canvas couldn't be created.
  */
+/**
+ * Collect per-panel flat/mesh ratios for Pattern-mode tile scale. Uses each
+ * layer's own `sourceRect` when present (no sibling borrow) so the front
+ * reference isn't polluted by a calibrated back sheet.
+ */
+function collectPatternTileScaleSamples(template: HoodieTemplate): MeshScaleSample[] {
+  const out: MeshScaleSample[] = [];
+  for (const view of ["front", "back"] as HoodieView[]) {
+    for (const layer of template.views[view]?.layers ?? []) {
+      if (!layer.visible || layer.isExclusion || !layer.mesh || !layer.panelKey) continue;
+      const meshTb = meshTargetBbox(layer.mesh);
+      if (!meshTb || meshTb.width <= 0) continue;
+      const own = layer.mesh.sourceRect;
+      const flatCanvasW =
+        own && own.width > 0 ? own.width : Math.max(1, meshTb.width);
+      out.push({
+        panelKey: layer.panelKey,
+        flatCanvasW,
+        meshTargetWidth: meshTb.width,
+      });
+    }
+  }
+  return out;
+}
+
+function patternTileScaleOverrideForPanel(
+  panelKey: string | null | undefined,
+  frontBodyScale: number | null,
+): number | undefined {
+  if (frontBodyScale == null) return undefined;
+  if (usesPerPanelPatternTileScale(panelKey)) return undefined;
+  if (!usesFrontMatchedBodyPatternTileScale(panelKey)) return undefined;
+  return frontBodyScale;
+}
+
 function renderTiledFlatPanel(
   layer: MaskLayer,
   artwork: HTMLImageElement,
@@ -1639,6 +1678,13 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
   // Tile mode resolution: respect explicit params, else fall back to
   // template defaults seeded by normalizeHoodieTemplate.
   const tileSettings = params.tileSettings ?? template.tileSettings ?? null;
+  // Sweatshirt: lock front/back body Pattern density to the front body's
+  // flat/mesh ratio (back was printing a bit small with native per-panel).
+  // Pullover/zip keep native scale — garment-wide overrides regress those.
+  const frontMatchedTileScale =
+    mode === "tile" && isSweatshirtBlueprint(template.blueprintId)
+      ? patternModeFrontBodyTileScale(collectPatternTileScaleSamples(template))
+      : null;
   const ppi =
     params.pixelsPerInch ??
     template.realWorldCalibration?.pixelsPerInch ??
@@ -1833,8 +1879,13 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
           ppi,
           W,
           {
-            // Native flat/mesh per panel — keeps front/back density matched.
+            // Native flat/mesh per panel by default; sweatshirt front/back
+            // share the front body's scale so Pattern density matches.
             meshOverscanCompensation: false,
+            mockupToFlatScaleOverride: patternTileScaleOverrideForPanel(
+              layer.panelKey,
+              frontMatchedTileScale,
+            ),
             template,
             view,
           },
@@ -2332,6 +2383,10 @@ export function renderFlatPrintPanels(
   }
   const panelMaxLongEdge = maxLongEdgePx ?? PRINT_PANEL_MAX_LONG_EDGE_PX;
   const tileSettings = params.tileSettings ?? template.tileSettings ?? null;
+  const frontMatchedTileScale =
+    mode === "tile" && isSweatshirtBlueprint(template.blueprintId)
+      ? patternModeFrontBodyTileScale(collectPatternTileScaleSamples(template))
+      : null;
   const ppi =
     params.pixelsPerInch ??
     template.realWorldCalibration?.pixelsPerInch ??
@@ -2409,6 +2464,10 @@ export function renderFlatPrintPanels(
       artCanvas = layer.mesh
         ? renderTiledFlatPanel(layer, artwork, tileSettings, ppi, canvasW, {
             outputScale,
+            mockupToFlatScaleOverride: patternTileScaleOverrideForPanel(
+              panelKey,
+              frontMatchedTileScale,
+            ),
             template,
             view,
           })

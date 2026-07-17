@@ -138,6 +138,47 @@ export function usesPerPanelPatternTileScale(
 }
 
 /**
+ * Front + back body (incl. zip split fronts) — lock to the front body's
+ * mockup→flat scale so Pattern mode density matches chest↔back.
+ */
+export const PATTERN_TILE_FRONT_MATCHED_BODY_KEYS = new Set([
+  "front",
+  "back",
+  "front_left",
+  "front_right",
+]);
+
+export function usesFrontMatchedBodyPatternTileScale(
+  panelKey: string | null | undefined,
+): boolean {
+  return !!panelKey && PATTERN_TILE_FRONT_MATCHED_BODY_KEYS.has(panelKey);
+}
+
+/**
+ * Prefer the full-front (or median of front halves) mockup→flat scale so the
+ * back body tiles at the same physical density as the front. Used when native
+ * per-panel ratios diverge (e.g. sweatshirt bp 449 back printing small).
+ */
+export function patternModeFrontBodyTileScale(samples: MeshScaleSample[]): number | null {
+  const valid = samples.filter((s) => s.meshTargetWidth > 0 && s.flatCanvasW > 0);
+  const front = valid.find((s) => s.panelKey === "front");
+  if (front) return mockupToFlatScale(front.flatCanvasW, front.meshTargetWidth);
+
+  const halves = valid.filter(
+    (s) => s.panelKey === "front_left" || s.panelKey === "front_right",
+  );
+  if (halves.length === 0) return null;
+  const ratios = halves
+    .map((s) => mockupToFlatScale(s.flatCanvasW, s.meshTargetWidth))
+    .sort((a, b) => a - b);
+  const mid = Math.floor(ratios.length / 2);
+  if (ratios.length % 2 === 0) {
+    return (ratios[mid - 1] + ratios[mid]) / 2;
+  }
+  return ratios[mid] ?? null;
+}
+
+/**
  * One mockup→flat scale for pattern mode: median of chest/back/sleeve panels.
  * Apply as `mockupToFlatScaleOverride` on body/sleeve panels only.
  */
