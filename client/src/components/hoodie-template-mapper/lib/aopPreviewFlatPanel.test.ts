@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildFlatMeshTargetPoints } from "./aopPreview";
+import { buildFlatMeshTargetPoints, meshSourceFlipXForPanel } from "./aopPreview";
 
 describe("buildFlatMeshTargetPoints", () => {
   it("maps mesh corners to the full flat canvas", () => {
@@ -21,5 +21,15 @@ describe("buildFlatMeshTargetPoints", () => {
     expect(flat[2]).toEqual({ x: 400, y: 0 });
     expect(flat[3]).toEqual({ x: 0, y: 200 });
     expect(flat[5]).toEqual({ x: 400, y: 200 });
+  });
+});
+
+describe("meshSourceFlipXForPanel", () => {
+  it("XORs calibration flip on right_sleeve when sleevesMirrored", () => {
+    expect(meshSourceFlipXForPanel("right_sleeve", false, true)).toBe(true);
+    expect(meshSourceFlipXForPanel("right_sleeve", true, true)).toBe(false);
+    expect(meshSourceFlipXForPanel("right_sleeve", false, false)).toBe(false);
+    expect(meshSourceFlipXForPanel("left_sleeve", false, true)).toBe(false);
+    expect(meshSourceFlipXForPanel("left_sleeve", true, true)).toBe(true);
   });
 });

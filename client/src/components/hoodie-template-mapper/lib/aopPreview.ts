@@ -276,7 +276,23 @@ export type AopPreviewParams = {
    *   uploaded yet. Used by `HoodieAopPlacer`.
    */
   solidColorFallback?: boolean;
+  /**
+   * When true, horizontally flip customer artwork on `right_sleeve`
+   * (XOR with mesh calibration `sourceFlipX`) for bilateral symmetry.
+   */
+  sleevesMirrored?: boolean;
 };
+
+/** XOR customer sleeve-mirror with mesh calibration flip. */
+export function meshSourceFlipXForPanel(
+  panelKey: HoodiePanelKey | null | undefined,
+  meshSourceFlipX: boolean | undefined,
+  sleevesMirrored: boolean | undefined,
+): boolean {
+  const calib = Boolean(meshSourceFlipX);
+  if (sleevesMirrored && panelKey === "right_sleeve") return !calib;
+  return calib;
+}
 
 /**
  * Read-only helper: should this panel participate in single-sheet
@@ -916,6 +932,8 @@ export function renderHoodFlatPanel(
     outputScale?: number;
     /** Chest/pocket UV bias for this panel's artwork slice. */
     panelPlacementBias?: PanelPlacementBiasPercent | null;
+    /** Flip right-sleeve artwork for customer Mirror toggle. */
+    sleevesMirrored?: boolean;
   },
 ): HTMLCanvasElement | null {
   if (!frontLayer.mesh) return null;
@@ -987,6 +1005,11 @@ export function renderHoodFlatPanel(
     ...frontLayer.mesh,
     targetPoints: buildFlatMeshTargetPoints(frontLayer.mesh, flatW, flatH),
     sourceRect: slice,
+    sourceFlipX: meshSourceFlipXForPanel(
+      frontLayer.panelKey,
+      frontLayer.mesh.sourceFlipX,
+      options?.sleevesMirrored,
+    ),
   });
   return canvas;
 }
@@ -1921,6 +1944,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
           : undefined;
         const flat = renderHoodFlatPanel(frontLayer, artwork, frontRect, {
           fallbackSize,
+          sleevesMirrored: params.sleevesMirrored,
         });
         if (flat) {
           drawMeshWarp(pctx, flat, flat.width, flat.height, {
@@ -2004,8 +2028,13 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
             // Tile pattern is omnidirectional and already lives in
             // the panel's flat coord system — reset the calibration's
             // source UV transform so the mesh samples it as-is.
+            // Customer Mirror still flips the right sleeve pattern.
             sourceRotation: 0,
-            sourceFlipX: false,
+            sourceFlipX: meshSourceFlipXForPanel(
+              layer.panelKey,
+              false,
+              params.sleevesMirrored,
+            ),
             sourceFlipY: false,
           });
           drewTile = true;
@@ -2056,7 +2085,15 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
         synthSrc = { x: 0, y: 0, width: aw, height: ah };
       }
       if (synthSrc) {
-        drawMeshWarp(pctx, artwork, aw, ah, { ...layer.mesh, sourceRect: synthSrc });
+        drawMeshWarp(pctx, artwork, aw, ah, {
+          ...layer.mesh,
+          sourceRect: synthSrc,
+          sourceFlipX: meshSourceFlipXForPanel(
+            layer.panelKey,
+            layer.mesh.sourceFlipX,
+            params.sleevesMirrored,
+          ),
+        });
       }
     } else if (artwork) {
       // No mesh on this layer — fall back to a flat stretched draw.
@@ -2310,6 +2347,8 @@ export type RenderFlatPrintPanelsParams = {
     width: number;
     height: number;
   }>;
+  /** Flip right-sleeve artwork for customer Mirror toggle (preview + print). */
+  sleevesMirrored?: boolean;
 };
 
 function placeholderDimsByPosition(
@@ -2787,6 +2826,23 @@ export function renderFlatPrintPanels(
           artCanvas = c;
         }
       }
+      // Flat tile sheets don't go through meshFlip — flip right sleeve here.
+      if (
+        artCanvas &&
+        panelKey === "right_sleeve" &&
+        params.sleevesMirrored
+      ) {
+        const flipped = document.createElement("canvas");
+        flipped.width = artCanvas.width;
+        flipped.height = artCanvas.height;
+        const fctx = flipped.getContext("2d");
+        if (fctx) {
+          fctx.translate(flipped.width, 0);
+          fctx.scale(-1, 1);
+          fctx.drawImage(artCanvas, 0, 0);
+          artCanvas = flipped;
+        }
+      }
     } else if (rect && rect.effective.width > 0 && rect.effective.height > 0) {
       const outputScale = Math.min(
         Math.max(1, PRINT_PANEL_TARGET_LONG_EDGE_PX / longEdge),
@@ -2820,6 +2876,7 @@ export function renderFlatPrintPanels(
           fallbackSize: dims,
           outputScale,
           panelPlacementBias: panelBias,
+          sleevesMirrored: params.sleevesMirrored,
         });
       } else {
         // No mesh — draw the seam-aware artwork slice straight into the
@@ -2843,6 +2900,15 @@ export function renderFlatPrintPanels(
             c.height = Math.max(1, Math.round(dims.height * outputScale));
             const cctx = c.getContext("2d");
             if (cctx) {
+              const flipX = meshSourceFlipXForPanel(
+                panelKey,
+                false,
+                params.sleevesMirrored,
+              );
+              if (flipX) {
+                cctx.translate(c.width, 0);
+                cctx.scale(-1, 1);
+              }
               cctx.drawImage(
                 artwork,
                 slice.x,

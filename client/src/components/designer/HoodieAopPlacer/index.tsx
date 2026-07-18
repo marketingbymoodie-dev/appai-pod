@@ -148,6 +148,11 @@ export type HoodieAopPlacerState = {
   leftSleeveLinked: boolean;
   /** Right sleeve follows front-body placement when linked. */
   rightSleeveLinked: boolean;
+  /**
+   * When true, right-sleeve artwork is horizontally flipped for bilateral
+   * symmetry (placement sync always mirrors offsetX separately).
+   */
+  sleevesMirrored: boolean;
   /** Background fill colour (CSS) painted under the artwork. */
   backgroundColor: string;
   /** Tile settings (pattern mode). Falls back to template defaults. */
@@ -228,6 +233,7 @@ function outputSignature(s: HoodieAopPlacerState): string {
     enabled: s.enabled,
     trimEnabled: s.trimEnabled,
     pocketsEnabled: s.pocketsEnabled,
+    sleevesMirrored: s.sleevesMirrored,
     backgroundColor: s.backgroundColor,
     tileSettings: s.tileSettings,
     wrapBackMode: s.wrapBackMode,
@@ -472,6 +478,7 @@ function buildInitialState(
     trimLinked: false,
     leftSleeveLinked: true,
     rightSleeveLinked: true,
+    sleevesMirrored: true,
     backgroundColor: DEFAULT_BG_COLOR,
     tileSettings: template.tileSettings ?? { pattern: "grid", tileSizeInches: 1.5 },
     wrapBackMode: saved?.wrapBackMode ?? template.wrapBackMode ?? "duplicate",
@@ -494,6 +501,7 @@ function buildInitialState(
     trimLinked: false,
     leftSleeveLinked: saved.leftSleeveLinked ?? base.leftSleeveLinked,
     rightSleeveLinked: saved.rightSleeveLinked ?? base.rightSleeveLinked,
+    sleevesMirrored: saved.sleevesMirrored ?? base.sleevesMirrored,
     wrapBackMode: saved.wrapBackMode ?? base.wrapBackMode,
   };
 }
@@ -1262,6 +1270,7 @@ export default function HoodieAopPlacer({
         backgroundColor: state.backgroundColor,
         tileSettings: state.tileSettings,
         pixelsPerInch: data.template.realWorldCalibration?.pixelsPerInch,
+        sleevesMirrored: state.sleevesMirrored,
       });
       return c;
     },
@@ -1289,6 +1298,7 @@ export default function HoodieAopPlacer({
       mockups,
       maxLongEdgePx: opts?.maxLongEdgePx,
       placeholderPositions,
+      sleevesMirrored: state.sleevesMirrored,
     });
     // Panels are bg-filled (opaque), so JPEG is safe and 5-10× smaller than
     // PNG — matters because a zip hoodie exports ~12 panels per save.
@@ -1611,6 +1621,31 @@ export default function HoodieAopPlacer({
                 </button>
               ))}
             </div>
+            {hasSleeves && (
+              <div className="mt-1.5">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setState((prev) =>
+                      prev
+                        ? { ...prev, sleevesMirrored: !prev.sleevesMirrored }
+                        : prev,
+                    )
+                  }
+                  aria-pressed={state.sleevesMirrored}
+                  className={`rounded px-2 py-1.5 text-xs font-semibold border ${placerSegmentClass(
+                    state.sleevesMirrored,
+                  )}`}
+                >
+                  Mirror
+                </button>
+                {state.sleevesMirrored && (
+                  <div className="mt-1 text-[10px] text-muted-foreground">
+                    Right sleeve flips artwork for symmetry.
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 

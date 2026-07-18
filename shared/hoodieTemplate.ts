@@ -82,9 +82,9 @@ export const BOMBER_FRONT_BODY_PREVIEW_HEIGHT_SCALE = 0.95;
 export const BOMBER_BACK_PREVIEW_PLACEMENT_SCALE = 1.144;
 /**
  * Preview-only: bomber sleeves vs Printify (print stays 1.0).
- * 1.1 → 1.21 (+10%) → 1.452 (+20% more).
+ * 1.1 → 1.21 → 1.452 → 1.815 (+25% more).
  */
-export const BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE = 1.452;
+export const BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE = 1.815;
 /** Printify blueprint 449 (unisex sweatshirt AOP) — collar + cuffs, no hood. */
 export const SWEATSHIRT_BLUEPRINT_ID = 449;
 /**
