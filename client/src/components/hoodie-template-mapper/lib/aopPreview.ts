@@ -52,6 +52,7 @@ import {
   BOMBER_FRONT_BODY_ASPECT_X_SCALE,
   BOMBER_FRONT_BODY_OFFSET_Y_FRAC,
   BOMBER_FRONT_BODY_PLACEMENT_SCALE,
+  BOMBER_FRONT_BODY_PREVIEW_HEIGHT_SCALE,
   BOMBER_FRONT_BODY_PREVIEW_OFFSET_Y_FRAC,
   BOMBER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE,
   BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE,
@@ -1259,6 +1260,21 @@ function scaleDesignRectEffectiveX(info: DesignRectInfo, factor: number): Design
   };
 }
 
+/** Scale effective rect height only (about center) — preview mesh Y stretch. */
+function scaleDesignRectEffectiveY(info: DesignRectInfo, factor: number): DesignRectInfo {
+  if (factor === 1) return info;
+  const cy = info.effective.y + info.effective.height / 2;
+  const h = info.effective.height * factor;
+  return {
+    ...info,
+    effective: {
+      ...info.effective,
+      y: cy - h / 2,
+      height: h,
+    },
+  };
+}
+
 /** Shift effective rect vertically by a fraction of its height. */
 function offsetDesignRectEffectiveY(info: DesignRectInfo, yFrac: number): DesignRectInfo {
   if (yFrac === 0) return info;
@@ -1313,6 +1329,7 @@ function applyFrontBodyPreviewPlacementScale(
         front,
         BOMBER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE,
       );
+      next = scaleDesignRectEffectiveY(next, BOMBER_FRONT_BODY_PREVIEW_HEIGHT_SCALE);
       next = offsetDesignRectEffectiveY(
         next,
         BOMBER_FRONT_BODY_PREVIEW_OFFSET_Y_FRAC,

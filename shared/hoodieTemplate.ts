@@ -71,10 +71,15 @@ export const BOMBER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE = 1.07;
  */
 export const BOMBER_FRONT_BODY_PREVIEW_OFFSET_Y_FRAC = 0.045;
 /**
- * Preview-only: bomber back body ~10% larger to match Printify
- * (print export stays 1.0). Merchant: back size is good at this level.
+ * Preview-only: shrink bomber front height 5% (width unchanged) so app mockup
+ * matches Printify proportions — compensates mockup mesh vertical stretch.
  */
-export const BOMBER_BACK_PREVIEW_PLACEMENT_SCALE = 1.1;
+export const BOMBER_FRONT_BODY_PREVIEW_HEIGHT_SCALE = 0.95;
+/**
+ * Preview-only: bomber back body vs Printify (print stays 1.0).
+ * Was 1.1; merchant asked +4% (1.1 × 1.04).
+ */
+export const BOMBER_BACK_PREVIEW_PLACEMENT_SCALE = 1.144;
 /**
  * Preview-only: bomber sleeves vs Printify (print stays 1.0).
  * 1.1 → 1.21 (+10%) → 1.452 (+20% more).
