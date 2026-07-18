@@ -415,8 +415,8 @@ describe("bomber jacket blueprint", () => {
     expect(isBomberJacketBlueprint(451)).toBe(false);
     expect(defaultHoodieTypeForBlueprint(433)).toBe("bomber-jacket-aop");
     expect(BOMBER_FRONT_BODY_ASPECT_X_SCALE).toBe(1);
-    expect(BOMBER_FRONT_BODY_PLACEMENT_SCALE).toBe(1.32);
-    expect(BOMBER_FRONT_BODY_OFFSET_Y_FRAC).toBe(-0.14);
+    expect(BOMBER_FRONT_BODY_PLACEMENT_SCALE).toBe(1.42);
+    expect(BOMBER_FRONT_BODY_OFFSET_Y_FRAC).toBe(-0.18);
     expect(BOMBER_BACK_PREVIEW_PLACEMENT_SCALE).toBe(1.1);
     expect(BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE).toBe(1.452);
     // Mapper/preview templates still use zip-style L/R meshes; export composites to `front`.

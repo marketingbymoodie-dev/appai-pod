@@ -54,12 +54,12 @@ export const BOMBER_JACKET_BLUEPRINT_ID = 433;
  */
 export const BOMBER_FRONT_BODY_ASPECT_X_SCALE = 1;
 /** Place-on-item (preview + print): enlarge bomber front art for shoulder coverage. */
-export const BOMBER_FRONT_BODY_PLACEMENT_SCALE = 1.32;
+export const BOMBER_FRONT_BODY_PLACEMENT_SCALE = 1.42;
 /**
  * Place-on-item (preview + print): shift bomber front-body rect up as a fraction
  * of rect height (fill bare shoulder triangles near collar).
  */
-export const BOMBER_FRONT_BODY_OFFSET_Y_FRAC = -0.14;
+export const BOMBER_FRONT_BODY_OFFSET_Y_FRAC = -0.18;
 /**
  * Preview-only: bomber back body ~10% larger to match Printify
  * (print export stays 1.0). Merchant: back size is good at this level.

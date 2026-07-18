@@ -2410,29 +2410,128 @@ export function finalizePulloverPrintPanelsForPrintify(
   );
 }
 
+/** Typical XL bp 433 `front` placeholder when product-type dims are missing. */
+const BOMBER_FRONT_PRINT_DIMS_FALLBACK = { width: 4011, height: 5025 } as const;
+
 /**
- * Bomber bp 433 Printify catalog has a single `front` placeholder (e.g. XL
- * ~4011×5025), not zip-style `front_left`/`front_right`. Uploading one half
- * onto `front` stretches/squashes the art and leaves shoulders bare.
- * Composite L+R into one edge-to-edge `front` canvas (back already matches).
+ * Union AABB of front_left + front_right masks (mockup space), or a single
+ * `front` mask when the template is already single-panel.
  */
-export function finalizeBomberPrintPanelsForPrintify(
-  panels: FlatPrintPanelExport[],
-  template: HoodieTemplate,
-  backgroundColor?: string | null,
+function bomberFrontUnionBbox(template: HoodieTemplate): Aabb | null {
+  const layers = (template.views.front?.layers ?? []).filter(
+    (l) =>
+      l.visible &&
+      !l.isExclusion &&
+      (l.panelKey === "front_left" ||
+        l.panelKey === "front_right" ||
+        l.panelKey === "front"),
+  );
+  return totalPrintAabb(layers);
+}
+
+/**
+ * Bomber bp 433 has a single Printify `front` (not zip halves). Bake one
+ * continuous front print file from the full front-body artwork placement —
+ * same idea as `back` — instead of stitching half-panel meshes (that squashed
+ * circles and left shoulders bare).
+ */
+export function bakeBomberFrontPrintPanel(args: {
+  template: HoodieTemplate;
+  artwork: HTMLImageElement;
+  frontBodyRect: DesignRectInfo;
+  backgroundColor?: string | null;
   placeholderPositions?: ReadonlyArray<{
     position: string;
     width: number;
     height: number;
-  }>,
+  }>;
+  maxLongEdgePx?: number;
+}): FlatPrintPanelExport | null {
+  const {
+    template,
+    artwork,
+    frontBodyRect,
+    backgroundColor,
+    placeholderPositions,
+    maxLongEdgePx,
+  } = args;
+  if (!isBomberJacketBlueprint(template.blueprintId)) return null;
+
+  const ph = placeholderPositions?.find(
+    (p) => p.position === "front" || p.position.toLowerCase() === "front",
+  );
+  let dimsW = ph && ph.width > 0 ? ph.width : BOMBER_FRONT_PRINT_DIMS_FALLBACK.width;
+  let dimsH = ph && ph.height > 0 ? ph.height : BOMBER_FRONT_PRINT_DIMS_FALLBACK.height;
+  const longEdge = Math.max(dimsW, dimsH, 1);
+  const panelMax = maxLongEdgePx ?? PRINT_PANEL_MAX_LONG_EDGE_PX;
+  const outputScale = Math.min(
+    Math.max(1, PRINT_PANEL_TARGET_LONG_EDGE_PX / longEdge),
+    panelMax / longEdge,
+  );
+  const targetW = Math.max(1, Math.round(dimsW * outputScale));
+  const targetH = Math.max(1, Math.round(dimsH * outputScale));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = targetW;
+  canvas.height = targetH;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+
+  const bg = backgroundColor || DEFAULT_GARMENT_BACKGROUND;
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, targetW, targetH);
+
+  const aw = artwork.naturalWidth || artwork.width;
+  const ah = artwork.naturalHeight || artwork.height;
+  if (!(aw > 0 && ah > 0)) {
+    return { position: "front", panelKey: "front", canvas };
+  }
+
+  const union =
+    bomberFrontUnionBbox(template) ??
+    ({
+      x: frontBodyRect.effective.x,
+      y: frontBodyRect.effective.y,
+      width: frontBodyRect.effective.width,
+      height: frontBodyRect.effective.height,
+    } satisfies Aabb);
+
+  // Sample the front-body design the same way preview does for the combined
+  // chest (no L/R seam split) — then fill the Printify front placeholder.
+  const slice = synthesiseSeamAwareSourceRect(
+    union,
+    frontBodyRect,
+    aw,
+    ah,
+    "none",
+  );
+  if (slice.width > 0 && slice.height > 0) {
+    ctx.drawImage(
+      artwork,
+      slice.x,
+      slice.y,
+      slice.width,
+      slice.height,
+      0,
+      0,
+      targetW,
+      targetH,
+    );
+  }
+
+  return { position: "front", panelKey: "front", canvas };
+}
+
+/**
+ * Drop zip-style half front uploads and attach a single baked `front` panel.
+ */
+export function finalizeBomberPrintPanelsForPrintify(
+  panels: FlatPrintPanelExport[],
+  template: HoodieTemplate,
+  bakedFront: FlatPrintPanelExport | null,
 ): FlatPrintPanelExport[] {
   if (!isBomberJacketBlueprint(template.blueprintId)) return panels;
 
-  const left = panels.find((p) => p.panelKey === "front_left");
-  const right = panels.find((p) => p.panelKey === "front_right");
-  const existingFront = panels.find(
-    (p) => p.panelKey === "front" || p.position === "front",
-  );
   const rest = panels.filter(
     (p) =>
       p.panelKey !== "front_left" &&
@@ -2441,57 +2540,20 @@ export function finalizeBomberPrintPanelsForPrintify(
       p.position !== "front",
   );
 
-  // Template already exports a true single front — just normalize position.
-  if (existingFront && !left && !right) {
+  if (bakedFront) {
+    return [...rest, bakedFront];
+  }
+
+  const existingFront = panels.find(
+    (p) => p.panelKey === "front" || p.position === "front",
+  );
+  if (existingFront) {
     return [
       ...rest,
       { ...existingFront, position: "front", panelKey: "front" },
     ];
   }
-
-  if (!left && !right) return panels;
-
-  const ph = placeholderPositions?.find(
-    (p) => p.position === "front" || p.position.toLowerCase() === "front",
-  );
-  const fallbackW =
-    (left?.canvas.width ?? 0) + (right?.canvas.width ?? 0) || 1024;
-  const fallbackH = Math.max(
-    left?.canvas.height ?? 0,
-    right?.canvas.height ?? 0,
-    1024,
-  );
-  const targetW = Math.max(1, Math.round(ph && ph.width > 0 ? ph.width : fallbackW));
-  const targetH = Math.max(1, Math.round(ph && ph.height > 0 ? ph.height : fallbackH));
-
-  const canvas = document.createElement("canvas");
-  canvas.width = targetW;
-  canvas.height = targetH;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return panels;
-
-  const bg = backgroundColor || DEFAULT_GARMENT_BACKGROUND;
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, targetW, targetH);
-
-  // Printify bomber front is one pattern piece: left body | zipper | right body.
-  // Equal halves reconstruct the place-on-item design across the zipper.
-  const halfW = targetW / 2;
-  if (left) {
-    ctx.drawImage(left.canvas, 0, 0, halfW, targetH);
-  }
-  if (right) {
-    ctx.drawImage(right.canvas, halfW, 0, halfW, targetH);
-  } else if (left) {
-    // Only one half — mirror into the empty side so Printify still gets coverage.
-    ctx.save();
-    ctx.translate(targetW, 0);
-    ctx.scale(-1, 1);
-    ctx.drawImage(left.canvas, 0, 0, halfW, targetH);
-    ctx.restore();
-  }
-
-  return [...rest, { position: "front", panelKey: "front", canvas }];
+  return rest;
 }
 
 /**
@@ -2606,6 +2668,13 @@ export function renderFlatPrintPanels(
   }
 
   for (const { view, layer, panelKey } of exportLayers) {
+    // Bomber Printify catalog is a single `front` — skip zip halves; baked below.
+    if (
+      isBomberJacketBlueprint(template.blueprintId) &&
+      (panelKey === "front_left" || panelKey === "front_right")
+    ) {
+      continue;
+    }
     const position = hoodiePanelKeyToPrintifyPosition(panelKey);
     const dims = resolveExportPanelDims(
       layer,
@@ -2788,11 +2857,25 @@ export function renderFlatPrintPanels(
     panelEnabledOverrides,
     backgroundColor,
   );
+  let bakedBomberFront: FlatPrintPanelExport | null = null;
+  if (isBomberJacketBlueprint(template.blueprintId) && artwork) {
+    const frontRects = rectsByView.get("front");
+    const frontBodyRect = frontRects?.get("front-body") ?? null;
+    if (frontBodyRect && mode === "single-sheet") {
+      bakedBomberFront = bakeBomberFrontPrintPanel({
+        template,
+        artwork,
+        frontBodyRect,
+        backgroundColor,
+        placeholderPositions: params.placeholderPositions,
+        maxLongEdgePx: panelMaxLongEdge,
+      });
+    }
+  }
   const afterBomber = finalizeBomberPrintPanelsForPrintify(
     afterPullover,
     template,
-    backgroundColor,
-    params.placeholderPositions,
+    bakedBomberFront,
   );
   const merged = finalizeSweatshirtPrintPanelsForPrintify(
     afterBomber,
