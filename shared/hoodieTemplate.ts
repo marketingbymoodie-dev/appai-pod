@@ -61,6 +61,16 @@ export const BOMBER_FRONT_BODY_PLACEMENT_SCALE = 1.42;
  */
 export const BOMBER_FRONT_BODY_OFFSET_Y_FRAC = -0.18;
 /**
+ * Preview-only: bomber front ~7% larger so the app mockup matches Printify
+ * (print export stays on BOMBER_FRONT_BODY_PLACEMENT_* only).
+ */
+export const BOMBER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE = 1.07;
+/**
+ * Preview-only: lower bomber front art ~1" on the mockup (positive = down).
+ * Print export is unchanged.
+ */
+export const BOMBER_FRONT_BODY_PREVIEW_OFFSET_Y_FRAC = 0.045;
+/**
  * Preview-only: bomber back body ~10% larger to match Printify
  * (print export stays 1.0). Merchant: back size is good at this level.
  */

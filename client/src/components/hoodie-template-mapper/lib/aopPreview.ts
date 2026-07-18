@@ -52,6 +52,8 @@ import {
   BOMBER_FRONT_BODY_ASPECT_X_SCALE,
   BOMBER_FRONT_BODY_OFFSET_Y_FRAC,
   BOMBER_FRONT_BODY_PLACEMENT_SCALE,
+  BOMBER_FRONT_BODY_PREVIEW_OFFSET_Y_FRAC,
+  BOMBER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE,
   BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE,
   drawMockupImageInCanvas,
   findGroupForPanel,
@@ -1270,8 +1272,8 @@ function offsetDesignRectEffectiveY(info: DesignRectInfo, yFrac: number): Design
 }
 
 /**
- * Bomber front-body (preview + print): narrow X so front halves don't stretch
- * vs back, then enlarge + nudge up for shoulder coverage.
+ * Bomber front-body (preview + print): enlarge + nudge up for Printify coverage.
+ * Preview-only front scale/lower is applied separately.
  */
 function applyBomberFrontBodyPlacement(
   template: HoodieTemplate,
@@ -1305,6 +1307,18 @@ function applyFrontBodyPreviewPlacementScale(
     return;
   }
   if (isBomberJacketBlueprint(template.blueprintId)) {
+    const front = rects.get("front-body");
+    if (front) {
+      let next = scaleDesignRectEffective(
+        front,
+        BOMBER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE,
+      );
+      next = offsetDesignRectEffectiveY(
+        next,
+        BOMBER_FRONT_BODY_PREVIEW_OFFSET_Y_FRAC,
+      );
+      rects.set("front-body", next);
+    }
     const back = rects.get("back-body");
     if (back) {
       rects.set(
