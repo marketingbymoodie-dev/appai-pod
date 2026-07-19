@@ -81,7 +81,9 @@ export const BOMBER_FRONT_BODY_PREVIEW_HEIGHT_SCALE = 0.95;
  */
 export const BOMBER_BACK_PREVIEW_PLACEMENT_SCALE = 1.144;
 /**
- * Preview-only: bomber sleeves vs Printify (print stays 1.0).
+ * Bomber sleeves (preview + print): enlarge sleeve design rect so place-on-item
+ * matches what customers see on the mockup. Was preview-only; print at 1.0 left
+ * sleeves mostly background colour on Printify while the app showed artwork.
  * 1.1 → 1.21 → 1.452 → 1.815 (+25% more).
  */
 export const BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE = 1.815;

@@ -928,6 +928,7 @@ export default function HoodieAopPlacer({
       backgroundColor: state.backgroundColor,
       tileSettings: state.tileSettings,
       pixelsPerInch: data.template.realWorldCalibration?.pixelsPerInch,
+      sleevesMirrored: state.sleevesMirrored,
     });
   }, [data, state, mockups, artworkImg]);
 

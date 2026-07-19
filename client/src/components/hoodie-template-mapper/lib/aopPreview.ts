@@ -1327,6 +1327,23 @@ function applyBomberFrontBodyPlacement(
   rects.set("front-body", next);
 }
 
+/** Bomber sleeves (preview + print): same scale so Printify matches the placer. */
+function applyBomberSleevePlacementScale(
+  template: HoodieTemplate,
+  rects: Map<string, DesignRectInfo>,
+): void {
+  if (!isBomberJacketBlueprint(template.blueprintId)) return;
+  for (const groupId of ["left-sleeve", "right-sleeve"] as const) {
+    const info = rects.get(groupId);
+    if (info) {
+      rects.set(
+        groupId,
+        scaleDesignRectEffective(info, BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE),
+      );
+    }
+  }
+}
+
 /** Preview-only body placement bump (does not affect print export). */
 function applyFrontBodyPreviewPlacementScale(
   template: HoodieTemplate,
@@ -1366,15 +1383,7 @@ function applyFrontBodyPreviewPlacementScale(
         scaleDesignRectEffective(back, BOMBER_BACK_PREVIEW_PLACEMENT_SCALE),
       );
     }
-    for (const groupId of ["left-sleeve", "right-sleeve"] as const) {
-      const info = rects.get(groupId);
-      if (info) {
-        rects.set(
-          groupId,
-          scaleDesignRectEffective(info, BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE),
-        );
-      }
-    }
+    applyBomberSleevePlacementScale(template, rects);
     return;
   }
   if (!isSweatshirtBlueprint(template.blueprintId)) return;
@@ -2733,6 +2742,7 @@ export function renderFlatPrintPanels(
         enabledOverrides: groupEnabledOverrides,
       });
       applyBomberFrontBodyPlacement(template, rects);
+      applyBomberSleevePlacementScale(template, rects);
       rectsByView.set(view, rects);
     }
   }

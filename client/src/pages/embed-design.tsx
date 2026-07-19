@@ -5934,6 +5934,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           backgroundColor: result.state.backgroundColor,
           tileSettings: result.state.tileSettings,
           pocketsEnabled: result.state.pocketsEnabled,
+          placements: result.state.placements,
+          enabled: result.state.enabled,
+          sleevesMirrored: result.state.sleevesMirrored,
         });
         void (async () => {
           try {
