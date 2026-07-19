@@ -281,6 +281,16 @@ export type AopPreviewParams = {
    * (XOR with mesh calibration `sourceFlipX`) for bilateral symmetry.
    */
   sleevesMirrored?: boolean;
+  /**
+   * Printify placeholder dims — used by the front→back sleeve/hood bridge
+   * so the preview flat panel matches print export aspect (not just the
+   * calibration PNG size).
+   */
+  placeholderPositions?: ReadonlyArray<{
+    position: string;
+    width: number;
+    height: number;
+  }>;
 };
 
 /** XOR customer sleeve-mirror with mesh calibration flip. */
@@ -1344,10 +1354,15 @@ function applyBomberSleevePreviewPlacementScale(
   }
 }
 
-/** Preview-only body placement bump (does not affect print export). */
+/**
+ * Preview-only body placement bump (does not affect print export).
+ * `includeBomberSleeves` defaults true for the live front mockup; the
+ * front→back sleeve bridge omits it so the flat bake matches Printify.
+ */
 function applyFrontBodyPreviewPlacementScale(
   template: HoodieTemplate,
   rects: Map<string, DesignRectInfo>,
+  opts?: { includeBomberSleeves?: boolean },
 ): void {
   if (
     isPulloverHoodieBlueprint(template.blueprintId) ||
@@ -1383,7 +1398,9 @@ function applyFrontBodyPreviewPlacementScale(
         scaleDesignRectEffective(back, BOMBER_BACK_PREVIEW_PLACEMENT_SCALE),
       );
     }
-    applyBomberSleevePreviewPlacementScale(template, rects);
+    if (opts?.includeBomberSleeves !== false) {
+      applyBomberSleevePreviewPlacementScale(template, rects);
+    }
     return;
   }
   if (!isSweatshirtBlueprint(template.blueprintId)) return;
@@ -1786,7 +1803,10 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
                 legacyPlacement: artworkPlacement,
               });
               applyBomberFrontBodyPlacement(template, rects);
-              applyFrontBodyPreviewPlacementScale(template, rects);
+              // Bridge flat bake must match print (no preview-only sleeve zoom).
+              applyFrontBodyPreviewPlacementScale(template, rects, {
+                includeBomberSleeves: false,
+              });
               return rects;
             })()
           : new Map<string, DesignRectInfo>();
@@ -1945,12 +1965,21 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
             ? layerSources.get(layer.productionPanelSrc) ?? null
             : null;
         const calibImg = frontCalib ?? backCalib;
-        const fallbackSize = calibImg
-          ? {
-              width: calibImg.naturalWidth || calibImg.width,
-              height: calibImg.naturalHeight || calibImg.height,
-            }
-          : undefined;
+        // Prefer Printify placeholder aspect (same as print export) so the
+        // back-view sleeve/hood bridge shows the same panel crop as Printify.
+        const placeholders = placeholderDimsByPosition(params.placeholderPositions);
+        const printPos = hoodiePanelKeyToPrintifyPosition(layer.panelKey);
+        const ph =
+          placeholders.get(printPos) ??
+          placeholders.get(printPos.toLowerCase());
+        const fallbackSize = ph
+          ? { width: ph.width, height: ph.height }
+          : calibImg
+            ? {
+                width: calibImg.naturalWidth || calibImg.width,
+                height: calibImg.naturalHeight || calibImg.height,
+              }
+            : undefined;
         const flat = renderHoodFlatPanel(frontLayer, artwork, frontRect, {
           fallbackSize,
           sleevesMirrored: params.sleevesMirrored,

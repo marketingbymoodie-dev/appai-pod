@@ -941,8 +941,9 @@ export default function HoodieAopPlacer({
       tileSettings: state.tileSettings,
       pixelsPerInch: data.template.realWorldCalibration?.pixelsPerInch,
       sleevesMirrored: state.sleevesMirrored,
+      placeholderPositions,
     });
-  }, [data, state, mockups, artworkImg]);
+  }, [data, state, mockups, artworkImg, placeholderPositions]);
 
   // ---------- Helpers ----------
 
@@ -962,18 +963,13 @@ export default function HoodieAopPlacer({
   }, []);
 
   /**
-   * View-row button handler. Each button always sets BOTH the visible
-   * view and the active group to a deterministic value, so the customer
-   * never gets stuck unable to switch back to e.g. front-body after
-   * picking hood (previous bug: clicking Front while hood was active
-   * preserved hood as the active group, leaving no path back).
+   * View-row button handler. Front/Back always engage the matching body
+   * Part (front-body / back-body) so customers aren't left on Sleeves/Hood
+   * after changing view. Pick Sleeves again explicitly to edit sleeves.
    */
   const setView = useCallback((view: HoodieView) => {
     setState((prev) => {
       if (!prev) return prev;
-      if (prev.activeGroupId === SLEEVES_PART_ID) {
-        return { ...prev, view };
-      }
       const pillow = data && isPillowWrapTemplate(data.template);
       const activeGroupId = pillow
         ? "front-face"
@@ -1313,10 +1309,11 @@ export default function HoodieAopPlacer({
         tileSettings: state.tileSettings,
         pixelsPerInch: data.template.realWorldCalibration?.pixelsPerInch,
         sleevesMirrored: state.sleevesMirrored,
+        placeholderPositions,
       });
       return c;
     },
-    [data, state, mockups, artworkImg],
+    [data, state, mockups, artworkImg, placeholderPositions],
   );
 
   // Flat per-panel print files for order fulfillment (Phase 5 production
