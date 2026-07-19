@@ -1327,8 +1327,8 @@ function applyBomberFrontBodyPlacement(
   rects.set("front-body", next);
 }
 
-/** Bomber sleeves (preview + print): same scale so Printify matches the placer. */
-function applyBomberSleevePlacementScale(
+/** Preview-only: enlarge bomber sleeve design rects to match Printify mockups. */
+function applyBomberSleevePreviewPlacementScale(
   template: HoodieTemplate,
   rects: Map<string, DesignRectInfo>,
 ): void {
@@ -1383,7 +1383,7 @@ function applyFrontBodyPreviewPlacementScale(
         scaleDesignRectEffective(back, BOMBER_BACK_PREVIEW_PLACEMENT_SCALE),
       );
     }
-    applyBomberSleevePlacementScale(template, rects);
+    applyBomberSleevePreviewPlacementScale(template, rects);
     return;
   }
   if (!isSweatshirtBlueprint(template.blueprintId)) return;
@@ -2742,7 +2742,6 @@ export function renderFlatPrintPanels(
         enabledOverrides: groupEnabledOverrides,
       });
       applyBomberFrontBodyPlacement(template, rects);
-      applyBomberSleevePlacementScale(template, rects);
       rectsByView.set(view, rects);
     }
   }

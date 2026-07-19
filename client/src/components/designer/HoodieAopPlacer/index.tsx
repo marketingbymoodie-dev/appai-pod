@@ -1030,12 +1030,35 @@ export default function HoodieAopPlacer({
         return;
       }
 
+      // Sleeves ↔ body: click the front/back torso (or a sleeve) to switch Part.
+      // Applies to every sleeved garment (bomber, zip, pullover, sweatshirt, …).
       if (isSleevesPart(state.activeGroupId)) {
-        const frontRect = rects.get("front-body");
-        if (frontRect?.enabled && hitTestEffectiveRect(pt, frontRect.effective)) {
-          onPartButton("front-body");
-          setOverlayVisible(true);
-          return;
+        if (state.view === "front") {
+          const frontRect = rects.get("front-body");
+          if (frontRect && hitTestEffectiveRect(pt, frontRect.effective)) {
+            onPartButton("front-body");
+            setOverlayVisible(true);
+            return;
+          }
+        } else if (state.view === "back") {
+          const backRect = rects.get("back-body");
+          if (backRect && hitTestEffectiveRect(pt, backRect.effective)) {
+            onPartButton("back-body");
+            setOverlayVisible(true);
+            return;
+          }
+        }
+      } else if (
+        state.activeGroupId === "front-body" ||
+        state.activeGroupId === "back-body"
+      ) {
+        for (const sleeveId of SLEEVE_GROUP_IDS) {
+          const sleeveRect = rects.get(sleeveId);
+          if (sleeveRect && hitTestEffectiveRect(pt, sleeveRect.effective)) {
+            onPartButton(SLEEVES_PART_ID);
+            setOverlayVisible(true);
+            return;
+          }
         }
       }
 
@@ -1622,7 +1645,7 @@ export default function HoodieAopPlacer({
                 </button>
               ))}
             </div>
-            {hasSleeves && (
+            {hasSleeves && isSleevesPart(state.activeGroupId) && (
               <div className="mt-1.5">
                 <button
                   type="button"
