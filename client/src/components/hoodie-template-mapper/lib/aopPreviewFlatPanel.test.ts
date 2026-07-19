@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildFlatMeshTargetPoints, meshSourceFlipXForPanel } from "./aopPreview";
+import {
+  buildFlatMeshTargetPoints,
+  flatBridgeSourceFlipX,
+  meshSourceFlipXForPanel,
+} from "./aopPreview";
 
 describe("buildFlatMeshTargetPoints", () => {
   it("maps mesh corners to the full flat canvas", () => {
@@ -31,5 +35,15 @@ describe("meshSourceFlipXForPanel", () => {
     expect(meshSourceFlipXForPanel("right_sleeve", false, false)).toBe(false);
     expect(meshSourceFlipXForPanel("left_sleeve", false, true)).toBe(false);
     expect(meshSourceFlipXForPanel("left_sleeve", true, true)).toBe(true);
+  });
+});
+
+describe("flatBridgeSourceFlipX", () => {
+  it("flips sleeves on the back bridge, not hood", () => {
+    expect(flatBridgeSourceFlipX("left_sleeve")).toBe(true);
+    expect(flatBridgeSourceFlipX("right_sleeve")).toBe(true);
+    expect(flatBridgeSourceFlipX("left_hood")).toBe(false);
+    expect(flatBridgeSourceFlipX("right_hood")).toBe(false);
+    expect(flatBridgeSourceFlipX("back")).toBe(false);
   });
 });

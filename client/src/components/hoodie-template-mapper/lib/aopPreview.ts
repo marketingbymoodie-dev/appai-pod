@@ -304,6 +304,13 @@ export function meshSourceFlipXForPanel(
   return calib;
 }
 
+/** Back-view flat bridge: sleeves need U flip for the wrap; hood does not. */
+export function flatBridgeSourceFlipX(
+  panelKey: HoodiePanelKey | null | undefined,
+): boolean {
+  return panelKey === "left_sleeve" || panelKey === "right_sleeve";
+}
+
 /**
  * Read-only helper: should this panel participate in single-sheet
  * mode? Treats undefined as `true` for back-compat — templates traced
@@ -1964,20 +1971,21 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
             ? layerSources.get(layer.productionPanelSrc) ?? null
             : null;
         const calibImg = frontCalib ?? backCalib;
-        // Prefer Printify placeholder aspect (same as print export) so the
-        // back-view sleeve/hood bridge shows the same panel crop as Printify.
+        // Prefer calibration PNG size — front/back meshes share that UV space.
+        // Printify placeholder aspect is for export only; using it here stretches
+        // the flat and samples the wrong sleeve wrap region on the back mockup.
         const placeholders = placeholderDimsByPosition(params.placeholderPositions);
         const printPos = hoodiePanelKeyToPrintifyPosition(layer.panelKey);
         const ph =
           placeholders.get(printPos) ??
           placeholders.get(printPos.toLowerCase());
-        const fallbackSize = ph
-          ? { width: ph.width, height: ph.height }
-          : calibImg
-            ? {
-                width: calibImg.naturalWidth || calibImg.width,
-                height: calibImg.naturalHeight || calibImg.height,
-              }
+        const fallbackSize = calibImg
+          ? {
+              width: calibImg.naturalWidth || calibImg.width,
+              height: calibImg.naturalHeight || calibImg.height,
+            }
+          : ph
+            ? { width: ph.width, height: ph.height }
             : undefined;
         const flat = renderHoodFlatPanel(frontLayer, artwork, frontRect, {
           fallbackSize,
@@ -1987,11 +1995,10 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
           drawMeshWarp(pctx, flat, flat.width, flat.height, {
             ...layer.mesh,
             sourceRect: { x: 0, y: 0, width: flat.width, height: flat.height },
-            // The flat panel already bakes in the front mesh's source
-            // UV transform, so reset these on the back warp to avoid
-            // double-applying.
+            // Flat already bakes front mesh source UV transforms — reset
+            // rotation/Y; sleeves need an explicit U flip for the wrap.
             sourceRotation: 0,
-            sourceFlipX: false,
+            sourceFlipX: flatBridgeSourceFlipX(layer.panelKey),
             sourceFlipY: false,
           });
           drewBridge = true;
