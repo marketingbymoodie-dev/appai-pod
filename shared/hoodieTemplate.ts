@@ -85,6 +85,35 @@ export const BOMBER_BACK_PREVIEW_PLACEMENT_SCALE = 1.144;
  * 1.1 → 1.21 → 1.452 → 1.815 → 2.7225 → 2.178 → 2.047 → 1.945 → 1.7505 (−10%).
  */
 export const BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE = 1.7505;
+/**
+ * Bomber Pattern mode — print-only tile motif scale (preview stays on shared
+ * uniform math). Multiplies mockup→flat tile px so Printify matches the app.
+ * Front ×5 (merchant guess for microscopic Printify front vs app).
+ */
+export const BOMBER_PATTERN_FRONT_PRINT_TILE_SCALE = 5;
+/** Bomber Pattern print-only: back motifs −5% vs shared uniform. */
+export const BOMBER_PATTERN_BACK_PRINT_TILE_SCALE = 0.95;
+/** Bomber Pattern print-only: sleeve motifs −20% vs shared uniform. */
+export const BOMBER_PATTERN_SLEEVES_PRINT_TILE_SCALE = 0.8;
+
+/** Print-only Pattern tile scale for bomber panels (1 = no change). */
+export function bomberPatternPrintTileScaleForPanel(
+  panelKey: string | null | undefined,
+): number {
+  if (
+    panelKey === "front" ||
+    panelKey === "front_left" ||
+    panelKey === "front_right"
+  ) {
+    return BOMBER_PATTERN_FRONT_PRINT_TILE_SCALE;
+  }
+  if (panelKey === "back") return BOMBER_PATTERN_BACK_PRINT_TILE_SCALE;
+  if (panelKey === "left_sleeve" || panelKey === "right_sleeve") {
+    return BOMBER_PATTERN_SLEEVES_PRINT_TILE_SCALE;
+  }
+  return 1;
+}
+
 /** Printify blueprint 449 (unisex sweatshirt AOP) — collar + cuffs, no hood. */
 export const SWEATSHIRT_BLUEPRINT_ID = 449;
 /**

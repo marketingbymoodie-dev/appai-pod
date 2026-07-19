@@ -55,7 +55,9 @@ import {
   BOMBER_FRONT_BODY_PREVIEW_HEIGHT_SCALE,
   BOMBER_FRONT_BODY_PREVIEW_OFFSET_Y_FRAC,
   BOMBER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE,
+  BOMBER_PATTERN_FRONT_PRINT_TILE_SCALE,
   BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE,
+  bomberPatternPrintTileScaleForPanel,
   drawMockupImageInCanvas,
   findGroupForPanel,
   isBomberJacketBlueprint,
@@ -83,6 +85,7 @@ import {
   patternModeUniformTileScale,
   PRINT_PANEL_BOTTOM_BLEED_FRACTION,
   PRINT_PANEL_TOP_BLEED_FRACTION,
+  referenceMockupToFlatScale,
   usesBomberUniformPatternTileScale,
   usesFrontMatchedBodyPatternTileScale,
   usesPerPanelPatternTileScale,
@@ -1576,6 +1579,8 @@ function renderTiledFlatPanel(
     outputScale?: number;
     meshOverscanCompensation?: boolean;
     mockupToFlatScaleOverride?: number;
+    /** Multiplies final tile px (print-only panel corrections). */
+    tilePxMultiplier?: number;
     /** When set, borrow calibrated sourceRect from the sibling view if missing. */
     template?: HoodieTemplate | null;
     view?: HoodieView;
@@ -1583,6 +1588,7 @@ function renderTiledFlatPanel(
 ): HTMLCanvasElement | null {
   const outputScale = opts?.outputScale ?? 1;
   const meshOverscanCompensation = opts?.meshOverscanCompensation ?? false;
+  const tilePxMultiplier = opts?.tilePxMultiplier ?? 1;
   if (!layer.mesh) return null;
 
   const meshTb = meshTargetBbox(layer.mesh);
@@ -1608,16 +1614,17 @@ function renderTiledFlatPanel(
 
   const polyAnchors = svgPathToAnchors(layer.maskPath);
   const polyBb = polyAnchors.length >= 3 ? aabbOf(polyAnchors) : null;
-  const tilePxFlat = computeTilePxOnFlatCanvas({
-    tileSizeInches: settings.tileSizeInches,
-    pixelsPerInch,
-    flatCanvasW: flatCanvasWBase,
-    meshTargetWidth: meshTb.width,
-    visiblePolyWidth: polyBb?.width,
-    outputScale: scale,
-    meshOverscanCompensation,
-    mockupToFlatScaleOverride: opts?.mockupToFlatScaleOverride,
-  });
+  const tilePxFlat =
+    computeTilePxOnFlatCanvas({
+      tileSizeInches: settings.tileSizeInches,
+      pixelsPerInch,
+      flatCanvasW: flatCanvasWBase,
+      meshTargetWidth: meshTb.width,
+      visiblePolyWidth: polyBb?.width,
+      outputScale: scale,
+      meshOverscanCompensation,
+      mockupToFlatScaleOverride: opts?.mockupToFlatScaleOverride,
+    }) * Math.max(0.01, tilePxMultiplier);
 
   const canvas = document.createElement("canvas");
   canvas.width = flatW;
@@ -2797,13 +2804,22 @@ export function bakeBomberFrontTiledPrintPanel(args: {
     return { position: "front", panelKey: "front", canvas };
   }
 
+  // Never fall back to flatW/meshW = dims/dims (=1) — that made Printify
+  // front motifs microscopic vs mesh-based sleeve/back sheets.
+  const samples = collectPatternTileScaleSamples(template);
+  const baseScale =
+    mockupToFlatScaleOverride ??
+    patternModeUniformTileScale(samples) ??
+    referenceMockupToFlatScale(samples) ??
+    1;
+  const printScale = baseScale * BOMBER_PATTERN_FRONT_PRINT_TILE_SCALE;
   const tilePxFlat = computeTilePxOnFlatCanvas({
     tileSizeInches: tileSettings.tileSizeInches,
     pixelsPerInch,
     flatCanvasW: dimsW,
     meshTargetWidth: dimsW,
     outputScale,
-    mockupToFlatScaleOverride: mockupToFlatScaleOverride ?? undefined,
+    mockupToFlatScaleOverride: printScale,
   });
   const yNudge = BOMBER_FRONT_BODY_OFFSET_Y_FRAC * targetH;
   drawTiledArtworkOnCanvas(
@@ -3044,6 +3060,9 @@ export function renderFlatPrintPanels(
                 bomberUniform: bomberUniformTileScale,
               },
             ),
+            tilePxMultiplier: isBomberJacketBlueprint(template.blueprintId)
+              ? bomberPatternPrintTileScaleForPanel(panelKey)
+              : 1,
             template,
             view,
           })

@@ -8,7 +8,11 @@ import {
   BOMBER_FRONT_BODY_PREVIEW_OFFSET_Y_FRAC,
   BOMBER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE,
   BOMBER_JACKET_BLUEPRINT_ID,
+  BOMBER_PATTERN_BACK_PRINT_TILE_SCALE,
+  BOMBER_PATTERN_FRONT_PRINT_TILE_SCALE,
+  BOMBER_PATTERN_SLEEVES_PRINT_TILE_SCALE,
   BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE,
+  bomberPatternPrintTileScaleForPanel,
   PULOVER_HOODIE_BLUEPRINT_ID,
   SWEATSHIRT_BLUEPRINT_ID,
   ZIP_HOODIE_BLUEPRINT_ID,
@@ -425,6 +429,12 @@ describe("bomber jacket blueprint", () => {
     expect(BOMBER_FRONT_BODY_PREVIEW_HEIGHT_SCALE).toBe(0.95);
     expect(BOMBER_BACK_PREVIEW_PLACEMENT_SCALE).toBe(1.144);
     expect(BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE).toBe(1.7505);
+    expect(BOMBER_PATTERN_FRONT_PRINT_TILE_SCALE).toBe(5);
+    expect(BOMBER_PATTERN_BACK_PRINT_TILE_SCALE).toBe(0.95);
+    expect(BOMBER_PATTERN_SLEEVES_PRINT_TILE_SCALE).toBe(0.8);
+    expect(bomberPatternPrintTileScaleForPanel("front")).toBe(5);
+    expect(bomberPatternPrintTileScaleForPanel("back")).toBe(0.95);
+    expect(bomberPatternPrintTileScaleForPanel("left_sleeve")).toBe(0.8);
     // Mapper/preview templates still use zip-style L/R meshes; export composites to `front`.
     const eligible = panelsEligibleForView("front", BOMBER_JACKET_BLUEPRINT_ID);
     expect(eligible).not.toContain("front");
