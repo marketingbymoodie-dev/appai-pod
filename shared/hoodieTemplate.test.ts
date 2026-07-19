@@ -424,7 +424,7 @@ describe("bomber jacket blueprint", () => {
     expect(BOMBER_FRONT_BODY_PREVIEW_OFFSET_Y_FRAC).toBe(0.045);
     expect(BOMBER_FRONT_BODY_PREVIEW_HEIGHT_SCALE).toBe(0.95);
     expect(BOMBER_BACK_PREVIEW_PLACEMENT_SCALE).toBe(1.144);
-    expect(BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE).toBe(2.7225);
+    expect(BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE).toBe(2.178);
     // Mapper/preview templates still use zip-style L/R meshes; export composites to `front`.
     const eligible = panelsEligibleForView("front", BOMBER_JACKET_BLUEPRINT_ID);
     expect(eligible).not.toContain("front");
