@@ -80,8 +80,10 @@ import {
   computeTilePxOnFlatCanvas,
   computePreviewMeshTileStretch,
   patternModeFrontBodyTileScale,
+  patternModeUniformTileScale,
   PRINT_PANEL_BOTTOM_BLEED_FRACTION,
   PRINT_PANEL_TOP_BLEED_FRACTION,
+  usesBomberUniformPatternTileScale,
   usesFrontMatchedBodyPatternTileScale,
   usesPerPanelPatternTileScale,
   type MeshScaleSample,
@@ -1495,12 +1497,73 @@ function collectPatternTileScaleSamples(template: HoodieTemplate): MeshScaleSamp
 
 function patternTileScaleOverrideForPanel(
   panelKey: string | null | undefined,
-  frontBodyScale: number | null,
+  opts: {
+    frontMatched?: number | null;
+    bomberUniform?: number | null;
+  },
 ): number | undefined {
-  if (frontBodyScale == null) return undefined;
   if (usesPerPanelPatternTileScale(panelKey)) return undefined;
-  if (!usesFrontMatchedBodyPatternTileScale(panelKey)) return undefined;
-  return frontBodyScale;
+  if (
+    opts.bomberUniform != null &&
+    usesBomberUniformPatternTileScale(panelKey)
+  ) {
+    return opts.bomberUniform;
+  }
+  if (
+    opts.frontMatched != null &&
+    usesFrontMatchedBodyPatternTileScale(panelKey)
+  ) {
+    return opts.frontMatched;
+  }
+  return undefined;
+}
+
+/** Bomber Pattern: shift front tile grid up (same intent as place-on-item Y nudge). */
+function bomberPatternFrontTileAnchorYOffsetFrac(
+  template: HoodieTemplate | null | undefined,
+  panelKey: string | null | undefined,
+): number {
+  if (!template || !isBomberJacketBlueprint(template.blueprintId)) return 0;
+  if (
+    panelKey !== "front" &&
+    panelKey !== "front_left" &&
+    panelKey !== "front_right"
+  ) {
+    return 0;
+  }
+  return BOMBER_FRONT_BODY_OFFSET_Y_FRAC;
+}
+
+function drawTiledArtworkOnCanvas(
+  ctx: CanvasRenderingContext2D,
+  artwork: HTMLImageElement,
+  settings: TileSettings,
+  flatW: number,
+  flatH: number,
+  tilePxFlat: number,
+  anchorX: number,
+  anchorY: number,
+): void {
+  const aw = artwork.naturalWidth || artwork.width;
+  const ah = artwork.naturalHeight || artwork.height;
+  const tileHFlat = tilePxFlat * (ah / Math.max(1, aw));
+  const colOf = (x: number) => Math.floor((x - anchorX) / tilePxFlat);
+  const rowOf = (y: number) => Math.floor((y - anchorY) / tileHFlat);
+  const startCol = colOf(0) - 1;
+  const endCol = colOf(flatW) + 1;
+  const startRow = rowOf(0) - 1;
+  const endRow = rowOf(flatH) + 1;
+  for (let row = startRow; row <= endRow; row += 1) {
+    const y = anchorY + row * tileHFlat;
+    const xOffset =
+      settings.pattern === "brick" && row % 2 !== 0 ? tilePxFlat / 2 : 0;
+    for (let col = startCol; col <= endCol; col += 1) {
+      const x = anchorX + col * tilePxFlat + xOffset;
+      const yOffset =
+        settings.pattern === "half-drop" && col % 2 !== 0 ? tileHFlat / 2 : 0;
+      ctx.drawImage(artwork, x, y + yOffset, tilePxFlat, tileHFlat);
+    }
+  }
 }
 
 function renderTiledFlatPanel(
@@ -1555,9 +1618,6 @@ function renderTiledFlatPanel(
     meshOverscanCompensation,
     mockupToFlatScaleOverride: opts?.mockupToFlatScaleOverride,
   });
-  const aw = artwork.naturalWidth || artwork.width;
-  const ah = artwork.naturalHeight || artwork.height;
-  const tileHFlat = tilePxFlat * (ah / Math.max(1, aw));
 
   const canvas = document.createElement("canvas");
   canvas.width = flatW;
@@ -1607,24 +1667,20 @@ function renderTiledFlatPanel(
       anchorX = Math.abs(leftMockupX - cx) < Math.abs(rightMockupX - cx) ? 0 : flatW;
     }
   }
-  const anchorY = flatH / 2;
-  const colOf = (x: number) => Math.floor((x - anchorX) / tilePxFlat);
-  const rowOf = (y: number) => Math.floor((y - anchorY) / tileHFlat);
-  const startCol = colOf(0) - 1;
-  const endCol = colOf(flatW) + 1;
-  const startRow = rowOf(0) - 1;
-  const endRow = rowOf(flatH) + 1;
-  for (let row = startRow; row <= endRow; row += 1) {
-    const y = anchorY + row * tileHFlat;
-    const xOffset =
-      settings.pattern === "brick" && row % 2 !== 0 ? tilePxFlat / 2 : 0;
-    for (let col = startCol; col <= endCol; col += 1) {
-      const x = anchorX + col * tilePxFlat + xOffset;
-      const yOffset =
-        settings.pattern === "half-drop" && col % 2 !== 0 ? tileHFlat / 2 : 0;
-      ctx.drawImage(artwork, x, y + yOffset, tilePxFlat, tileHFlat);
-    }
-  }
+  const yNudge =
+    bomberPatternFrontTileAnchorYOffsetFrac(opts?.template, layer.panelKey) *
+    flatH;
+  const anchorY = flatH / 2 + yNudge;
+  drawTiledArtworkOnCanvas(
+    ctx,
+    artwork,
+    settings,
+    flatW,
+    flatH,
+    tilePxFlat,
+    anchorX,
+    anchorY,
+  );
 
   return canvas;
 }
@@ -1860,10 +1916,17 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
   const tileSettings = params.tileSettings ?? template.tileSettings ?? null;
   // Sweatshirt: lock front/back body Pattern density to the front body's
   // flat/mesh ratio (back was printing a bit small with native per-panel).
+  // Bomber: one median scale for chest/back/sleeves so sleeve motifs match body.
   // Pullover/zip keep native scale — garment-wide overrides regress those.
+  const patternTileSamples =
+    mode === "tile" ? collectPatternTileScaleSamples(template) : [];
   const frontMatchedTileScale =
     mode === "tile" && isSweatshirtBlueprint(template.blueprintId)
-      ? patternModeFrontBodyTileScale(collectPatternTileScaleSamples(template))
+      ? patternModeFrontBodyTileScale(patternTileSamples)
+      : null;
+  const bomberUniformTileScale =
+    mode === "tile" && isBomberJacketBlueprint(template.blueprintId)
+      ? patternModeUniformTileScale(patternTileSamples)
       : null;
   const ppi =
     params.pixelsPerInch ??
@@ -2075,11 +2138,14 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
           W,
           {
             // Native flat/mesh per panel by default; sweatshirt front/back
-            // share the front body's scale so Pattern density matches.
+            // share the front body's scale; bomber body+sleeves share median.
             meshOverscanCompensation: false,
             mockupToFlatScaleOverride: patternTileScaleOverrideForPanel(
               layer.panelKey,
-              frontMatchedTileScale,
+              {
+                frontMatched: frontMatchedTileScale,
+                bomberUniform: bomberUniformTileScale,
+              },
             ),
             template,
             view,
@@ -2662,6 +2728,99 @@ export function bakeBomberFrontPrintPanel(args: {
 }
 
 /**
+ * Bomber Pattern mode — tile a continuous Printify `front` panel (catalog has
+ * no front_left/front_right). Uses the same physical tile math + uniform scale
+ * as body/sleeve Pattern sheets, plus the front Y nudge toward the collar.
+ */
+export function bakeBomberFrontTiledPrintPanel(args: {
+  template: HoodieTemplate;
+  artwork: HTMLImageElement;
+  tileSettings: TileSettings;
+  pixelsPerInch: number;
+  mockupToFlatScaleOverride?: number | null;
+  backgroundColor?: string | null;
+  placeholderPositions?: ReadonlyArray<{
+    position: string;
+    width: number;
+    height: number;
+  }>;
+  maxLongEdgePx?: number;
+  artworkLongEdge?: number;
+}): FlatPrintPanelExport | null {
+  const {
+    template,
+    artwork,
+    tileSettings,
+    pixelsPerInch,
+    mockupToFlatScaleOverride,
+    backgroundColor,
+    placeholderPositions,
+    maxLongEdgePx,
+    artworkLongEdge,
+  } = args;
+  if (!isBomberJacketBlueprint(template.blueprintId)) return null;
+
+  const ph = placeholderPositions?.find(
+    (p) => p.position === "front" || p.position.toLowerCase() === "front",
+  );
+  let dimsW = ph && ph.width > 0 ? ph.width : BOMBER_FRONT_PRINT_DIMS_FALLBACK.width;
+  let dimsH = ph && ph.height > 0 ? ph.height : BOMBER_FRONT_PRINT_DIMS_FALLBACK.height;
+  const longEdge = Math.max(dimsW, dimsH, 1);
+  const panelMax = maxLongEdgePx ?? PRINT_PANEL_MAX_LONG_EDGE_PX;
+  const artEdge =
+    artworkLongEdge ??
+    Math.max(
+      artwork.naturalWidth || artwork.width,
+      artwork.naturalHeight || artwork.height,
+      1,
+    );
+  const tilePxBase = Math.max(1, tileSettings.tileSizeInches * pixelsPerInch);
+  const wanted = artEdge / tilePxBase;
+  const capped = Math.min(wanted, panelMax / longEdge);
+  const outputScale = Math.max(1, capped);
+  const targetW = Math.max(1, Math.round(dimsW * outputScale));
+  const targetH = Math.max(1, Math.round(dimsH * outputScale));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = targetW;
+  canvas.height = targetH;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+
+  const bg = backgroundColor || DEFAULT_GARMENT_BACKGROUND;
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, targetW, targetH);
+
+  const aw = artwork.naturalWidth || artwork.width;
+  const ah = artwork.naturalHeight || artwork.height;
+  if (!(aw > 0 && ah > 0)) {
+    return { position: "front", panelKey: "front", canvas };
+  }
+
+  const tilePxFlat = computeTilePxOnFlatCanvas({
+    tileSizeInches: tileSettings.tileSizeInches,
+    pixelsPerInch,
+    flatCanvasW: dimsW,
+    meshTargetWidth: dimsW,
+    outputScale,
+    mockupToFlatScaleOverride: mockupToFlatScaleOverride ?? undefined,
+  });
+  const yNudge = BOMBER_FRONT_BODY_OFFSET_Y_FRAC * targetH;
+  drawTiledArtworkOnCanvas(
+    ctx,
+    artwork,
+    tileSettings,
+    targetW,
+    targetH,
+    tilePxFlat,
+    targetW / 2,
+    targetH / 2 + yNudge,
+  );
+
+  return { position: "front", panelKey: "front", canvas };
+}
+
+/**
  * Drop zip-style half front uploads and attach a single baked `front` panel.
  */
 export function finalizeBomberPrintPanelsForPrintify(
@@ -2778,9 +2937,15 @@ export function renderFlatPrintPanels(
   }
   const panelMaxLongEdge = maxLongEdgePx ?? PRINT_PANEL_MAX_LONG_EDGE_PX;
   const tileSettings = params.tileSettings ?? template.tileSettings ?? null;
+  const patternTileSamples =
+    mode === "tile" ? collectPatternTileScaleSamples(template) : [];
   const frontMatchedTileScale =
     mode === "tile" && isSweatshirtBlueprint(template.blueprintId)
-      ? patternModeFrontBodyTileScale(collectPatternTileScaleSamples(template))
+      ? patternModeFrontBodyTileScale(patternTileSamples)
+      : null;
+  const bomberUniformTileScale =
+    mode === "tile" && isBomberJacketBlueprint(template.blueprintId)
+      ? patternModeUniformTileScale(patternTileSamples)
       : null;
   const ppi =
     params.pixelsPerInch ??
@@ -2874,7 +3039,10 @@ export function renderFlatPrintPanels(
             outputScale,
             mockupToFlatScaleOverride: patternTileScaleOverrideForPanel(
               panelKey,
-              frontMatchedTileScale,
+              {
+                frontMatched: frontMatchedTileScale,
+                bomberUniform: bomberUniformTileScale,
+              },
             ),
             template,
             view,
@@ -3025,17 +3193,31 @@ export function renderFlatPrintPanels(
   );
   let bakedBomberFront: FlatPrintPanelExport | null = null;
   if (isBomberJacketBlueprint(template.blueprintId) && artwork) {
-    const frontRects = rectsByView.get("front");
-    const frontBodyRect = frontRects?.get("front-body") ?? null;
-    if (frontBodyRect && mode === "single-sheet") {
-      bakedBomberFront = bakeBomberFrontPrintPanel({
+    if (mode === "tile" && tileSettings) {
+      bakedBomberFront = bakeBomberFrontTiledPrintPanel({
         template,
         artwork,
-        frontBodyRect,
+        tileSettings,
+        pixelsPerInch: ppi,
+        mockupToFlatScaleOverride: bomberUniformTileScale,
         backgroundColor,
         placeholderPositions: params.placeholderPositions,
         maxLongEdgePx: panelMaxLongEdge,
+        artworkLongEdge,
       });
+    } else {
+      const frontRects = rectsByView.get("front");
+      const frontBodyRect = frontRects?.get("front-body") ?? null;
+      if (frontBodyRect && mode === "single-sheet") {
+        bakedBomberFront = bakeBomberFrontPrintPanel({
+          template,
+          artwork,
+          frontBodyRect,
+          backgroundColor,
+          placeholderPositions: params.placeholderPositions,
+          maxLongEdgePx: panelMaxLongEdge,
+        });
+      }
     }
   }
   const afterBomber = finalizeBomberPrintPanelsForPrintify(

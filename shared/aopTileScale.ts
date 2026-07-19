@@ -155,6 +155,16 @@ export function usesFrontMatchedBodyPatternTileScale(
 }
 
 /**
+ * Bomber Pattern mode — body + sleeves share one mockup→flat scale so sleeve
+ * motifs match chest/back density. Hood/pocket stay on native per-panel scale.
+ */
+export function usesBomberUniformPatternTileScale(
+  panelKey: string | null | undefined,
+): boolean {
+  return !!panelKey && PATTERN_TILE_BODY_REFERENCE_KEYS.has(panelKey);
+}
+
+/**
  * Prefer the full-front (or median of front halves) mockup→flat scale so the
  * back body tiles at the same physical density as the front. Used when native
  * per-panel ratios diverge (e.g. sweatshirt bp 449 back printing small).

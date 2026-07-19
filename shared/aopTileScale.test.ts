@@ -4,6 +4,7 @@ import {
   computeTilePxOnFlatCanvas,
   patternModeFrontBodyTileScale,
   patternModeUniformTileScale,
+  usesBomberUniformPatternTileScale,
   referenceMockupToFlatScale,
   usesFrontMatchedBodyPatternTileScale,
   usesPerPanelPatternTileScale,
@@ -109,6 +110,17 @@ describe("usesFrontMatchedBodyPatternTileScale", () => {
     expect(usesFrontMatchedBodyPatternTileScale("front")).toBe(true);
     expect(usesFrontMatchedBodyPatternTileScale("back")).toBe(true);
     expect(usesFrontMatchedBodyPatternTileScale("left_sleeve")).toBe(false);
+  });
+});
+
+describe("usesBomberUniformPatternTileScale", () => {
+  it("covers body and sleeves, not hood/pocket", () => {
+    expect(usesBomberUniformPatternTileScale("front_left")).toBe(true);
+    expect(usesBomberUniformPatternTileScale("back")).toBe(true);
+    expect(usesBomberUniformPatternTileScale("left_sleeve")).toBe(true);
+    expect(usesBomberUniformPatternTileScale("right_sleeve")).toBe(true);
+    expect(usesBomberUniformPatternTileScale("left_hood")).toBe(false);
+    expect(usesBomberUniformPatternTileScale("front_pocket")).toBe(false);
   });
 });
 
