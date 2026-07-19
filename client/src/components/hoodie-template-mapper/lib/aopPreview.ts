@@ -304,11 +304,30 @@ export function meshSourceFlipXForPanel(
   return calib;
 }
 
-/** Back-view flat bridge: sleeves need U flip for the wrap; hood does not. */
-export function flatBridgeSourceFlipX(
+/**
+ * Vertical half of a Printify sleeve panel for app mockup sampling.
+ * Left sleeve: front = left half, back = right half.
+ * Right sleeve: front = right half, back = left half.
+ * Returns null for non-sleeve panels (caller uses the full flat).
+ */
+export function sleevePanelHalfSourceRect(
   panelKey: HoodiePanelKey | null | undefined,
-): boolean {
-  return panelKey === "left_sleeve" || panelKey === "right_sleeve";
+  view: HoodieView,
+  flatW: number,
+  flatH: number,
+): { x: number; y: number; width: number; height: number } | null {
+  if (panelKey !== "left_sleeve" && panelKey !== "right_sleeve") return null;
+  const w = Math.max(1, Math.floor(flatW / 2));
+  const h = Math.max(1, Math.round(flatH));
+  const useRightHalf =
+    (panelKey === "left_sleeve" && view === "back") ||
+    (panelKey === "right_sleeve" && view === "front");
+  return {
+    x: useRightHalf ? flatW - w : 0,
+    y: 0,
+    width: w,
+    height: h,
+  };
 }
 
 /**
@@ -1992,13 +2011,23 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
           sleevesMirrored: params.sleevesMirrored,
         });
         if (flat) {
+          const half = sleevePanelHalfSourceRect(
+            layer.panelKey,
+            "back",
+            flat.width,
+            flat.height,
+          );
           drawMeshWarp(pctx, flat, flat.width, flat.height, {
             ...layer.mesh,
-            sourceRect: { x: 0, y: 0, width: flat.width, height: flat.height },
-            // Flat already bakes front mesh source UV transforms — reset
-            // rotation/Y; sleeves need an explicit U flip for the wrap.
+            // Sleeves: sample the back-of-arm vertical half. Hood: full panel.
+            sourceRect: half ?? {
+              x: 0,
+              y: 0,
+              width: flat.width,
+              height: flat.height,
+            },
             sourceRotation: 0,
-            sourceFlipX: flatBridgeSourceFlipX(layer.panelKey),
+            sourceFlipX: false,
             sourceFlipY: false,
           });
           drewBridge = true;
@@ -2093,6 +2122,57 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
       // Reference unused helper symbol so the import stays valid
       // for any future tile-mesh hybrid path.
       void tileSourceRect;
+    } else if (
+      view === "front" &&
+      mode === "single-sheet" &&
+      artwork &&
+      layer.mesh &&
+      (layer.panelKey === "left_sleeve" || layer.panelKey === "right_sleeve") &&
+      layerRect &&
+      layerRect.effective.width > 0 &&
+      layerRect.effective.height > 0
+    ) {
+      // Front sleeves: bake the full Printify panel (same as export / back
+      // bridge), then sample only the front-of-arm vertical half so Front
+      // and Back stay consistent with Printify's wrap layout.
+      const calibImg =
+        layer.productionPanelSrc && layerSources
+          ? layerSources.get(layer.productionPanelSrc) ?? null
+          : null;
+      const placeholders = placeholderDimsByPosition(params.placeholderPositions);
+      const printPos = hoodiePanelKeyToPrintifyPosition(layer.panelKey);
+      const ph =
+        placeholders.get(printPos) ??
+        placeholders.get(printPos.toLowerCase());
+      const fallbackSize = calibImg
+        ? {
+            width: calibImg.naturalWidth || calibImg.width,
+            height: calibImg.naturalHeight || calibImg.height,
+          }
+        : ph
+          ? { width: ph.width, height: ph.height }
+          : undefined;
+      const flat = renderHoodFlatPanel(layer, artwork, layerRect, {
+        fallbackSize,
+        sleevesMirrored: params.sleevesMirrored,
+      });
+      if (flat) {
+        const half = sleevePanelHalfSourceRect(
+          layer.panelKey,
+          "front",
+          flat.width,
+          flat.height,
+        );
+        if (half) {
+          drawMeshWarp(pctx, flat, flat.width, flat.height, {
+            ...layer.mesh,
+            sourceRect: half,
+            sourceRotation: 0,
+            sourceFlipX: false,
+            sourceFlipY: false,
+          });
+        }
+      }
     } else if (artwork && layer.mesh) {
       // Customer artwork warped through the saved mesh. We synthesise
       // a `sourceRect` so the mesh reads from the right slice of the

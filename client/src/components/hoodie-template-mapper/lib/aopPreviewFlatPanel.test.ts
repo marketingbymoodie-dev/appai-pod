@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   buildFlatMeshTargetPoints,
-  flatBridgeSourceFlipX,
   meshSourceFlipXForPanel,
+  sleevePanelHalfSourceRect,
 } from "./aopPreview";
 
 describe("buildFlatMeshTargetPoints", () => {
@@ -38,12 +38,42 @@ describe("meshSourceFlipXForPanel", () => {
   });
 });
 
-describe("flatBridgeSourceFlipX", () => {
-  it("flips sleeves on the back bridge, not hood", () => {
-    expect(flatBridgeSourceFlipX("left_sleeve")).toBe(true);
-    expect(flatBridgeSourceFlipX("right_sleeve")).toBe(true);
-    expect(flatBridgeSourceFlipX("left_hood")).toBe(false);
-    expect(flatBridgeSourceFlipX("right_hood")).toBe(false);
-    expect(flatBridgeSourceFlipX("back")).toBe(false);
+describe("sleevePanelHalfSourceRect", () => {
+  const W = 400;
+  const H = 800;
+
+  it("maps left sleeve front to left half and back to right half", () => {
+    expect(sleevePanelHalfSourceRect("left_sleeve", "front", W, H)).toEqual({
+      x: 0,
+      y: 0,
+      width: 200,
+      height: 800,
+    });
+    expect(sleevePanelHalfSourceRect("left_sleeve", "back", W, H)).toEqual({
+      x: 200,
+      y: 0,
+      width: 200,
+      height: 800,
+    });
+  });
+
+  it("maps right sleeve front to right half and back to left half", () => {
+    expect(sleevePanelHalfSourceRect("right_sleeve", "front", W, H)).toEqual({
+      x: 200,
+      y: 0,
+      width: 200,
+      height: 800,
+    });
+    expect(sleevePanelHalfSourceRect("right_sleeve", "back", W, H)).toEqual({
+      x: 0,
+      y: 0,
+      width: 200,
+      height: 800,
+    });
+  });
+
+  it("returns null for non-sleeve panels", () => {
+    expect(sleevePanelHalfSourceRect("left_hood", "front", W, H)).toBeNull();
+    expect(sleevePanelHalfSourceRect("back", "back", W, H)).toBeNull();
   });
 });
