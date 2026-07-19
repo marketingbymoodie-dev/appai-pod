@@ -88,11 +88,11 @@ export const BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE = 1.7505;
 /**
  * Bomber Pattern mode — print-only tile motif scale (preview stays on shared
  * uniform math). Multiplies mockup→flat tile px so Printify matches the app.
- * Front ×5 (merchant guess for microscopic Printify front vs app).
+ * Front print tile scale vs shared uniform (5 × 1.05).
  */
-export const BOMBER_PATTERN_FRONT_PRINT_TILE_SCALE = 5;
-/** Bomber Pattern print-only: back motifs vs shared uniform (0.95 × 0.95). */
-export const BOMBER_PATTERN_BACK_PRINT_TILE_SCALE = 0.9025;
+export const BOMBER_PATTERN_FRONT_PRINT_TILE_SCALE = 5.25;
+/** Bomber Pattern print-only: back motifs vs shared uniform (0.9025 × 1.05). */
+export const BOMBER_PATTERN_BACK_PRINT_TILE_SCALE = 0.947625;
 /** Bomber Pattern print-only: sleeve motifs vs shared uniform (0.8 × 0.8). */
 export const BOMBER_PATTERN_SLEEVES_PRINT_TILE_SCALE = 0.64;
 
