@@ -1803,10 +1803,9 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
                 legacyPlacement: artworkPlacement,
               });
               applyBomberFrontBodyPlacement(template, rects);
-              // Bridge flat bake must match print (no preview-only sleeve zoom).
-              applyFrontBodyPreviewPlacementScale(template, rects, {
-                includeBomberSleeves: false,
-              });
+              // Same preview knobs as the front mockup (incl. bomber sleeve
+              // scale) so back-view sleeves match the size set on Front.
+              applyFrontBodyPreviewPlacementScale(template, rects);
               return rects;
             })()
           : new Map<string, DesignRectInfo>();
