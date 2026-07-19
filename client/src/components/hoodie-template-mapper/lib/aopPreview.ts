@@ -1829,9 +1829,10 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
                 legacyPlacement: artworkPlacement,
               });
               applyBomberFrontBodyPlacement(template, rects);
-              // Same preview knobs as the front mockup (incl. bomber sleeve
-              // scale) so back-view sleeves match the size set on Front.
-              applyFrontBodyPreviewPlacementScale(template, rects);
+              // Bridge flat must match print: omit bomber sleeve preview zoom.
+              applyFrontBodyPreviewPlacementScale(template, rects, {
+                includeBomberSleeves: false,
+              });
               return rects;
             })()
           : new Map<string, DesignRectInfo>();
@@ -1990,21 +1991,20 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
             ? layerSources.get(layer.productionPanelSrc) ?? null
             : null;
         const calibImg = frontCalib ?? backCalib;
-        // Prefer calibration PNG size — front/back meshes share that UV space.
-        // Printify placeholder aspect is for export only; using it here stretches
-        // the flat and samples the wrong sleeve wrap region on the back mockup.
+        // Prefer Printify placeholder dims (same as export) so back half-crops
+        // match the real sleeve panel; fall back to calibration PNG size.
         const placeholders = placeholderDimsByPosition(params.placeholderPositions);
         const printPos = hoodiePanelKeyToPrintifyPosition(layer.panelKey);
         const ph =
           placeholders.get(printPos) ??
           placeholders.get(printPos.toLowerCase());
-        const fallbackSize = calibImg
-          ? {
-              width: calibImg.naturalWidth || calibImg.width,
-              height: calibImg.naturalHeight || calibImg.height,
-            }
-          : ph
-            ? { width: ph.width, height: ph.height }
+        const fallbackSize = ph
+          ? { width: ph.width, height: ph.height }
+          : calibImg
+            ? {
+                width: calibImg.naturalWidth || calibImg.width,
+                height: calibImg.naturalHeight || calibImg.height,
+              }
             : undefined;
         const flat = renderHoodFlatPanel(frontLayer, artwork, frontRect, {
           fallbackSize,
@@ -2019,7 +2019,8 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
           );
           drawMeshWarp(pctx, flat, flat.width, flat.height, {
             ...layer.mesh,
-            // Sleeves: sample the back-of-arm vertical half. Hood: full panel.
+            // Display-only: sleeves sample the back-of-arm vertical half.
+            // Hood: full panel. Print export still uploads the full flat.
             sourceRect: half ?? {
               x: 0,
               y: 0,
@@ -2122,57 +2123,6 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
       // Reference unused helper symbol so the import stays valid
       // for any future tile-mesh hybrid path.
       void tileSourceRect;
-    } else if (
-      view === "front" &&
-      mode === "single-sheet" &&
-      artwork &&
-      layer.mesh &&
-      (layer.panelKey === "left_sleeve" || layer.panelKey === "right_sleeve") &&
-      layerRect &&
-      layerRect.effective.width > 0 &&
-      layerRect.effective.height > 0
-    ) {
-      // Front sleeves: bake the full Printify panel (same as export / back
-      // bridge), then sample only the front-of-arm vertical half so Front
-      // and Back stay consistent with Printify's wrap layout.
-      const calibImg =
-        layer.productionPanelSrc && layerSources
-          ? layerSources.get(layer.productionPanelSrc) ?? null
-          : null;
-      const placeholders = placeholderDimsByPosition(params.placeholderPositions);
-      const printPos = hoodiePanelKeyToPrintifyPosition(layer.panelKey);
-      const ph =
-        placeholders.get(printPos) ??
-        placeholders.get(printPos.toLowerCase());
-      const fallbackSize = calibImg
-        ? {
-            width: calibImg.naturalWidth || calibImg.width,
-            height: calibImg.naturalHeight || calibImg.height,
-          }
-        : ph
-          ? { width: ph.width, height: ph.height }
-          : undefined;
-      const flat = renderHoodFlatPanel(layer, artwork, layerRect, {
-        fallbackSize,
-        sleevesMirrored: params.sleevesMirrored,
-      });
-      if (flat) {
-        const half = sleevePanelHalfSourceRect(
-          layer.panelKey,
-          "front",
-          flat.width,
-          flat.height,
-        );
-        if (half) {
-          drawMeshWarp(pctx, flat, flat.width, flat.height, {
-            ...layer.mesh,
-            sourceRect: half,
-            sourceRotation: 0,
-            sourceFlipX: false,
-            sourceFlipY: false,
-          });
-        }
-      }
     } else if (artwork && layer.mesh) {
       // Customer artwork warped through the saved mesh. We synthesise
       // a `sourceRect` so the mesh reads from the right slice of the
