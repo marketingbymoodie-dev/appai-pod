@@ -1141,6 +1141,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // storefront=true and shopify=true appear in the URL, storefront wins.
   const isEmbedded = !isAdminTester && !isMerchantStudio && searchParams.get("embedded") === "true";
   const isShopify = !isStorefront && !isAdminTester && searchParams.get("shopify") === "true";
+  // Printify composite mockups + post-gen carousel. Admin Generator Tester
+  // already fetches via /api/mockup/generate but used to leave mockupUrl null
+  // (storefront/Shopify-only gate) — tumblers then showed raw artwork only.
+  const showsPrintifyMockupPreview = isShopify || isStorefront || isAdminTester;
   // State (not a plain const) so it can react LIVE to the parent embed
   // script's `ai-art-studio:set-scroll-mode` message. Shopify's theme editor
   // "mobile preview" toggle resizes the SAME iframe without a reload, so a
@@ -7525,7 +7529,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const atcFlatOnTheFly = flatPlacerEligible;
   const atcMockupsStaleBlocks = mockupsStale && !atcFlatOnTheFly;
   const showingMockupAtArtworkSlot = !!(
-    (isShopify || isStorefront) &&
+    showsPrintifyMockupPreview &&
     generatedDesign?.imageUrl &&
     selectedMockupIndex === 0 &&
     resolvePostGenMockupUrl(0, postGenGalleryItems, getPreferredMockupUrl())
@@ -9399,7 +9403,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
                   // Unified post-gen gallery: artwork + Printify mockups + merchant catalog extras.
                   const selectedPreviewMockupUrl =
-                    (isShopify || isStorefront) && generatedDesign?.imageUrl
+                    showsPrintifyMockupPreview && generatedDesign?.imageUrl
                       ? resolvePostGenMockupUrl(
                           selectedMockupIndex,
                           postGenGalleryItems,
@@ -9488,7 +9492,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               )}
 
               {/* Left/right arrow navigation — after artwork exists */}
-              {(isShopify || isStorefront) && generatedDesign?.imageUrl && postGenGalleryItems.length > 1 && (
+              {showsPrintifyMockupPreview && generatedDesign?.imageUrl && postGenGalleryItems.length > 1 && (
                   <>
                     <button
                       type="button"
@@ -9558,7 +9562,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             )}
 
             {/* Post-generation carousel indicators — artwork, mockups, merchant gallery */}
-            {(isShopify || isStorefront) && generatedDesign?.imageUrl && postGenGalleryItems.length > 1 && (
+            {showsPrintifyMockupPreview && generatedDesign?.imageUrl && postGenGalleryItems.length > 1 && (
               <div className="flex justify-center gap-3 mt-1">
                 {postGenGalleryItems.map((item, idx) => (
                   <button
@@ -9597,7 +9601,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 showDragHint={canShowDragHint}
                 extraActions={
                   <div className="flex items-center gap-2">
-                    {(isShopify || isStorefront) && productTypeConfig?.hasPrintifyMockups && (
+                    {showsPrintifyMockupPreview && productTypeConfig?.hasPrintifyMockups && (
                       <Button
                         variant="outline"
                         size="sm"
@@ -9767,7 +9771,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             )}
 
             {/* Mockup error status */}
-            {(isShopify || isStorefront) && productTypeConfig?.hasPrintifyMockups && generatedDesign?.imageUrl && mockupError && (
+            {showsPrintifyMockupPreview && productTypeConfig?.hasPrintifyMockups && generatedDesign?.imageUrl && mockupError && (
               <div className="border-t pt-3" data-testid="container-mockup-status">
                 <div className="flex items-center gap-2 py-2 px-3 bg-destructive/10 rounded-md">
                   <span className="text-sm text-destructive flex-1">
