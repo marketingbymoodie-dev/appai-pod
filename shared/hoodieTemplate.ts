@@ -91,10 +91,10 @@ export const BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE = 1.7505;
  * Front ×5 (merchant guess for microscopic Printify front vs app).
  */
 export const BOMBER_PATTERN_FRONT_PRINT_TILE_SCALE = 5;
-/** Bomber Pattern print-only: back motifs −5% vs shared uniform. */
-export const BOMBER_PATTERN_BACK_PRINT_TILE_SCALE = 0.95;
-/** Bomber Pattern print-only: sleeve motifs −20% vs shared uniform. */
-export const BOMBER_PATTERN_SLEEVES_PRINT_TILE_SCALE = 0.8;
+/** Bomber Pattern print-only: back motifs vs shared uniform (0.95 × 0.95). */
+export const BOMBER_PATTERN_BACK_PRINT_TILE_SCALE = 0.9025;
+/** Bomber Pattern print-only: sleeve motifs vs shared uniform (0.8 × 0.8). */
+export const BOMBER_PATTERN_SLEEVES_PRINT_TILE_SCALE = 0.64;
 
 /** Print-only Pattern tile scale for bomber panels (1 = no change). */
 export function bomberPatternPrintTileScaleForPanel(
