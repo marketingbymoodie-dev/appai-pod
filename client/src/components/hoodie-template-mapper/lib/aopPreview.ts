@@ -1829,10 +1829,10 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
                 legacyPlacement: artworkPlacement,
               });
               applyBomberFrontBodyPlacement(template, rects);
-              // Bridge flat must match print: omit bomber sleeve preview zoom.
-              applyFrontBodyPreviewPlacementScale(template, rects, {
-                includeBomberSleeves: false,
-              });
+              // Same preview knobs as the front mockup (incl. bomber sleeve
+              // scale) so back-bridge sleeves match Front placement size —
+              // same pattern as hood front→back continuity.
+              applyFrontBodyPreviewPlacementScale(template, rects);
               return rects;
             })()
           : new Map<string, DesignRectInfo>();
@@ -1991,37 +1991,32 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
             ? layerSources.get(layer.productionPanelSrc) ?? null
             : null;
         const calibImg = frontCalib ?? backCalib;
-        // Prefer Printify placeholder dims (same as export) so back half-crops
-        // match the real sleeve panel; fall back to calibration PNG size.
+        // Prefer calibration PNG size — front/back meshes share that UV space
+        // (same as hood bridge). Printify placeholder aspect is for export.
         const placeholders = placeholderDimsByPosition(params.placeholderPositions);
         const printPos = hoodiePanelKeyToPrintifyPosition(layer.panelKey);
         const ph =
           placeholders.get(printPos) ??
           placeholders.get(printPos.toLowerCase());
-        const fallbackSize = ph
-          ? { width: ph.width, height: ph.height }
-          : calibImg
-            ? {
-                width: calibImg.naturalWidth || calibImg.width,
-                height: calibImg.naturalHeight || calibImg.height,
-              }
+        const fallbackSize = calibImg
+          ? {
+              width: calibImg.naturalWidth || calibImg.width,
+              height: calibImg.naturalHeight || calibImg.height,
+            }
+          : ph
+            ? { width: ph.width, height: ph.height }
             : undefined;
         const flat = renderHoodFlatPanel(frontLayer, artwork, frontRect, {
           fallbackSize,
           sleevesMirrored: params.sleevesMirrored,
         });
         if (flat) {
-          const half = sleevePanelHalfSourceRect(
-            layer.panelKey,
-            "back",
-            flat.width,
-            flat.height,
-          );
+          // Like hood: warp the FULL flat through the back mesh. Mesh UVs
+          // select the back-of-arm (or back-of-hood) region — do not half-crop
+          // sourceRect (that 2×-stretched the wrong region vs Front scale).
           drawMeshWarp(pctx, flat, flat.width, flat.height, {
             ...layer.mesh,
-            // Display-only: sleeves sample the back-of-arm vertical half.
-            // Hood: full panel. Print export still uploads the full flat.
-            sourceRect: half ?? {
+            sourceRect: {
               x: 0,
               y: 0,
               width: flat.width,
