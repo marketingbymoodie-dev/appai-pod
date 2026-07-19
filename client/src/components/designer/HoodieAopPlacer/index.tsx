@@ -149,8 +149,10 @@ export type HoodieAopPlacerState = {
   /** Right sleeve follows front-body placement when linked. */
   rightSleeveLinked: boolean;
   /**
-   * When true, right-sleeve artwork is horizontally flipped for bilateral
-   * symmetry (placement sync always mirrors offsetX separately).
+   * When true, right-sleeve artwork is horizontally flipped and left/right
+   * share the same placement offsets so nudges move both toward/away from
+   * the chest in unison. When false, right sleeve keeps unflipped art and
+   * uses negated offsetX (existing non-mirror behaviour).
    */
   sleevesMirrored: boolean;
   /** Background fill colour (CSS) painted under the artwork. */
@@ -322,8 +324,8 @@ function customerGroupEnabledByDefault(
   return groupId === "back-body" ? false : group.enabled !== false;
 }
 
-/** Mirror left-sleeve placement onto the right sleeve (bilateral symmetry). */
-function mirrorSleevePlacement(left: ArtworkPlacement): ArtworkPlacement {
+/** Negate offsetX so both sleeves move toward/away from centre together (non-mirror). */
+function oppositeSleevePlacement(left: ArtworkPlacement): ArtworkPlacement {
   return {
     scale: left.scale,
     offsetX: -left.offsetX,
@@ -334,10 +336,15 @@ function mirrorSleevePlacement(left: ArtworkPlacement): ArtworkPlacement {
 /**
  * Sleeves are one customer control — canonical placement lives on
  * left-sleeve.front; front/back share it (back renders via flat-panel
- * bridge); right-sleeve mirrors offsetX.
+ * bridge).
+ *
+ * Mirror ON (art flip): copy the same offsets to the right sleeve so a
+ * nudge toward the chest moves both sleeves inward together.
+ * Mirror OFF: negate offsetX on the right sleeve (prior behaviour).
  */
 function syncSleevePlacements(
   placements: Record<string, Record<HoodieView, ArtworkPlacement>>,
+  sleevesMirrored = true,
 ): Record<string, Record<HoodieView, ArtworkPlacement>> {
   const left = placements["left-sleeve"];
   if (!left) return placements;
@@ -346,10 +353,12 @@ function syncSleevePlacements(
     front: { ...canonical },
     back: { ...canonical },
   };
-  const rightMirrored = mirrorSleevePlacement(canonical);
+  const rightPlacement = sleevesMirrored
+    ? { ...canonical }
+    : oppositeSleevePlacement(canonical);
   const rightPair: Record<HoodieView, ArtworkPlacement> = {
-    front: { ...rightMirrored },
-    back: { ...rightMirrored },
+    front: { ...rightPlacement },
+    back: { ...rightPlacement },
   };
   return {
     ...placements,
@@ -466,7 +475,7 @@ function buildInitialState(
     view: "front",
     activeGroupId: "front-body",
     artworkUrl: null,
-    placements: syncSleevePlacements(placements),
+    placements: syncSleevePlacements(placements, true),
     enabled,
     trimEnabled: false,
     pocketsEnabled: isPulloverHoodieBlueprint(template.blueprintId)
@@ -491,10 +500,13 @@ function buildInitialState(
   return {
     ...baseWithGroups,
     ...saved,
-    placements: syncSleevePlacements({
-      ...baseWithGroups.placements,
-      ...(saved.placements ?? {}),
-    }),
+    placements: syncSleevePlacements(
+      {
+        ...baseWithGroups.placements,
+        ...(saved.placements ?? {}),
+      },
+      saved.sleevesMirrored ?? base.sleevesMirrored,
+    ),
     enabled: mergeSavedCustomerEnabled(baseWithGroups.enabled, saved.enabled),
     tileSettings: { ...baseWithGroups.tileSettings, ...(saved.tileSettings ?? {}) },
     trimEnabled: false,
@@ -1081,7 +1093,7 @@ export default function HoodieAopPlacer({
       for (const id of ids) enabled[id] = on;
       const placements =
         on && (isSleevesPart(groupId) || ids.some((id) => id === "left-sleeve" || id === "right-sleeve"))
-          ? syncSleevePlacements(prev.placements)
+          ? syncSleevePlacements(prev.placements, prev.sleevesMirrored)
           : prev.placements;
       return { ...prev, enabled, placements };
     });
@@ -1103,13 +1115,16 @@ export default function HoodieAopPlacer({
           prev.placements[primaryId]?.[view] ?? DEFAULT_ARTWORK_PLACEMENT;
         let placements = { ...prev.placements };
         if (isSleevesPart(prev.activeGroupId)) {
-          placements = syncSleevePlacements({
-            ...placements,
-            "left-sleeve": {
-              ...(placements["left-sleeve"] ?? {}),
-              front: { ...next },
+          placements = syncSleevePlacements(
+            {
+              ...placements,
+              "left-sleeve": {
+                ...(placements["left-sleeve"] ?? {}),
+                front: { ...next },
+              },
             },
-          });
+            prev.sleevesMirrored,
+          );
         } else if (pillowDup) {
           placements = mirrorPillowDuplicatePlacements(placements, next);
         } else {
@@ -1158,13 +1173,16 @@ export default function HoodieAopPlacer({
       const next: ArtworkPlacement = { ...cur, scale };
       let placements = { ...prev.placements };
       if (isSleevesPart(prev.activeGroupId)) {
-        placements = syncSleevePlacements({
-          ...placements,
-          "left-sleeve": {
-            ...(placements["left-sleeve"] ?? {}),
-            front: { ...next },
+        placements = syncSleevePlacements(
+          {
+            ...placements,
+            "left-sleeve": {
+              ...(placements["left-sleeve"] ?? {}),
+              front: { ...next },
+            },
           },
-        });
+          prev.sleevesMirrored,
+        );
       } else if (pillowDup) {
         placements = mirrorPillowDuplicatePlacements(placements, next);
       } else {
@@ -1650,11 +1668,18 @@ export default function HoodieAopPlacer({
                 <button
                   type="button"
                   onClick={() =>
-                    setState((prev) =>
-                      prev
-                        ? { ...prev, sleevesMirrored: !prev.sleevesMirrored }
-                        : prev,
-                    )
+                    setState((prev) => {
+                      if (!prev) return prev;
+                      const sleevesMirrored = !prev.sleevesMirrored;
+                      return {
+                        ...prev,
+                        sleevesMirrored,
+                        placements: syncSleevePlacements(
+                          prev.placements,
+                          sleevesMirrored,
+                        ),
+                      };
+                    })
                   }
                   aria-pressed={state.sleevesMirrored}
                   className={`rounded px-2 py-1.5 text-xs font-semibold border ${placerSegmentClass(
@@ -1665,7 +1690,7 @@ export default function HoodieAopPlacer({
                 </button>
                 {state.sleevesMirrored && (
                   <div className="mt-1 text-[10px] text-muted-foreground">
-                    Right sleeve flips artwork for symmetry.
+                    Right sleeve flips art; left/right move toward the chest together.
                   </div>
                 )}
               </div>
