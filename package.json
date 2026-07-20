@@ -16,7 +16,8 @@
     "aop:triangle:detect": "tsx scripts/detect-aop-triangle-calibration.ts",
     "aop:panel:calibrate": "tsx scripts/build-aop-panel-calibration.ts",
     "publish:hoodie": "tsx scripts/publish-hoodie-template.ts",
-    "import:hoodie-drafts": "tsx scripts/import-hoodie-drafts-to-supabase.ts"
+    "import:hoodie-drafts": "tsx scripts/import-hoodie-drafts-to-supabase.ts",
+    "seed:catalog-size-blanks": "tsx scripts/seed-catalog-size-blanks.ts"
   },
   "dependencies": {
     "@google-cloud/storage": "^7.18.0",

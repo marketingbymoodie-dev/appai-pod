@@ -76,6 +76,12 @@ import {
   useCylindricalWrapPrompt,
 } from "@shared/generationPromptHints";
 import { resolveSizeAspectRatio } from "@shared/productVariantOptions";
+import {
+  applyCatalogSizeBlanks,
+  isCatalogSizeBlankBlueprint,
+  resolveCatalogSizeBlankUrlMap,
+} from "@shared/catalogSizeBlanks";
+import { getSupabaseDesignPublicUrl } from "./supabaseDesigns";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShopifyToken } from "./shopify";
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { syncCreditEntitlementMetafield } from "./credit-entitlements";
@@ -12981,7 +12987,25 @@ ${orientationExtra}
       available,
     };
     delete next.lifestyle;
+    // Preserve size-keyed catalog blanks (comforter / wall decals).
+    if (
+      currentImages.blanksBySize &&
+      typeof currentImages.blanksBySize === "object" &&
+      !Array.isArray(currentImages.blanksBySize)
+    ) {
+      next.blanksBySize = currentImages.blanksBySize;
+    }
     return next;
+  }
+
+  function mergeCatalogSizeBlanksIfNeeded(
+    blueprintId: number | null | undefined,
+    images: Record<string, any>,
+  ): Record<string, any> {
+    if (!isCatalogSizeBlankBlueprint(blueprintId)) return images;
+    const blanks = resolveCatalogSizeBlankUrlMap(blueprintId, getSupabaseDesignPublicUrl);
+    if (!blanks) return images;
+    return applyCatalogSizeBlanks(images, blanks) as Record<string, any>;
   }
 
   // GET available placeholder images before importing a Printify product.
@@ -13708,11 +13732,15 @@ ${orientationExtra}
       const selectedPrimaryUrl = typeof placeholderPrimaryUrl === "string" ? placeholderPrimaryUrl : undefined;
       const selectedGalleryUrls = Array.isArray(placeholderGalleryUrls) ? placeholderGalleryUrls.map(String) : undefined;
       const selectedCustomUrls = Array.isArray(customPlaceholderUrls) ? customPlaceholderUrls.map(String) : undefined;
-      const baseMockupImages = buildBaseMockupImagesFromOptions(
+      let baseMockupImages = buildBaseMockupImagesFromOptions(
         availablePlaceholderImages,
         selectedPrimaryUrl,
         selectedGalleryUrls,
         selectedCustomUrls,
+      );
+      baseMockupImages = mergeCatalogSizeBlanksIfNeeded(
+        parseInt(String(blueprintId), 10),
+        baseMockupImages,
       );
 
       // Detect product type FIRST to determine sizeType
@@ -14371,11 +14399,23 @@ ${orientationExtra}
         productType.printifyBlueprintId,
         productType.printifyProviderId,
       );
-      const baseMockupImages = buildBaseMockupImagesFromOptions(
+      let baseMockupImages = buildBaseMockupImagesFromOptions(
         availablePlaceholderImages,
         existingImages.primary,
         existingImages.gallery,
         existingImages.custom,
+      );
+      // Keep existing size blanks if refresh ran before shared assets were uploaded.
+      if (
+        existingImages.blanksBySize &&
+        typeof existingImages.blanksBySize === "object" &&
+        !baseMockupImages.blanksBySize
+      ) {
+        baseMockupImages.blanksBySize = existingImages.blanksBySize;
+      }
+      baseMockupImages = mergeCatalogSizeBlanksIfNeeded(
+        productType.printifyBlueprintId,
+        baseMockupImages,
       );
 
       // Check if we found any images

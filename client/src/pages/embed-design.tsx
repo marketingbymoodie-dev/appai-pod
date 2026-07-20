@@ -69,6 +69,7 @@ import {
   styleChoicesIncludeCanvasOrientation,
   type CanvasOrientation,
 } from "@shared/productVariantOptions";
+import { resolveBlankUrlForSize } from "@shared/catalogSizeBlanks";
 import { resolveFabricWeaveTexture } from "@shared/fabricWeave";
 import {
   filterStylePresetsForPage,
@@ -2340,7 +2341,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       });
       if (hasOrientationBlank) return null;
     }
+    const sizeConfig = printSizes.find((s) => s.id === selectedSize);
+    const bySize = resolveBlankUrlForSize(
+      productTypeConfig?.baseMockupImages,
+      sizeConfig || { id: selectedSize, name: selectedSize },
+      productTypeConfig?.aspectRatio,
+    );
     return (
+      bySize ||
       catalogBlankByOrientation[sizeCanvasOrientation] ||
       (sizeCanvasOrientation === "horizontal" && catalogPreviewImages[1]) ||
       null
@@ -2349,7 +2357,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     hasMixedCanvasOrientation,
     sizeCanvasOrientation,
     selectedSize,
+    printSizes,
     productTypeConfig?.flatCalibration,
+    productTypeConfig?.baseMockupImages,
+    productTypeConfig?.aspectRatio,
     catalogBlankByOrientation,
     catalogPreviewImages,
   ]);
@@ -9708,12 +9719,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         if (browsingCatalog && catalogPreviewIndex > 0) {
                           return catalogPreviewImages[catalogPreviewIndex] || null;
                         }
-                        // Prefer Shopify/variant blank for the selected size (comforter
-                        // orientation swaps), then orientation-matched catalog image.
+                        // Size-keyed catalog blanks (comforter / wall decals) beat a
+                        // shared Shopify lifestyle image that does not change with size.
                         return (
-                          colorAwareBlankUrl ||
-                          flatCalibrationBlankUrl ||
                           orientationBlankOverride ||
+                          flatCalibrationBlankUrl ||
+                          colorAwareBlankUrl ||
                           catalogPreviewImages[catalogPreviewIndex] ||
                           catalogPreviewImages[0] ||
                           null
