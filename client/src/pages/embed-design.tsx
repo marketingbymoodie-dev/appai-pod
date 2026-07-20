@@ -1069,7 +1069,15 @@ function formatPostGenMockupLabel(raw: string, fallback: string): string {
   const l = raw.toLowerCase();
   if (l === "front" || l === "mockup 1") return "Front";
   if (l === "back" || l === "mockup 2") return "Back";
+  if (/(lifestyle|context|room|home|bedroom|wall)/i.test(l)) return "Context";
   return raw || fallback;
+}
+
+function isPrintifyContextMockupLabel(label: string): boolean {
+  const l = String(label || "").toLowerCase();
+  if (!l) return false;
+  if (l === "front" || l === "back" || l === "mockup 1" || l === "mockup 2") return false;
+  return /(lifestyle|context|room|home|bedroom|wall|person|side)/i.test(l);
 }
 
 /** Artwork + Printify mockups + merchant catalog extras (deduped). */
@@ -1970,13 +1978,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [flatPlacerEditOpen, setFlatPlacerEditOpen] = useState(false);
   const [flatApplyStatus, setFlatApplyStatus] = useState<FlatApplyStatus>("idle");
   const [flatRenderFailed, setFlatRenderFailed] = useState(false);
-  /** Bumps when the customer clicks Refresh Mockups for framed flat decor. */
+  /** Bumps to force flat gallery re-raster / placer remount. */
   const [flatMockupRefreshNonce, setFlatMockupRefreshNonce] = useState(0);
+  /** True while framed flat decor is re-rastering after size/colour change. */
+  const [flatMockupRefreshing, setFlatMockupRefreshing] = useState(false);
   const flatPlacerRef = useRef<FlatProductPlacerHandle>(null);
   /** Dedupes save-mockups + gallery refresh for flat on-the-fly previews. */
   const lastFlatGalleryMockupKeyRef = useRef<string>("");
-  /** Tracks size+color so framed decor can mark mockups stale on change. */
-  const flatDecorVariantKeyRef = useRef<string>("");
+  /** Latest flat front URLs — Printify lifestyle merge keeps these. */
+  const flatFrontMockupsRef = useRef<Array<{ url: string; label: string }>>([]);
 
   // Per-color mockup cache: instantly swap mockups when the user picks a different frame color
   const mockupColorCacheRef = useRef<Record<string, { urls: string[]; images: { url: string; label: string }[] }>>({});
@@ -3751,7 +3761,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     panelUrls?: { position: string; dataUrl: string }[],
     printPlacementOverride?: "front" | "back" | "both",
     bgColorOverride?: string,
+    fetchOpts?: { mergeContextOnly?: boolean },
   ) => {
+    const mergeContextOnly = !!fetchOpts?.mergeContextOnly;
     // Guard: never call the mockup endpoint without a real design image.
     if (!designImageUrl) {
       console.warn('[EmbedDesign] fetchPrintifyMockups called without designImageUrl — skipping');
@@ -3802,19 +3814,27 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       y: clampedY,
       printPlacement: printPlacementOverride ?? printPlacement,
       panelHash: panelUrls?.map((p) => `${p.position}:${p.dataUrl.length}`).join("|") ?? "",
+      mergeContextOnly,
     });
 
     if (activeMockupJobKeyRef.current === mockupJobKey) {
       console.log('[Mockups] Duplicate mockup request ignored while job is in flight');
       return;
     }
-    activeMockupJobKeyRef.current = mockupJobKey;
-    const requestSeq = ++mockupRequestSeqRef.current;
-    setMockupLoading(true);
-    setMockupsStale(false);
-    // Notify parent page so it can show the "Artwork Generating" overlay
-    if (runtimeMode !== 'standalone') {
-      window.parent.postMessage({ type: 'AI_ART_STUDIO_MOCKUP_LOADING', loading: true }, '*');
+    // Context-only fetches must not cancel / block a primary mockup job.
+    if (!mergeContextOnly) {
+      activeMockupJobKeyRef.current = mockupJobKey;
+    }
+    const requestSeq = mergeContextOnly
+      ? mockupRequestSeqRef.current
+      : ++mockupRequestSeqRef.current;
+    if (!mergeContextOnly) {
+      setMockupLoading(true);
+      setMockupsStale(false);
+      // Notify parent page so it can show the "Artwork Generating" overlay
+      if (runtimeMode !== 'standalone') {
+        window.parent.postMessage({ type: 'AI_ART_STUDIO_MOCKUP_LOADING', loading: true }, '*');
+      }
     }
 
     try {
@@ -3915,7 +3935,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       }
 
       const handleMockupSuccess = (result: any) => {
-        if (requestSeq !== mockupRequestSeqRef.current) {
+        if (!mergeContextOnly && requestSeq !== mockupRequestSeqRef.current) {
           console.log('[Mockups] Ignoring stale mockup response', requestSeq);
           return;
         }
@@ -3924,6 +3944,51 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           ...img,
           url: toAbsoluteImageUrl(img.url),
         }));
+
+        // Flat framed decor: keep local front raster, append Printify lifestyle/context.
+        if (mergeContextOnly) {
+          const contextImgs = absImages.filter((img: { label: string }) =>
+            isPrintifyContextMockupLabel(img.label),
+          );
+          const extras =
+            contextImgs.length > 0
+              ? contextImgs.slice(0, 2)
+              : absImages
+                  .filter((img: { label: string }) => !/^(front|mockup 1)$/i.test(img.label || ""))
+                  .slice(0, 2);
+          if (extras.length === 0) {
+            console.log('[Mockups] Context merge: no lifestyle/context views from Printify');
+            return;
+          }
+          const fronts =
+            flatFrontMockupsRef.current.length > 0
+              ? flatFrontMockupsRef.current
+              : [];
+          const mergedImages: Array<{ url: string; label: string }> = [...fronts];
+          const seen = new Set(mergedImages.map((m) => mockupImageUrlKey(m.url)));
+          for (const extra of extras) {
+            const key = mockupImageUrlKey(extra.url);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            mergedImages.push({
+              url: extra.url,
+              label: /context|lifestyle/i.test(extra.label) ? extra.label : "context",
+            });
+          }
+          const mergedUrls = mergedImages.map((m) => m.url);
+          setPrintifyMockupImages(mergedImages);
+          setPrintifyMockups(mergedUrls);
+          sendMockupsToParent(mergedUrls);
+          console.log(
+            '[Mockups] Merged',
+            extras.length,
+            'context shot(s) onto',
+            fronts.length,
+            'flat front(s)',
+          );
+          return;
+        }
+
         setPrintifyMockups(absUrls);
         setPrintifyMockupImages(absImages);
         setSelectedMockupIndex(1); // Auto-show first mockup (not raw artwork)
@@ -3992,7 +4057,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         let pollIndex = 0;
 
         while (Date.now() - started < MAX_POLL_MS) {
-          if (requestSeq !== mockupRequestSeqRef.current) {
+          if (!mergeContextOnly && requestSeq !== mockupRequestSeqRef.current) {
             console.log('[Mockups] Stopping stale mockup poll', requestSeq);
             return;
           }
@@ -4043,8 +4108,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         throw new Error(result.error || result.message || "Mockup generation returned unsuccessful");
       }
     } catch (error) {
-      if (requestSeq !== mockupRequestSeqRef.current) {
+      if (!mergeContextOnly && requestSeq !== mockupRequestSeqRef.current) {
         console.log('[Mockups] Ignoring stale mockup error', requestSeq);
+        return;
+      }
+      if (mergeContextOnly) {
+        // Flat front is already good — context is best-effort.
+        console.warn("[Mockups] Context merge failed (non-fatal):", error);
         return;
       }
       console.error("Failed to generate Printify mockups:", error);
@@ -4054,10 +4124,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       // showing a stale mockup from a previous size/color combination.
       setMockupsStale(true);
     } finally {
-      if (activeMockupJobKeyRef.current === mockupJobKey) {
+      if (!mergeContextOnly && activeMockupJobKeyRef.current === mockupJobKey) {
         activeMockupJobKeyRef.current = null;
       }
-      if (requestSeq === mockupRequestSeqRef.current) {
+      if (!mergeContextOnly && requestSeq === mockupRequestSeqRef.current) {
         setMockupLoading(false);
         setMockupTriggered(false);
         // Clear the "Artwork Generating" overlay on the parent page
@@ -7351,39 +7421,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   const flatMockupBlankKey = `${flatBlankColorId}::${selectedSize ?? ""}::${flatFabricWeave ? "weave" : "plain"}::r${flatMockupRefreshNonce}`;
 
-  // Framed decor (posters, tapestry, decals): size/colour changes require Refresh Mockups
-  // so the customer can force a blank + gallery re-raster (same UX as Printify products).
-  useEffect(() => {
-    if (!flatPlacerEligible || !flatDecorMode) {
-      flatDecorVariantKeyRef.current = "";
-      return;
-    }
-    const key = `${selectedSize ?? ""}::${selectedFrameColor ?? ""}`;
-    if (!flatDecorVariantKeyRef.current) {
-      flatDecorVariantKeyRef.current = key;
-      return;
-    }
-    if (flatDecorVariantKeyRef.current === key) return;
-    flatDecorVariantKeyRef.current = key;
-    if (!generatedDesign?.imageUrl || suppressMockupStaleRef.current) return;
-    setMockupsStale(true);
-    currentMockupColorRef.current = "";
-    lastFlatGalleryMockupKeyRef.current = "";
-  }, [
-    flatPlacerEligible,
-    flatDecorMode,
-    selectedSize,
-    selectedFrameColor,
-    generatedDesign?.imageUrl,
-  ]);
-
-  // Force mockup re-raster when the harvested blank key changes (shirt colour swap).
+  // Force mockup re-raster when blank / size changes (apparel + framed decor — same auto path as HFP Printify).
   useEffect(() => {
     if (!flatPlacerEligible) return;
-    // Framed decor waits for Refresh Mockups instead of auto-swapping.
-    if (flatDecorMode) return;
     currentMockupColorRef.current = "";
-  }, [flatPlacerEligible, flatBlankColorId, flatDecorMode]);
+    lastFlatGalleryMockupKeyRef.current = "";
+    if (flatDecorMode && generatedDesign?.imageUrl) {
+      setFlatMockupRefreshing(true);
+    }
+  }, [flatPlacerEligible, flatBlankColorId, selectedSize, flatDecorMode, generatedDesign?.imageUrl]);
 
   const handleRefreshFlatMockups = useCallback(() => {
     setMockupError(null);
@@ -7392,6 +7438,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     currentMockupColorRef.current = "";
     lastFlatGalleryMockupKeyRef.current = "";
     setMockupsStale(false);
+    setFlatMockupRefreshing(true);
     setFlatMockupRefreshNonce((n) => n + 1);
   }, []);
 
@@ -7399,8 +7446,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (!flatPlacerEligible) return;
     if (!productTypeConfig?.flatCalibration || !generatedDesign?.imageUrl) return;
     if (!flatBlankColorId) return;
-    // Framed decor: hold gallery re-raster until the customer clicks Refresh Mockups.
-    if (flatDecorMode && mockupsStale) return;
 
     let cancelled = false;
     const t = window.setTimeout(() => {
@@ -7429,10 +7474,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         const views = flatViewsForColor(manifest, flatBlankColorId);
         if (
           flatMockupBlankKey === currentMockupColorRef.current &&
-          printifyMockupImages.length >= views.length
+          flatFrontMockupsRef.current.length >= views.length
         ) {
+          setFlatMockupRefreshing(false);
           return;
         }
+        if (flatDecorMode) setFlatMockupRefreshing(true);
         const images: { url: string; label: string }[] = [];
         for (const view of views) {
           const dataUrl = await renderFlatMockupDataUrl(
@@ -7464,18 +7511,45 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           console.warn('[Mockups] Flat mockup raster failed for', flatBlankColorId);
           setFlatRenderFailed(true);
           setMockupsStale(true);
+          setFlatMockupRefreshing(false);
           return;
         }
         setFlatRenderFailed(false);
+        flatFrontMockupsRef.current = images;
         setPrintifyMockupImages(images);
         setPrintifyMockups(images.map((i) => i.url));
         setSelectedMockupIndex((prev) => (prev === 0 ? 1 : prev));
         setMockupsStale(false);
         currentMockupColorRef.current = flatMockupBlankKey;
+        setFlatMockupRefreshing(false);
         void persistFlatMockupsForGallery(
           images.map((i) => i.url),
           flatMockupBlankKey,
         );
+
+        // Horizontal Printify path includes lifestyle/context; merge those onto flat front.
+        if (
+          flatDecorMode &&
+          productTypeConfig.hasPrintifyMockups &&
+          selectedSize &&
+          !useAopCustomizer
+        ) {
+          void fetchPrintifyMockups(
+            artworkUrl,
+            productTypeConfig.id,
+            selectedSize,
+            selectedFrameColor || "default",
+            100,
+            50,
+            50,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            { mergeContextOnly: true },
+          );
+        }
       })();
     }, 200);
 
@@ -7487,26 +7561,29 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flatPlacerEligible,
     flatPlacerState,
     productTypeConfig?.flatCalibration,
+    productTypeConfig?.hasPrintifyMockups,
+    productTypeConfig?.id,
     generatedDesign?.imageUrl,
     flatBlankColorId,
     flatMockupBlankKey,
     selectedSize,
+    selectedFrameColor,
     printPlacement,
     flatDecorMode,
     flatFabricWeave,
     flatLandscapeOrientation,
     orientationBlankOverride,
     persistFlatMockupsForGallery,
-    mockupsStale,
     flatMockupRefreshNonce,
+    fetchPrintifyMockups,
+    useAopCustomizer,
   ]);
 
-  // Apparel/phone flat: colour/size swap is local — never gate ATC on Printify refresh.
-  // Framed decor keeps mockupsStale until Refresh Mockups (or a successful re-raster).
+  // Flat tier: colour/size swap is local — never gate ATC on Printify refresh.
   useEffect(() => {
-    if (!flatPlacerEligible || flatDecorMode) return;
+    if (!flatPlacerEligible) return;
     setMockupsStale(false);
-  }, [flatPlacerEligible, flatDecorMode, flatBlankColorId, selectedSize]);
+  }, [flatPlacerEligible, flatBlankColorId, selectedSize]);
 
   // Build a price map from shopifyVariants, keyed by size id
   const buildPriceMap = useCallback((): Record<string, number> => {
@@ -9604,25 +9681,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       <ChevronLeft className="w-4 h-4 mr-1 shrink-0" />
                       <span className="text-xs truncate">Back</span>
                     </Button>
-                    {flatDecorMode && mockupsStale && (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="flex-1 min-w-0"
-                        onClick={handleRefreshFlatMockups}
-                        disabled={mockupLoading}
-                        title="Refresh Mockups"
-                        data-testid="button-refresh-mockups-flat-placer"
-                      >
-                        {mockupLoading ? (
-                          <Loader2 className="w-4 h-4 animate-spin mr-1 shrink-0" />
-                        ) : (
-                          <RefreshCcw className="w-4 h-4 mr-1 shrink-0" />
-                        )}
-                        <span className="text-xs truncate">Refresh Mockups</span>
-                      </Button>
-                    )}
                     <Button
                       type="button"
                       variant="outline"
@@ -9641,50 +9699,44 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     </Button>
                   </div>
                 )}
-                {/* Merchant / admin tester: same Refresh Mockups when size or frame colour changes */}
-                {!(isStorefront || isShopify) && flatDecorMode && mockupsStale && (
-                  <div className="flex w-full gap-2">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="shrink-0"
-                      onClick={handleRefreshFlatMockups}
-                      disabled={mockupLoading}
-                      title="Refresh Mockups"
-                      data-testid="button-refresh-mockups-flat-placer"
+                <div className="relative min-h-0">
+                  {(flatMockupRefreshing || (flatDecorMode && mockupsStale)) && (
+                    <div
+                      className="absolute inset-0 flex items-end justify-center pb-4 pointer-events-none z-20"
+                      data-testid="overlay-flat-mockups-updating"
                     >
-                      {mockupLoading ? (
-                        <Loader2 className="w-4 h-4 animate-spin mr-1" />
-                      ) : (
-                        <RefreshCcw className="w-4 h-4 mr-1" />
-                      )}
-                      <span className="text-xs">Refresh Mockups</span>
-                    </Button>
-                  </div>
-                )}
-                <FlatProductPlacer
-                  ref={flatPlacerRef}
-                  key={`flat-${productTypeConfig?.id ?? 0}-${flatPlacerGeometryKey}-${flatBlankColorId}-${generatedDesign?.id ?? generatedDesign?.imageUrl}-r${flatMockupRefreshNonce}`}
-                  manifest={productTypeConfig.flatCalibration}
-                  colorId={flatBlankColorId}
-                  placementGeometryKey={flatPlacerGeometryKey}
-                  artworkSourceUrl={toAbsoluteImageUrl(generatedDesign!.imageUrl)}
-                  initialState={{
-                    ...(flatPlacerState ?? {}),
-                    artworkUrl: toAbsoluteImageUrl(generatedDesign!.imageUrl),
-                  }}
-                  onChange={handleFlatPlacerChange}
-                  onApply={handleFlatApply}
-                  onApplyStatusChange={setFlatApplyStatus}
-                  onAssetsFailed={handleFlatAssetsFailed}
-                  edgeWrapMode={flatEdgeWrapMode}
-                  decorMode={flatDecorMode}
-                  fabricWeave={flatFabricWeave}
-                  landscapeOrientation={flatLandscapeOrientation}
-                  blankUrlOverride={orientationBlankOverride}
-                  skipInitialAutoApply={!!flatPlacerState}
-                />
+                      <button
+                        type="button"
+                        className="pointer-events-auto text-white text-sm font-semibold bg-black/60 rounded-full px-3 py-1.5 animate-pulse"
+                        onClick={handleRefreshFlatMockups}
+                      >
+                        {flatMockupRefreshing ? "Updating mockups…" : "Refresh your Mockups"}
+                      </button>
+                    </div>
+                  )}
+                  <FlatProductPlacer
+                    ref={flatPlacerRef}
+                    key={`flat-${productTypeConfig?.id ?? 0}-${flatPlacerGeometryKey}-${flatBlankColorId}-${generatedDesign?.id ?? generatedDesign?.imageUrl}-r${flatMockupRefreshNonce}`}
+                    manifest={productTypeConfig.flatCalibration}
+                    colorId={flatBlankColorId}
+                    placementGeometryKey={flatPlacerGeometryKey}
+                    artworkSourceUrl={toAbsoluteImageUrl(generatedDesign!.imageUrl)}
+                    initialState={{
+                      ...(flatPlacerState ?? {}),
+                      artworkUrl: toAbsoluteImageUrl(generatedDesign!.imageUrl),
+                    }}
+                    onChange={handleFlatPlacerChange}
+                    onApply={handleFlatApply}
+                    onApplyStatusChange={setFlatApplyStatus}
+                    onAssetsFailed={handleFlatAssetsFailed}
+                    edgeWrapMode={flatEdgeWrapMode}
+                    decorMode={flatDecorMode}
+                    fabricWeave={flatFabricWeave}
+                    landscapeOrientation={flatLandscapeOrientation}
+                    blankUrlOverride={orientationBlankOverride}
+                    skipInitialAutoApply={!!flatPlacerState}
+                  />
+                </div>
               </div>
             ) : (<>
             {/* Main interactive canvas - full size, always visible for editing */}
@@ -9899,12 +9951,47 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   </>
               )}
 
-              {/* Stale mockups overlay */}
-              {atcHasMockups && atcMockupsStaleBlocks && !mockupLoading && generatedDesign?.imageUrl && (
+              {/* Stale / updating mockups overlay (Printify + flat framed decor) */}
+              {generatedDesign?.imageUrl &&
+                ((atcHasMockups && atcMockupsStaleBlocks && !mockupLoading) ||
+                  flatMockupRefreshing ||
+                  (flatDecorMode && mockupsStale)) && (
                 <div className="absolute inset-0 flex items-end justify-center pb-3 pointer-events-none z-20">
-                  <span className="text-white text-sm font-semibold bg-black/60 rounded-full px-3 py-1 animate-pulse">
-                    Refresh your Mockups
-                  </span>
+                  <button
+                    type="button"
+                    className="pointer-events-auto text-white text-sm font-semibold bg-black/60 rounded-full px-3 py-1 animate-pulse"
+                    onClick={() => {
+                      if (flatPlacerEligible) {
+                        handleRefreshFlatMockups();
+                      } else if (
+                        generatedDesign?.imageUrl &&
+                        productTypeConfig &&
+                        selectedSize
+                      ) {
+                        setMockupError(null);
+                        setMockupFailed(false);
+                        setPrintifyMockups([]);
+                        setPrintifyMockupImages([]);
+                        setSelectedMockupIndex(0);
+                        setMockupsStale(false);
+                        mockupColorCacheRef.current = {};
+                        currentMockupColorRef.current = "";
+                        fetchPrintifyMockups(
+                          toAbsoluteImageUrl(generatedDesign.imageUrl),
+                          productTypeConfig.id,
+                          selectedSize,
+                          selectedFrameColor || "default",
+                          transform.scale,
+                          transform.x,
+                          transform.y,
+                        );
+                      }
+                    }}
+                  >
+                    {flatMockupRefreshing || mockupLoading
+                      ? "Updating mockups…"
+                      : "Refresh your Mockups"}
+                  </button>
                 </div>
               )}
             </div>
@@ -10071,24 +10158,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   <RefreshCw className="w-4 h-4 mr-1" />
                   <span className="text-xs">Edit Placement</span>
                 </Button>
-                {flatDecorMode && mockupsStale && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleRefreshFlatMockups}
-                    disabled={mockupLoading}
-                    title="Refresh Mockups"
-                    data-testid="button-refresh-mockups-flat"
-                    className="shrink-0"
-                  >
-                    {mockupLoading ? (
-                      <Loader2 className="w-4 h-4 animate-spin mr-1" />
-                    ) : (
-                      <RefreshCcw className="w-4 h-4 mr-1" />
-                    )}
-                    <span className="text-xs">Refresh Mockups</span>
-                  </Button>
-                )}
                 <Button
                   variant="outline"
                   size="sm"
