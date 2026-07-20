@@ -11,11 +11,6 @@ import { FlaskConical, Loader2, Package, Save } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
 import EmbedDesign, { type TesterDesignStatus } from "@/pages/embed-design";
 import { dedupeProductTypesForPicker } from "@shared/productTypePicker";
-import {
-  findFramedOrientationSibling,
-  inferProductCanvasOrientation,
-  type CanvasOrientation,
-} from "@shared/productVariantOptions";
 import type { ProductType } from "@shared/schema";
 
 interface DesignStudioIdentity {
@@ -64,27 +59,6 @@ export default function AdminCreateProduct() {
         Array.isArray(productTypesRaw) ? productTypesRaw : [],
       ),
     [productTypesRaw],
-  );
-
-  const selectedProductType = useMemo(
-    () => productTypes.find((pt) => pt.id === selectedProductTypeId) ?? null,
-    [productTypes, selectedProductTypeId],
-  );
-
-  const canvasOrientation = useMemo(
-    () => (selectedProductType ? inferProductCanvasOrientation(selectedProductType) : null),
-    [selectedProductType],
-  );
-
-  const switchFramedOrientation = useCallback(
-    (target: CanvasOrientation) => {
-      const sibling = findFramedOrientationSibling(productTypes, selectedProductType, target);
-      if (!sibling || sibling.id === selectedProductTypeId) return;
-      testerStatusRef.current = { jobId: null, aopPanels: "none" };
-      setTesterHasDesign(false);
-      setSelectedProductTypeId(sibling.id);
-    },
-    [productTypes, selectedProductType, selectedProductTypeId],
   );
 
   const { data: studioIdentity } = useQuery<DesignStudioIdentity>({
@@ -297,68 +271,6 @@ export default function AdminCreateProduct() {
           <p className="text-xs text-muted-foreground">
             This renders the exact same designer your customers use — it always stays in sync with the live customizer.
           </p>
-          {canvasOrientation && (
-            <div className="space-y-2 pt-2">
-              <Label>Orientation</Label>
-              <div className="flex flex-wrap gap-2">
-                {(
-                  [
-                    { id: "horizontal" as const, name: "Horizontal" },
-                    { id: "vertical" as const, name: "Vertical" },
-                  ] as const
-                ).map((choice) => {
-                  const sibling = findFramedOrientationSibling(
-                    productTypes,
-                    selectedProductType,
-                    choice.id,
-                  );
-                  const available = !!sibling;
-                  const isSelected = canvasOrientation === choice.id;
-                  return (
-                    <button
-                      key={choice.id}
-                      type="button"
-                      disabled={!available}
-                      onClick={() => switchFramedOrientation(choice.id)}
-                      data-testid={`button-orientation-${choice.id}`}
-                      style={
-                        isSelected
-                          ? {
-                              backgroundColor: "#111827",
-                              color: "#ffffff",
-                              border: "2px solid #111827",
-                              borderRadius: "9999px",
-                              padding: "5px 14px",
-                              fontSize: "12px",
-                              fontWeight: 600,
-                              cursor: available ? "pointer" : "not-allowed",
-                              outline: "none",
-                              opacity: available ? 1 : 0.45,
-                            }
-                          : {
-                              backgroundColor: "transparent",
-                              color: "#374151",
-                              border: "1px solid #9ca3af",
-                              borderRadius: "9999px",
-                              padding: "5px 14px",
-                              fontSize: "12px",
-                              fontWeight: 500,
-                              cursor: available ? "pointer" : "not-allowed",
-                              outline: "none",
-                              opacity: available ? 1 : 0.45,
-                            }
-                      }
-                    >
-                      {choice.name}
-                    </button>
-                  );
-                })}
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Switches to the matching Horizontal / Vertical framed product type (same family name).
-              </p>
-            </div>
-          )}
         </div>
 
         {/* Live customizer — the IDENTICAL storefront design studio, rendered IN-PROCESS via the
