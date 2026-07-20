@@ -111,6 +111,8 @@ export type GenerateImageParams = {
   isAllOverPrint?: boolean;
   isPatternStyle?: boolean;
   userPrompt?: string | null;
+  /** Tumbler/mug wrap — keep content away from edges. Not for framed art / wall decals. */
+  cylindricalWrap?: boolean;
 };
 
 // Map aspect ratio to Nano Banana Pro supported values
@@ -167,12 +169,35 @@ function stripVerboseRequirementBlocks(raw: string): string {
     .trim();
 }
 
+/** Compact orientation lock that survives prompt compression (verbose ORIENTATION LOCK is stripped). */
+export function buildDecorOrientationShortConstraint(aspectRatio?: string | null): string {
+  const mapped = mapToSupportedAspectRatio(aspectRatio || undefined);
+  const [w, h] = mapped.split(":").map(Number);
+  if (!(w > 0 && h > 0)) return "";
+  const ratio = w / h;
+  if (ratio > 1.05) {
+    return (
+      "CANVAS IS LANDSCAPE (wider than tall). Fill the FULL width edge-to-edge. " +
+      "Do NOT compose a tall/portrait poster panel. Do NOT leave white or empty bars on the left or right. "
+    );
+  }
+  if (ratio < 0.95) {
+    return (
+      "CANVAS IS PORTRAIT (taller than wide). Fill the FULL height edge-to-edge. " +
+      "Do NOT compose a wide landscape panel with empty bars on the top or bottom. "
+    );
+  }
+  return "CANVAS IS SQUARE. Fill edge-to-edge with no blank margins. ";
+}
+
 function compressPrompt(
   raw: string,
   isApparel: boolean,
   isAllOverPrint?: boolean,
   userPrompt?: string | null,
   isPatternStyle?: boolean,
+  aspectRatio?: string | null,
+  cylindricalWrap?: boolean,
 ): string {
   const artworkMatch = raw.match(/=== ARTWORK DESCRIPTION ===\s*([\s\S]*)/);
   const artworkSection = artworkMatch?.[1]?.trim() || "";
@@ -217,9 +242,15 @@ function compressPrompt(
   } else {
     compressed = stripVerboseRequirementBlocks(raw);
 
-    const shortConstraints =
-      "Full-bleed, edge-to-edge, no borders, no blank margins. " +
-      "Keep important elements away from edges (wraparound safe area). ";
+    // Verbose CRITICAL CANVAS / ORIENTATION LOCK blocks are stripped above — re-inject
+    // a compact orientation rule from the requested aspect ratio so landscape framed
+    // art and wall decals don't get portrait vignettes with white side bars.
+    const orient = buildDecorOrientationShortConstraint(aspectRatio);
+    const shortConstraints = cylindricalWrap
+      ? orient +
+        "Full-bleed background to all edges. Keep text and focal subjects in the center 60% (cylindrical wrap safe area). "
+      : orient +
+        "Full-bleed, edge-to-edge, no borders, no blank margins, no letterboxing — paint to all four edges. ";
     compressed = shortConstraints + compressed;
   }
 
@@ -326,6 +357,8 @@ export async function generateImageBase64(
     params.isAllOverPrint ?? false,
     params.userPrompt,
     params.isPatternStyle,
+    params.aspectRatio,
+    params.cylindricalWrap,
   );
   const requestedAspectRatio = mapToSupportedAspectRatio(params.aspectRatio);
 

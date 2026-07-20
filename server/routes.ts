@@ -2710,6 +2710,10 @@ ${orientationExtra}
         isAllOverPrint,
         isPatternStyle: usePatternAopAdmin,
         userPrompt: userDescAdmin || null,
+        cylindricalWrap: useCylindricalWrapPrompt({
+          designerType: productType?.designerType,
+          isKnownWrapAround: productType ? resolveWrapAround(productType) : false,
+        }),
       });
 console.log("[api/generate] replicate returned", {
   mimeType,
@@ -3556,6 +3560,7 @@ ${orientationExtra}
         isApparel,
         isAllOverPrint,
         userPrompt: userDescEmbed || null,
+        cylindricalWrap,
       });
 
       if (!base64Data) {
@@ -7716,6 +7721,10 @@ ${orientationExtra}
             isAllOverPrint,
             isPatternStyle: usePatternAopSf,
             userPrompt: userDescSf || null,
+            cylindricalWrap: useCylindricalWrapPrompt({
+              designerType: productType?.designerType,
+              isKnownWrapAround: productType ? resolveWrapAround(productType) : false,
+            }),
           });
           console.log(`${W} AI returned ${Date.now() - aiStart}ms, hasData=${!!base64Data}, total +${Date.now() - wStart}ms`);
 
