@@ -108,6 +108,11 @@ const DATA_MIGRATIONS: string[] = [
        prompt_prefix ILIKE '%vintage travel poster%'
        OR prompt_prefix NOT ILIKE '%canvas orientation%'
      )`,
+  // Wall Decals: product-level AR was portrait 2:3; per-size ARs are authoritative.
+  `UPDATE product_types
+   SET aspect_ratio = '1:1'
+   WHERE printify_blueprint_id = 759
+     AND aspect_ratio = '2:3'`,
   // Backfill materialized balances from the legacy customer columns.
   `INSERT INTO credit_balances (
       customer_id,

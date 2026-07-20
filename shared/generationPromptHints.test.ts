@@ -85,4 +85,13 @@ describe("generationPromptHints", () => {
     expect(block).toContain("blank white/empty side margins");
     expect(buildOrientationCompositionExtra(1.25, "mug")).toBe("");
   });
+
+  it("also locks landscape for generic wall decals (not only framed-print)", () => {
+    const block = buildOrientationCompositionExtra(1.5, "generic");
+    expect(block).toContain("ORIENTATION LOCK — LANDSCAPE");
+    expect(buildOrientationCompositionExtra(0.67, "generic")).toContain(
+      "ORIENTATION LOCK — PORTRAIT",
+    );
+    expect(buildOrientationCompositionExtra(1.5, "apparel")).toBe("");
+  });
 });

@@ -138,14 +138,25 @@ TEXT AND ELEMENT PLACEMENT:
 }
 
 /**
- * Extra composition rules so landscape framed posters don't get a tall vignette
- * with white letterbox bars (common Vintage Poster model bias).
+ * Extra composition rules so landscape framed art / wall decals don't get a tall
+ * vignette with white letterbox bars (common Vintage Poster model bias).
+ *
+ * Applies to flat decor (framed-print, generic wall decals, pillows, etc.).
+ * Skips apparel / AOP / mugs where wrap or motif rules own composition.
  */
 export function buildOrientationCompositionExtra(
   aspectRatioValue: number,
   designerType?: string | null,
 ): string {
-  if (designerType !== "framed-print") return "";
+  const dt = designerType || "";
+  if (
+    dt === "apparel" ||
+    dt === "all-over-print" ||
+    dt === "mug" ||
+    dt === "phone-case"
+  ) {
+    return "";
+  }
   if (aspectRatioValue > 1.05) {
     return `
 ORIENTATION LOCK — LANDSCAPE FRAME:
