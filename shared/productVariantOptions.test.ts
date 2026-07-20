@@ -4,8 +4,12 @@ import {
   frameColorsRedundantWithSizes,
   isLandscapeSizeAspect,
   isOrientationSizeProduct,
+  parseCanvasOrientationFromLabel,
+  pickSizeForCanvasOrientation,
   resolveFrameColorForSize,
   resolveSizeAspectRatio,
+  sizesHaveMixedCanvasOrientation,
+  styleChoicesIncludeCanvasOrientation,
 } from "./productVariantOptions";
 
 describe("productVariantOptions", () => {
@@ -88,5 +92,38 @@ describe("productVariantOptions", () => {
     ];
     expect(isOrientationSizeProduct(sizes, frameColors, "Option")).toBe(true);
     expect(isLandscapeSizeAspect("18:13")).toBe(true);
+  });
+
+  it("prefers size label dims over swapped width/height fields", () => {
+    expect(
+      resolveSizeAspectRatio({
+        id: "24''_×_18''",
+        name: '24" x 18"',
+        width: 18,
+        height: 24,
+      }),
+    ).toBe("4:3");
+  });
+
+  it("parses orientation labels and picks swapped comforter sizes", () => {
+    expect(parseCanvasOrientationFromLabel("Horizontal")).toBe("horizontal");
+    expect(parseCanvasOrientationFromLabel("vertical")).toBe("vertical");
+    expect(parseCanvasOrientationFromLabel("Pet")).toBe(null);
+    expect(
+      styleChoicesIncludeCanvasOrientation([
+        { id: "h", name: "Horizontal" },
+        { id: "v", name: "Vertical" },
+      ]),
+    ).toBe(true);
+
+    const sizes = [
+      { id: "68x88", name: '68" x 88"', width: 68, height: 88 },
+      { id: "88x68", name: '88" x 68"', width: 88, height: 68 },
+      { id: "104x88", name: '104" x 88"', width: 104, height: 88 },
+    ];
+    expect(sizesHaveMixedCanvasOrientation(sizes)).toBe(true);
+    expect(pickSizeForCanvasOrientation(sizes, "horizontal", "68x88")?.id).toBe("88x68");
+    expect(pickSizeForCanvasOrientation(sizes, "vertical", "88x68")?.id).toBe("68x88");
+    expect(pickSizeForCanvasOrientation(sizes, "horizontal", "104x88")?.id).toBe("104x88");
   });
 });

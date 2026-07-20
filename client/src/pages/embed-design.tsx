@@ -58,8 +58,13 @@ import { STOREFRONT_FREE_GENERATION_LIMIT, storefrontArtworksRemaining } from "@
 import {
   frameColorsRedundantWithSizes,
   isLandscapeSizeAspect,
+  parseCanvasOrientationFromLabel,
+  pickSizeForCanvasOrientation,
   resolveFrameColorForSize,
   resolveSizeAspectRatio,
+  sizesHaveMixedCanvasOrientation,
+  styleChoicesIncludeCanvasOrientation,
+  type CanvasOrientation,
 } from "@shared/productVariantOptions";
 import { resolveFabricWeaveTexture } from "@shared/fabricWeave";
 import {
@@ -1441,6 +1446,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     [printSizes, productTypeConfig?.frameColors, productTypeConfig?.colorLabel],
   );
 
+  const hasMixedCanvasOrientation = useMemo(
+    () =>
+      sizesHaveMixedCanvasOrientation(
+        printSizes,
+        productTypeConfig?.aspectRatio,
+      ),
+    [printSizes, productTypeConfig?.aspectRatio],
+  );
+
   const frameColorObjects: FrameColor[] = useMemo(
     () =>
       (productTypeConfig?.frameColors || []).map((c) => ({
@@ -2109,18 +2123,21 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   }, [printSizes, selectedSize, productTypeConfig?.aspectRatio]);
 
   const orientationBlankOverride = useMemo(() => {
-    if (!frameOptionsRedundantWithSizes || !flatLandscapeOrientation || !selectedSize) return null;
+    // Landscape size on mixed-orientation catalogs: prefer a second catalog image
+    // (tapestry / comforter / wall decal) when flat calibration has no per-size blank.
+    if (!hasMixedCanvasOrientation || !flatLandscapeOrientation || !selectedSize) return null;
     const manifest = productTypeConfig?.flatCalibration;
-    if (!manifest?.blanks) return null;
-    const sizeNorm = normalizeFlatColorKey(selectedSize);
-    const hasOrientationBlank = Object.keys(manifest.blanks).some((k) => {
-      if (k === "default") return false;
-      return k === selectedSize || normalizeFlatColorKey(k) === sizeNorm;
-    });
-    if (hasOrientationBlank) return null;
+    if (manifest?.blanks) {
+      const sizeNorm = normalizeFlatColorKey(selectedSize);
+      const hasOrientationBlank = Object.keys(manifest.blanks).some((k) => {
+        if (k === "default") return false;
+        return k === selectedSize || normalizeFlatColorKey(k) === sizeNorm;
+      });
+      if (hasOrientationBlank) return null;
+    }
     return catalogPreviewImages.length > 1 ? catalogPreviewImages[1] : null;
   }, [
-    frameOptionsRedundantWithSizes,
+    hasMixedCanvasOrientation,
     flatLandscapeOrientation,
     selectedSize,
     productTypeConfig?.flatCalibration,
@@ -2215,6 +2232,59 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (selectable === "all") return deduped;
     return deduped.filter((s) => styleMatchesSelectableCategories(s, selectable));
   }, [stylePresets, productTypeConfig, pageStyleConfig]);
+
+  const activeStyleHasOrientationChoices = useMemo(() => {
+    const active = filteredStylePresets.find((p) => p.id === selectedPreset);
+    return styleChoicesIncludeCanvasOrientation(active?.options?.choices);
+  }, [filteredStylePresets, selectedPreset]);
+
+  const showSizeDrivenOrientationPills =
+    hasMixedCanvasOrientation && !activeStyleHasOrientationChoices;
+
+  const sizeCanvasOrientation = useMemo((): CanvasOrientation | null => {
+    if (!hasMixedCanvasOrientation || !selectedSize) return null;
+    const sizeConfig = printSizes.find((s) => s.id === selectedSize);
+    if (!sizeConfig) return null;
+    const ar = resolveSizeAspectRatio(sizeConfig, productTypeConfig?.aspectRatio);
+    return isLandscapeSizeAspect(ar) ? "horizontal" : "vertical";
+  }, [
+    hasMixedCanvasOrientation,
+    selectedSize,
+    printSizes,
+    productTypeConfig?.aspectRatio,
+  ]);
+
+  const applyCanvasOrientation = useCallback(
+    (orientation: CanvasOrientation) => {
+      if (!hasMixedCanvasOrientation) return;
+      const next = pickSizeForCanvasOrientation(
+        printSizes,
+        orientation,
+        selectedSize || null,
+        productTypeConfig?.aspectRatio,
+      );
+      if (!next || next.id === selectedSize) return;
+      setSelectedSize(next.id);
+      if (frameOptionsRedundantWithSizes) {
+        const matched = resolveFrameColorForSize(next, frameColorObjects);
+        if (matched) setSelectedFrameColor(matched);
+      }
+      if (!usesFlatOnTheFlyPreview) {
+        setTransform({ scale: defaultZoom, x: 50, y: 50 });
+      }
+      setCatalogPreviewIndex(0);
+    },
+    [
+      hasMixedCanvasOrientation,
+      printSizes,
+      selectedSize,
+      productTypeConfig?.aspectRatio,
+      frameOptionsRedundantWithSizes,
+      frameColorObjects,
+      usesFlatOnTheFlyPreview,
+      defaultZoom,
+    ],
+  );
 
   useEffect(() => {
     const blueprintId = productTypeConfig?.printifyBlueprintId;
@@ -8760,6 +8830,56 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 {/* Size Selector */}
                 {printSizes.length > 0 && (
                   <div className="space-y-1" data-guide-box={guideActiveBox === 2 ? "active" : undefined}>
+                    {showSizeDrivenOrientationPills && (
+                      <div className="space-y-1.5 mb-2">
+                        <Label>Orientation</Label>
+                        <div className="flex flex-wrap gap-2">
+                          {(
+                            [
+                              { id: "horizontal" as const, name: "Horizontal" },
+                              { id: "vertical" as const, name: "Vertical" },
+                            ] as const
+                          ).map((choice) => {
+                            const isSelected = sizeCanvasOrientation === choice.id;
+                            return (
+                              <button
+                                key={choice.id}
+                                type="button"
+                                onClick={() => applyCanvasOrientation(choice.id)}
+                                data-testid={`button-size-orientation-${choice.id}`}
+                                style={
+                                  isSelected
+                                    ? {
+                                        backgroundColor: "#111827",
+                                        color: "#ffffff",
+                                        border: "2px solid #111827",
+                                        borderRadius: "9999px",
+                                        padding: "5px 14px",
+                                        fontSize: "12px",
+                                        fontWeight: 600,
+                                        cursor: "pointer",
+                                        outline: "none",
+                                      }
+                                    : {
+                                        backgroundColor: "transparent",
+                                        color: "#374151",
+                                        border: "1px solid #9ca3af",
+                                        borderRadius: "9999px",
+                                        padding: "5px 14px",
+                                        fontSize: "12px",
+                                        fontWeight: 500,
+                                        cursor: "pointer",
+                                        outline: "none",
+                                      }
+                                }
+                              >
+                                {choice.name}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
                     <SizeSelector
                       sizes={printSizes}
                       selectedSize={selectedSize}
@@ -8896,7 +9016,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                           <button
                             key={choice.id}
                             type="button"
-                            onClick={() => setSelectedStyleOption(choice.id)}
+                            onClick={() => {
+                              setSelectedStyleOption(choice.id);
+                              const orient =
+                                parseCanvasOrientationFromLabel(choice.name) ||
+                                parseCanvasOrientationFromLabel(choice.id);
+                              if (orient) applyCanvasOrientation(orient);
+                            }}
+                            data-testid={`button-style-option-${choice.id}`}
                             style={isSelected
                               ? { backgroundColor: '#111827', color: '#ffffff', border: '2px solid #111827', borderRadius: '9999px', padding: '5px 14px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', outline: 'none' }
                               : { backgroundColor: 'transparent', color: '#374151', border: '1px solid #9ca3af', borderRadius: '9999px', padding: '5px 14px', fontSize: '12px', fontWeight: 500, cursor: 'pointer', outline: 'none' }
@@ -9340,12 +9467,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   // The DB aspectRatio for mugs is the wrap-around print area (wide),
                   // but the container should be portrait so the full tumbler is visible.
                   if (productTypeConfig?.designerType === "mug") return "3/4";
-                  // For product types with dimensional sizes (width/height > 0), use those
-                  if (selectedSizeConfig && selectedSizeConfig.width > 0 && selectedSizeConfig.height > 0) {
-                    return `${selectedSizeConfig.width}/${selectedSizeConfig.height}`;
-                  }
-                  if (selectedSizeConfig?.aspectRatio) {
-                    return selectedSizeConfig.aspectRatio.replace(":", "/");
+                  // Prefer resolved size AR (id/name inch tokens) so landscape sizes
+                  // like 24×18 / 88×68 update the blank box even if width/height are stale.
+                  if (selectedSizeConfig) {
+                    const ar = resolveSizeAspectRatio(
+                      selectedSizeConfig,
+                      productTypeConfig?.aspectRatio,
+                    );
+                    if (ar) return ar.replace(":", "/");
                   }
                   // Square / double-sided pillows: DB aspectRatio is often 2:1 (both faces)
                   // but each printable face is 1:1 — keep the placeholder square before size pick.
@@ -9357,12 +9486,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       if (ar.replace("/", ":") === "2:1") return "1/1";
                     }
                   }
-                  // Before a size is chosen, prefer the first size's dimensions over product AR
+                  // Before a size is chosen, prefer the first size's resolved AR
                   const firstSize = printSizes[0];
-                  if (firstSize && firstSize.width > 0 && firstSize.height > 0) {
-                    return `${firstSize.width}/${firstSize.height}`;
+                  if (firstSize) {
+                    const ar = resolveSizeAspectRatio(
+                      firstSize,
+                      productTypeConfig?.aspectRatio,
+                    );
+                    if (ar) return ar.replace(":", "/");
                   }
-                  // Otherwise use the product type's aspectRatio string (e.g., "4:3" for mugs/tumblers)
                   const ar = productTypeConfig?.aspectRatio || "3:4";
                   return ar.replace(":", "/");
                 })(),
