@@ -38,11 +38,31 @@ export default function AdminCreateProduct() {
     initialProductTypeId ? parseInt(initialProductTypeId) : null
   );
 
-  const { data: productTypesRaw, isLoading: productTypesLoading } = useQuery<ProductType[]>({
+  // Live status of the design on screen, reported by the embedded customizer:
+  // which generation job it is + whether its AOP print panels are still uploading.
+  // Ref (not state) — updates arrive mid-edit and shouldn't rerender the page.
+  const testerStatusRef = useRef<TesterDesignStatus>({ jobId: null, aopPanels: "none" });
+  const saveDesignRef = useRef<(() => Promise<void>) | null>(null);
+  const [testerHasDesign, setTesterHasDesign] = useState(false);
+  const handleTesterDesignStatus = useCallback((status: TesterDesignStatus) => {
+    testerStatusRef.current = status;
+    setTesterHasDesign(!!status.jobId);
+  }, []);
+
+  const {
+    data: productTypesRaw,
+    isLoading: productTypesLoading,
+    isError: productTypesError,
+    error: productTypesErrorObj,
+    refetch: refetchProductTypes,
+  } = useQuery<ProductType[]>({
     queryKey: ["/api/admin/product-types"],
   });
   const productTypes = useMemo(
-    () => dedupeProductTypesForPicker(productTypesRaw ?? []),
+    () =>
+      dedupeProductTypesForPicker(
+        Array.isArray(productTypesRaw) ? productTypesRaw : [],
+      ),
     [productTypesRaw],
   );
 
@@ -83,17 +103,6 @@ export default function AdminCreateProduct() {
     (!!planData?.isActive &&
       !!planData.planName &&
       ["starter", "dabbler", "pro", "pro_plus"].includes(planData.planName));
-
-  // Live status of the design on screen, reported by the embedded customizer:
-  // which generation job it is + whether its AOP print panels are still uploading.
-  // Ref (not state) — updates arrive mid-edit and shouldn't rerender the page.
-  const testerStatusRef = useRef<TesterDesignStatus>({ jobId: null, aopPanels: "none" });
-  const saveDesignRef = useRef<(() => Promise<void>) | null>(null);
-  const [testerHasDesign, setTesterHasDesign] = useState(false);
-  const handleTesterDesignStatus = useCallback((status: TesterDesignStatus) => {
-    testerStatusRef.current = status;
-    setTesterHasDesign(!!status.jobId);
-  }, []);
 
   // Send a DRAFT test order to Printify — targets the design currently on screen
   // (falls back to the latest saved design when nothing was generated this session).
@@ -240,9 +249,31 @@ export default function AdminCreateProduct() {
           <Label>Product Type</Label>
           {productTypesLoading ? (
             <Skeleton className="h-10 w-full" />
+          ) : productTypesError ? (
+            <div className="space-y-2 rounded-md border border-destructive/40 bg-destructive/5 p-3">
+              <p className="text-sm text-destructive">
+                Couldn’t load product types
+                {productTypesErrorObj instanceof Error && productTypesErrorObj.message
+                  ? `: ${productTypesErrorObj.message}`
+                  : "."}
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => refetchProductTypes()}
+                data-testid="button-retry-product-types"
+              >
+                Retry
+              </Button>
+            </div>
+          ) : productTypes.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No active product types found. Import or activate products under Products first.
+            </p>
           ) : (
             <Select
-              value={selectedProductTypeId?.toString() || ""}
+              value={selectedProductTypeId != null ? String(selectedProductTypeId) : undefined}
               onValueChange={(v) => {
                 // Switching products remounts the customizer — the previous design's
                 // job id no longer describes what's on screen.
@@ -255,7 +286,7 @@ export default function AdminCreateProduct() {
                 <SelectValue placeholder="Select a product type" />
               </SelectTrigger>
               <SelectContent>
-                {productTypes?.map((pt) => (
+                {productTypes.map((pt) => (
                   <SelectItem key={pt.id} value={pt.id.toString()}>
                     {pt.name}
                   </SelectItem>

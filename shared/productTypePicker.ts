@@ -26,7 +26,7 @@ export function dedupeProductTypesForPicker<T extends ProductTypePickerRow>(type
   return [...byKey.values()].sort(
     (a, b) =>
       (a.sortOrder ?? 0) - (b.sortOrder ?? 0) ||
-      a.name.localeCompare(b.name) ||
+      String(a.name || "").localeCompare(String(b.name || "")) ||
       a.id - b.id,
   );
 }

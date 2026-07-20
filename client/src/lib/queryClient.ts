@@ -119,6 +119,11 @@ export function invalidateAuthQueries() {
   queryClient.invalidateQueries({ queryKey: ["/api/merchant"] });
   queryClient.invalidateQueries({ queryKey: ["/api/appai/customizer-pages"] });
   queryClient.invalidateQueries({ queryKey: ["/api/appai/plan"] });
+  // Generator Tester / Products — often fire before App Bridge patches fetch;
+  // without these, a 401 leaves an empty product dropdown until a hard remount.
+  queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/appai/design-studio/identity"] });
 }
 
 // Legacy no-op kept so existing imports compile without changes
