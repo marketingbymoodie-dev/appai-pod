@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   extractDimensionalKey,
+  filterSizesByCanvasOrientation,
   frameColorsRedundantWithSizes,
   isLandscapeSizeAspect,
   isOrientationSizeProduct,
@@ -108,6 +109,7 @@ describe("productVariantOptions", () => {
   it("parses orientation labels and picks swapped comforter sizes", () => {
     expect(parseCanvasOrientationFromLabel("Horizontal")).toBe("horizontal");
     expect(parseCanvasOrientationFromLabel("vertical")).toBe("vertical");
+    expect(parseCanvasOrientationFromLabel("Square")).toBe("square");
     expect(parseCanvasOrientationFromLabel("Pet")).toBe(null);
     expect(
       styleChoicesIncludeCanvasOrientation([
@@ -120,10 +122,18 @@ describe("productVariantOptions", () => {
       { id: "68x88", name: '68" x 88"', width: 68, height: 88 },
       { id: "88x68", name: '88" x 68"', width: 88, height: 68 },
       { id: "104x88", name: '104" x 88"', width: 104, height: 88 },
+      { id: "88x88", name: '88" x 88"', width: 88, height: 88 },
     ];
     expect(sizesHaveMixedCanvasOrientation(sizes)).toBe(true);
     expect(pickSizeForCanvasOrientation(sizes, "horizontal", "68x88")?.id).toBe("88x68");
     expect(pickSizeForCanvasOrientation(sizes, "vertical", "88x68")?.id).toBe("68x88");
     expect(pickSizeForCanvasOrientation(sizes, "horizontal", "104x88")?.id).toBe("104x88");
+    expect(pickSizeForCanvasOrientation(sizes, "square", "68x88")?.id).toBe("88x88");
+    expect(
+      filterSizesByCanvasOrientation(sizes, "vertical").map((s) => s.id),
+    ).toEqual(["68x88"]);
+    expect(
+      filterSizesByCanvasOrientation(sizes, "horizontal").map((s) => s.id),
+    ).toEqual(["88x68", "104x88"]);
   });
 });

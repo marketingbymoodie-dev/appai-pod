@@ -56,8 +56,11 @@ import {
 } from "@shared/stylePromptCompatibility";
 import { STOREFRONT_FREE_GENERATION_LIMIT, storefrontArtworksRemaining } from "@shared/storefront-credits";
 import {
+  canvasOrientationFromAspect,
+  filterSizesByCanvasOrientation,
   frameColorsRedundantWithSizes,
   isLandscapeSizeAspect,
+  listCanvasOrientationsInSizes,
   parseCanvasOrientationFromLabel,
   pickSizeForCanvasOrientation,
   resolveFrameColorForSize,
@@ -1455,6 +1458,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     [printSizes, productTypeConfig?.aspectRatio],
   );
 
+  const availableCanvasOrientations = useMemo(
+    () =>
+      listCanvasOrientationsInSizes(
+        printSizes,
+        productTypeConfig?.aspectRatio,
+      ),
+    [printSizes, productTypeConfig?.aspectRatio],
+  );
+
   const frameColorObjects: FrameColor[] = useMemo(
     () =>
       (productTypeConfig?.frameColors || []).map((c) => ({
@@ -2122,27 +2134,56 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     return isLandscapeSizeAspect(ar);
   }, [printSizes, selectedSize, productTypeConfig?.aspectRatio]);
 
-  const orientationBlankOverride = useMemo(() => {
-    // Landscape size on mixed-orientation catalogs: prefer a second catalog image
-    // (tapestry / comforter / wall decal) when flat calibration has no per-size blank.
-    if (!hasMixedCanvasOrientation || !flatLandscapeOrientation || !selectedSize) return null;
-    const manifest = productTypeConfig?.flatCalibration;
-    if (manifest?.blanks) {
-      const sizeNorm = normalizeFlatColorKey(selectedSize);
-      const hasOrientationBlank = Object.keys(manifest.blanks).some((k) => {
-        if (k === "default") return false;
-        return k === selectedSize || normalizeFlatColorKey(k) === sizeNorm;
-      });
-      if (hasOrientationBlank) return null;
+  /** Classify catalog placeholder images by natural aspect (for orientation blanks). */
+  const [catalogBlankByOrientation, setCatalogBlankByOrientation] = useState<
+    Partial<Record<CanvasOrientation, string>>
+  >({});
+
+  useEffect(() => {
+    let cancelled = false;
+    const urls = catalogPreviewImages;
+    if (urls.length === 0) {
+      setCatalogBlankByOrientation({});
+      return;
     }
-    return catalogPreviewImages.length > 1 ? catalogPreviewImages[1] : null;
-  }, [
-    hasMixedCanvasOrientation,
-    flatLandscapeOrientation,
-    selectedSize,
-    productTypeConfig?.flatCalibration,
-    catalogPreviewImages,
-  ]);
+    Promise.all(
+      urls.map(
+        (url) =>
+          new Promise<{ url: string; orientation: CanvasOrientation }>((resolve) => {
+            const img = new Image();
+            img.onload = () => {
+              const w = img.naturalWidth || 0;
+              const h = img.naturalHeight || 0;
+              let orientation: CanvasOrientation = "vertical";
+              if (w > 0 && h > 0) {
+                if (w > h * 1.05) orientation = "horizontal";
+                else if (h > w * 1.05) orientation = "vertical";
+                else orientation = "square";
+              }
+              resolve({ url, orientation });
+            };
+            img.onerror = () => resolve({ url, orientation: "vertical" });
+            img.src = url;
+          }),
+      ),
+    ).then((results) => {
+      if (cancelled) return;
+      const map: Partial<Record<CanvasOrientation, string>> = {};
+      for (const r of results) {
+        if (!map[r.orientation]) map[r.orientation] = r.url;
+      }
+      // Fallback: if only one catalog image, use it for every orientation.
+      if (Object.keys(map).length === 1 && urls[0]) {
+        map.horizontal = map.horizontal || urls[0];
+        map.vertical = map.vertical || urls[0];
+        map.square = map.square || urls[0];
+      }
+      setCatalogBlankByOrientation(map);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [catalogPreviewImages.join("|")]);
 
   useEffect(() => {
     setCatalogPreviewIndex(0);
@@ -2238,20 +2279,79 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     return styleChoicesIncludeCanvasOrientation(active?.options?.choices);
   }, [filteredStylePresets, selectedPreset]);
 
+  const styleHasSquareOrientationChoice = useMemo(() => {
+    const active = filteredStylePresets.find((p) => p.id === selectedPreset);
+    return (active?.options?.choices || []).some(
+      (c) =>
+        parseCanvasOrientationFromLabel(c.name) === "square" ||
+        parseCanvasOrientationFromLabel(c.id) === "square",
+    );
+  }, [filteredStylePresets, selectedPreset]);
+
+  // Size-driven H/V/Square when style has no Orientation choices. If style already
+  // has H/V, still offer Square when the catalog includes a square size (comforter).
   const showSizeDrivenOrientationPills =
     hasMixedCanvasOrientation && !activeStyleHasOrientationChoices;
+  const showSquareOrientationPillOnly =
+    hasMixedCanvasOrientation &&
+    activeStyleHasOrientationChoices &&
+    availableCanvasOrientations.includes("square") &&
+    !styleHasSquareOrientationChoice;
 
   const sizeCanvasOrientation = useMemo((): CanvasOrientation | null => {
     if (!hasMixedCanvasOrientation || !selectedSize) return null;
     const sizeConfig = printSizes.find((s) => s.id === selectedSize);
     if (!sizeConfig) return null;
-    const ar = resolveSizeAspectRatio(sizeConfig, productTypeConfig?.aspectRatio);
-    return isLandscapeSizeAspect(ar) ? "horizontal" : "vertical";
+    return canvasOrientationFromAspect(
+      resolveSizeAspectRatio(sizeConfig, productTypeConfig?.aspectRatio),
+    );
   }, [
     hasMixedCanvasOrientation,
     selectedSize,
     printSizes,
     productTypeConfig?.aspectRatio,
+  ]);
+
+  const orientationFilteredSizes = useMemo(() => {
+    if (!hasMixedCanvasOrientation || !sizeCanvasOrientation) return printSizes;
+    const filtered = filterSizesByCanvasOrientation(
+      printSizes,
+      sizeCanvasOrientation,
+      productTypeConfig?.aspectRatio,
+    ) as typeof printSizes;
+    return filtered.length > 0 ? filtered : printSizes;
+  }, [
+    hasMixedCanvasOrientation,
+    sizeCanvasOrientation,
+    printSizes,
+    productTypeConfig?.aspectRatio,
+  ]);
+
+  const orientationBlankOverride = useMemo(() => {
+    if (!hasMixedCanvasOrientation || !sizeCanvasOrientation || !selectedSize) {
+      return null;
+    }
+    const manifest = productTypeConfig?.flatCalibration;
+    if (manifest?.blanks) {
+      const sizeNorm = normalizeFlatColorKey(selectedSize);
+      const hasOrientationBlank = Object.keys(manifest.blanks).some((k) => {
+        if (k === "default") return false;
+        return k === selectedSize || normalizeFlatColorKey(k) === sizeNorm;
+      });
+      if (hasOrientationBlank) return null;
+    }
+    return (
+      catalogBlankByOrientation[sizeCanvasOrientation] ||
+      (sizeCanvasOrientation === "horizontal" && catalogPreviewImages[1]) ||
+      null
+    );
+  }, [
+    hasMixedCanvasOrientation,
+    sizeCanvasOrientation,
+    selectedSize,
+    productTypeConfig?.flatCalibration,
+    catalogBlankByOrientation,
+    catalogPreviewImages,
   ]);
 
   const applyCanvasOrientation = useCallback(
@@ -2263,6 +2363,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         selectedSize || null,
         productTypeConfig?.aspectRatio,
       );
+      // Keep style Orientation choice in sync when present (e.g. Vintage Poster).
+      const activePreset = filteredStylePresets.find((p) => p.id === selectedPreset);
+      const styleMatch = activePreset?.options?.choices?.find(
+        (c) =>
+          parseCanvasOrientationFromLabel(c.name) === orientation ||
+          parseCanvasOrientationFromLabel(c.id) === orientation,
+      );
+      if (styleMatch) setSelectedStyleOption(styleMatch.id);
+
       if (!next || next.id === selectedSize) return;
       setSelectedSize(next.id);
       if (frameOptionsRedundantWithSizes) {
@@ -2283,6 +2392,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       frameColorObjects,
       usesFlatOnTheFlyPreview,
       defaultZoom,
+      filteredStylePresets,
+      selectedPreset,
     ],
   );
 
@@ -8830,7 +8941,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 {/* Size Selector */}
                 {printSizes.length > 0 && (
                   <div className="space-y-1" data-guide-box={guideActiveBox === 2 ? "active" : undefined}>
-                    {showSizeDrivenOrientationPills && (
+                    {(showSizeDrivenOrientationPills || showSquareOrientationPillOnly) && (
                       <div className="space-y-1.5 mb-2">
                         <Label>Orientation</Label>
                         <div className="flex flex-wrap gap-2">
@@ -8838,8 +8949,19 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             [
                               { id: "horizontal" as const, name: "Horizontal" },
                               { id: "vertical" as const, name: "Vertical" },
+                              { id: "square" as const, name: "Square" },
                             ] as const
-                          ).map((choice) => {
+                          )
+                            .filter((choice) => {
+                              if (!availableCanvasOrientations.includes(choice.id)) {
+                                return false;
+                              }
+                              if (showSquareOrientationPillOnly) {
+                                return choice.id === "square";
+                              }
+                              return true;
+                            })
+                            .map((choice) => {
                             const isSelected = sizeCanvasOrientation === choice.id;
                             return (
                               <button
@@ -8881,7 +9003,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       </div>
                     )}
                     <SizeSelector
-                      sizes={printSizes}
+                      sizes={orientationFilteredSizes}
                       selectedSize={selectedSize}
                       onSizeChange={(sizeId) => {
                         const prevSize = printSizes.find((s) => s.id === selectedSize);
@@ -9586,16 +9708,24 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         if (browsingCatalog && catalogPreviewIndex > 0) {
                           return catalogPreviewImages[catalogPreviewIndex] || null;
                         }
+                        // Prefer Shopify/variant blank for the selected size (comforter
+                        // orientation swaps), then orientation-matched catalog image.
                         return (
-                          orientationBlankOverride ||
-                          flatCalibrationBlankUrl ||
                           colorAwareBlankUrl ||
+                          flatCalibrationBlankUrl ||
+                          orientationBlankOverride ||
                           catalogPreviewImages[catalogPreviewIndex] ||
                           catalogPreviewImages[0] ||
                           null
                         );
                       })()}
                       aspectRatio={
+                        (selectedSizeConfig
+                          ? resolveSizeAspectRatio(
+                              selectedSizeConfig,
+                              productTypeConfig?.aspectRatio,
+                            )
+                          : null) ||
                         selectedSizeConfig?.aspectRatio ||
                         productTypeConfig?.aspectRatio
                       }

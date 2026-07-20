@@ -136,9 +136,20 @@ export function isLandscapeSizeAspect(aspect: string): boolean {
   return w > 0 && h > 0 && w > h;
 }
 
-export type CanvasOrientation = "horizontal" | "vertical";
+export type CanvasOrientation = "horizontal" | "vertical" | "square";
 
-/** Parse Horizontal / Vertical / Landscape / Portrait from a style option or label. */
+/** Classify a w:h aspect string into horizontal / vertical / square. */
+export function canvasOrientationFromAspect(
+  aspect: string,
+): CanvasOrientation | null {
+  const [w, h] = aspect.split(":").map(Number);
+  if (!(w > 0 && h > 0)) return null;
+  if (w > h * 1.05) return "horizontal";
+  if (h > w * 1.05) return "vertical";
+  return "square";
+}
+
+/** Parse Horizontal / Vertical / Square / Landscape / Portrait from a label. */
 export function parseCanvasOrientationFromLabel(
   text: string | null | undefined,
 ): CanvasOrientation | null {
@@ -146,24 +157,39 @@ export function parseCanvasOrientationFromLabel(
   if (!t) return null;
   if (/\b(horizontal|landscape)\b/.test(t)) return "horizontal";
   if (/\b(vertical|portrait)\b/.test(t)) return "vertical";
+  if (/\bsquare\b/.test(t)) return "square";
   return null;
 }
 
-/** True when size list includes both landscape and portrait options. */
+/** Which orientation kinds exist in the size list. */
+export function listCanvasOrientationsInSizes(
+  sizes: SizeLike[],
+  productAspectRatio?: string | null,
+): CanvasOrientation[] {
+  let landscape = false;
+  let portrait = false;
+  let square = false;
+  for (const s of sizes) {
+    const o = canvasOrientationFromAspect(
+      resolveSizeAspectRatio(s, productAspectRatio),
+    );
+    if (o === "horizontal") landscape = true;
+    else if (o === "vertical") portrait = true;
+    else if (o === "square") square = true;
+  }
+  const out: CanvasOrientation[] = [];
+  if (landscape) out.push("horizontal");
+  if (portrait) out.push("vertical");
+  if (square) out.push("square");
+  return out;
+}
+
+/** True when size list includes 2+ of landscape / portrait / square. */
 export function sizesHaveMixedCanvasOrientation(
   sizes: SizeLike[],
   productAspectRatio?: string | null,
 ): boolean {
-  let landscape = 0;
-  let portrait = 0;
-  for (const s of sizes) {
-    const ratio = resolveSizeAspectRatio(s, productAspectRatio);
-    const [w, h] = ratio.split(":").map(Number);
-    if (!(w > 0 && h > 0)) continue;
-    if (w > h * 1.05) landscape += 1;
-    else if (h > w * 1.05) portrait += 1;
-  }
-  return landscape > 0 && portrait > 0;
+  return listCanvasOrientationsInSizes(sizes, productAspectRatio).length >= 2;
 }
 
 export function filterSizesByCanvasOrientation(
@@ -172,11 +198,10 @@ export function filterSizesByCanvasOrientation(
   productAspectRatio?: string | null,
 ): SizeLike[] {
   return sizes.filter((s) => {
-    const ratio = resolveSizeAspectRatio(s, productAspectRatio);
-    const [w, h] = ratio.split(":").map(Number);
-    if (!(w > 0 && h > 0)) return false;
-    if (orientation === "horizontal") return w > h * 1.05;
-    return h > w * 1.05;
+    const o = canvasOrientationFromAspect(
+      resolveSizeAspectRatio(s, productAspectRatio),
+    );
+    return o === orientation;
   });
 }
 
@@ -185,16 +210,16 @@ function sizeMatchesOrientation(
   orientation: CanvasOrientation,
   productAspectRatio?: string | null,
 ): boolean {
-  const ratio = resolveSizeAspectRatio(size, productAspectRatio);
-  const [w, h] = ratio.split(":").map(Number);
-  if (!(w > 0 && h > 0)) return false;
-  if (orientation === "horizontal") return w > h * 1.05;
-  return h > w * 1.05;
+  return (
+    canvasOrientationFromAspect(
+      resolveSizeAspectRatio(size, productAspectRatio),
+    ) === orientation
+  );
 }
 
 /**
- * Pick a size for Horizontal / Vertical. Prefers the dimension-swap of the
- * current size (68×88 → 88×68), else the first matching orientation.
+ * Pick a size for Horizontal / Vertical / Square. Prefers the dimension-swap
+ * of the current size (68×88 → 88×68), else the first matching orientation.
  */
 export function pickSizeForCanvasOrientation<T extends SizeLike>(
   sizes: T[],
@@ -217,7 +242,7 @@ export function pickSizeForCanvasOrientation<T extends SizeLike>(
     return current;
   }
 
-  if (current) {
+  if (current && orientation !== "square") {
     const curDim =
       extractDimensionalKey(current.id) || extractDimensionalKey(current.name);
     if (curDim) {
