@@ -16,6 +16,38 @@ export function extractDimensionalKey(value: string): string | null {
   return `${parseInt(m[1], 10)}x${parseInt(m[2], 10)}`;
 }
 
+/** First/second inch dims from id, name, or width/height fields. */
+export function sizeDimensionPair(size: SizeLike): [number, number] | null {
+  const dim =
+    extractDimensionalKey(size.id) || extractDimensionalKey(size.name);
+  if (dim) {
+    const [w, h] = dim.split("x").map(Number);
+    if (w > 0 && h > 0) return [w, h];
+  }
+  if (size.width && size.height && size.width > 0 && size.height > 0) {
+    return [size.width, size.height];
+  }
+  return null;
+}
+
+/**
+ * Sort dimensional sizes ascending by the first number, then the second
+ * (e.g. 11×8 → 14×11 → 18×12 → …). Non-dimensional rows keep relative order at the end.
+ */
+export function sortDimensionalSizesAscending<T extends SizeLike>(sizes: T[]): T[] {
+  return sizes
+    .map((size, index) => ({ size, index, dims: sizeDimensionPair(size) }))
+    .sort((a, b) => {
+      if (!a.dims && !b.dims) return a.index - b.index;
+      if (!a.dims) return 1;
+      if (!b.dims) return -1;
+      if (a.dims[0] !== b.dims[0]) return a.dims[0] - b.dims[0];
+      if (a.dims[1] !== b.dims[1]) return a.dims[1] - b.dims[1];
+      return a.index - b.index;
+    })
+    .map(({ size }) => size);
+}
+
 function normalizeToken(value: string): string {
   return value.toLowerCase().trim().replace(/[\s_-]+/g, "_");
 }

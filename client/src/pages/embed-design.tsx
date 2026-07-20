@@ -66,6 +66,7 @@ import {
   resolveFrameColorForSize,
   resolveSizeAspectRatio,
   sizesHaveMixedCanvasOrientation,
+  sortDimensionalSizesAscending,
   styleChoicesIncludeCanvasOrientation,
   type CanvasOrientation,
 } from "@shared/productVariantOptions";
@@ -1426,19 +1427,20 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [sizeChartLoading, setSizeChartLoading] = useState(false);
 
   // Derived early — cart-state sync and load-design helpers reference these before JSX.
-  const printSizes: PrintSize[] = useMemo(
-    () =>
-      (productTypeConfig?.sizes || []).map((s) => ({
-        id: s.id,
-        name: s.name,
-        width: s.width,
-        height: s.height,
-        aspectRatio:
-          s.aspectRatio ||
-          resolveSizeAspectRatio(s, productTypeConfig?.aspectRatio),
-      })),
-    [productTypeConfig],
-  );
+  // Dimensional sizes are sorted smallest→largest by the first inch number (11×8 before 14×11).
+  // Label sizes (S/M/L) have no inch dims and keep their relative order.
+  const printSizes: PrintSize[] = useMemo(() => {
+    const mapped = (productTypeConfig?.sizes || []).map((s) => ({
+      id: s.id,
+      name: s.name,
+      width: s.width,
+      height: s.height,
+      aspectRatio:
+        s.aspectRatio ||
+        resolveSizeAspectRatio(s, productTypeConfig?.aspectRatio),
+    }));
+    return sortDimensionalSizesAscending(mapped);
+  }, [productTypeConfig]);
 
   const frameOptionsRedundantWithSizes = useMemo(
     () =>
@@ -1968,9 +1970,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [flatPlacerEditOpen, setFlatPlacerEditOpen] = useState(false);
   const [flatApplyStatus, setFlatApplyStatus] = useState<FlatApplyStatus>("idle");
   const [flatRenderFailed, setFlatRenderFailed] = useState(false);
+  /** Bumps when the customer clicks Refresh Mockups for framed flat decor. */
+  const [flatMockupRefreshNonce, setFlatMockupRefreshNonce] = useState(0);
   const flatPlacerRef = useRef<FlatProductPlacerHandle>(null);
   /** Dedupes save-mockups + gallery refresh for flat on-the-fly previews. */
   const lastFlatGalleryMockupKeyRef = useRef<string>("");
+  /** Tracks size+color so framed decor can mark mockups stale on change. */
+  const flatDecorVariantKeyRef = useRef<string>("");
 
   // Per-color mockup cache: instantly swap mockups when the user picks a different frame color
   const mockupColorCacheRef = useRef<Record<string, { urls: string[]; images: { url: string; label: string }[] }>>({});
@@ -7343,18 +7349,58 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flatPlacerActive && flatApplyStatus === "saving"
   );
 
-  const flatMockupBlankKey = `${flatBlankColorId}::${selectedSize ?? ""}::${flatFabricWeave ? "weave" : "plain"}`;
+  const flatMockupBlankKey = `${flatBlankColorId}::${selectedSize ?? ""}::${flatFabricWeave ? "weave" : "plain"}::r${flatMockupRefreshNonce}`;
+
+  // Framed decor (posters, tapestry, decals): size/colour changes require Refresh Mockups
+  // so the customer can force a blank + gallery re-raster (same UX as Printify products).
+  useEffect(() => {
+    if (!flatPlacerEligible || !flatDecorMode) {
+      flatDecorVariantKeyRef.current = "";
+      return;
+    }
+    const key = `${selectedSize ?? ""}::${selectedFrameColor ?? ""}`;
+    if (!flatDecorVariantKeyRef.current) {
+      flatDecorVariantKeyRef.current = key;
+      return;
+    }
+    if (flatDecorVariantKeyRef.current === key) return;
+    flatDecorVariantKeyRef.current = key;
+    if (!generatedDesign?.imageUrl || suppressMockupStaleRef.current) return;
+    setMockupsStale(true);
+    currentMockupColorRef.current = "";
+    lastFlatGalleryMockupKeyRef.current = "";
+  }, [
+    flatPlacerEligible,
+    flatDecorMode,
+    selectedSize,
+    selectedFrameColor,
+    generatedDesign?.imageUrl,
+  ]);
 
   // Force mockup re-raster when the harvested blank key changes (shirt colour swap).
   useEffect(() => {
     if (!flatPlacerEligible) return;
+    // Framed decor waits for Refresh Mockups instead of auto-swapping.
+    if (flatDecorMode) return;
     currentMockupColorRef.current = "";
-  }, [flatPlacerEligible, flatBlankColorId]);
+  }, [flatPlacerEligible, flatBlankColorId, flatDecorMode]);
+
+  const handleRefreshFlatMockups = useCallback(() => {
+    setMockupError(null);
+    setMockupFailed(false);
+    setFlatRenderFailed(false);
+    currentMockupColorRef.current = "";
+    lastFlatGalleryMockupKeyRef.current = "";
+    setMockupsStale(false);
+    setFlatMockupRefreshNonce((n) => n + 1);
+  }, []);
 
   useEffect(() => {
     if (!flatPlacerEligible) return;
     if (!productTypeConfig?.flatCalibration || !generatedDesign?.imageUrl) return;
     if (!flatBlankColorId) return;
+    // Framed decor: hold gallery re-raster until the customer clicks Refresh Mockups.
+    if (flatDecorMode && mockupsStale) return;
 
     let cancelled = false;
     const t = window.setTimeout(() => {
@@ -7451,13 +7497,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flatLandscapeOrientation,
     orientationBlankOverride,
     persistFlatMockupsForGallery,
+    mockupsStale,
+    flatMockupRefreshNonce,
   ]);
 
-  // Flat tier: model/colour swap uses local canvas — never gate on Printify refresh.
+  // Apparel/phone flat: colour/size swap is local — never gate ATC on Printify refresh.
+  // Framed decor keeps mockupsStale until Refresh Mockups (or a successful re-raster).
   useEffect(() => {
-    if (!flatPlacerEligible) return;
+    if (!flatPlacerEligible || flatDecorMode) return;
     setMockupsStale(false);
-  }, [flatPlacerEligible, flatBlankColorId, selectedSize]);
+  }, [flatPlacerEligible, flatDecorMode, flatBlankColorId, selectedSize]);
 
   // Build a price map from shopifyVariants, keyed by size id
   const buildPriceMap = useCallback((): Record<string, number> => {
@@ -9555,6 +9604,25 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       <ChevronLeft className="w-4 h-4 mr-1 shrink-0" />
                       <span className="text-xs truncate">Back</span>
                     </Button>
+                    {flatDecorMode && mockupsStale && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="flex-1 min-w-0"
+                        onClick={handleRefreshFlatMockups}
+                        disabled={mockupLoading}
+                        title="Refresh Mockups"
+                        data-testid="button-refresh-mockups-flat-placer"
+                      >
+                        {mockupLoading ? (
+                          <Loader2 className="w-4 h-4 animate-spin mr-1 shrink-0" />
+                        ) : (
+                          <RefreshCcw className="w-4 h-4 mr-1 shrink-0" />
+                        )}
+                        <span className="text-xs truncate">Refresh Mockups</span>
+                      </Button>
+                    )}
                     <Button
                       type="button"
                       variant="outline"
@@ -9573,9 +9641,31 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     </Button>
                   </div>
                 )}
+                {/* Merchant / admin tester: same Refresh Mockups when size or frame colour changes */}
+                {!(isStorefront || isShopify) && flatDecorMode && mockupsStale && (
+                  <div className="flex w-full gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="shrink-0"
+                      onClick={handleRefreshFlatMockups}
+                      disabled={mockupLoading}
+                      title="Refresh Mockups"
+                      data-testid="button-refresh-mockups-flat-placer"
+                    >
+                      {mockupLoading ? (
+                        <Loader2 className="w-4 h-4 animate-spin mr-1" />
+                      ) : (
+                        <RefreshCcw className="w-4 h-4 mr-1" />
+                      )}
+                      <span className="text-xs">Refresh Mockups</span>
+                    </Button>
+                  </div>
+                )}
                 <FlatProductPlacer
                   ref={flatPlacerRef}
-                  key={`flat-${productTypeConfig?.id ?? 0}-${flatPlacerGeometryKey}-${flatBlankColorId}-${generatedDesign?.id ?? generatedDesign?.imageUrl}`}
+                  key={`flat-${productTypeConfig?.id ?? 0}-${flatPlacerGeometryKey}-${flatBlankColorId}-${generatedDesign?.id ?? generatedDesign?.imageUrl}-r${flatMockupRefreshNonce}`}
                   manifest={productTypeConfig.flatCalibration}
                   colorId={flatBlankColorId}
                   placementGeometryKey={flatPlacerGeometryKey}
@@ -9981,6 +10071,24 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   <RefreshCw className="w-4 h-4 mr-1" />
                   <span className="text-xs">Edit Placement</span>
                 </Button>
+                {flatDecorMode && mockupsStale && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleRefreshFlatMockups}
+                    disabled={mockupLoading}
+                    title="Refresh Mockups"
+                    data-testid="button-refresh-mockups-flat"
+                    className="shrink-0"
+                  >
+                    {mockupLoading ? (
+                      <Loader2 className="w-4 h-4 animate-spin mr-1" />
+                    ) : (
+                      <RefreshCcw className="w-4 h-4 mr-1" />
+                    )}
+                    <span className="text-xs">Refresh Mockups</span>
+                  </Button>
+                )}
                 <Button
                   variant="outline"
                   size="sm"

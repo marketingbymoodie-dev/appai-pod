@@ -10,6 +10,7 @@ import {
   resolveFrameColorForSize,
   resolveSizeAspectRatio,
   sizesHaveMixedCanvasOrientation,
+  sortDimensionalSizesAscending,
   styleChoicesIncludeCanvasOrientation,
 } from "./productVariantOptions";
 
@@ -20,6 +21,27 @@ describe("productVariantOptions", () => {
     expect(extractDimensionalKey("26''_×_36''")).toBe("26x36");
     expect(extractDimensionalKey("36''_×_26''")).toBe("36x26");
     expect(extractDimensionalKey("104''_x_88\"")).toBe("104x88");
+  });
+
+  it("sortDimensionalSizesAscending orders by first number then second", () => {
+    const sizes = [
+      { id: "14x11", name: '14" x 11"', width: 14, height: 11 },
+      { id: "18x12", name: '18" x 12"', width: 18, height: 12 },
+      { id: "24x18", name: '24" x 18"', width: 24, height: 18 },
+      { id: "36x24", name: '36" x 24"', width: 36, height: 24 },
+      { id: "11x8", name: '11" x 8"', width: 11, height: 8 },
+      { id: "20x16", name: '20" x 16"', width: 20, height: 16 },
+      { id: "30x20", name: '30" x 20"', width: 30, height: 20 },
+    ];
+    expect(sortDimensionalSizesAscending(sizes).map((s) => s.id)).toEqual([
+      "11x8",
+      "14x11",
+      "18x12",
+      "20x16",
+      "24x18",
+      "30x20",
+      "36x24",
+    ]);
   });
 
   it("resolveSizeAspectRatio from Shopify-style size id when width/height missing", () => {

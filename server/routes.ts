@@ -75,7 +75,7 @@ import {
   styleIsPatternMaker,
   useCylindricalWrapPrompt,
 } from "@shared/generationPromptHints";
-import { resolveSizeAspectRatio } from "@shared/productVariantOptions";
+import { resolveSizeAspectRatio, sortDimensionalSizesAscending } from "@shared/productVariantOptions";
 import {
   applyCatalogSizeBlanks,
   isCatalogSizeBlankBlueprint,
@@ -5723,6 +5723,8 @@ ${orientationExtra}
 
       // Determine sizeType (dimensional vs label-only)
       const sizeType = (productType as any).sizeType || "dimensional";
+      const orderedSizes =
+        sizeType === "dimensional" ? sortDimensionalSizesAscending(sizes) : sizes;
 
       // Parse base mockup images if available
       const baseMockupImages = typeof productType.baseMockupImages === 'string'
@@ -5756,7 +5758,7 @@ ${orientationExtra}
         baseMockupImages,
         primaryMockupIndex: productType.primaryMockupIndex || 0,
         doubleSidedPrint: productType.doubleSidedPrint || false,
-        sizes: sizes.map((s: any) => {
+        sizes: orderedSizes.map((s: any) => {
           // Calculate aspect ratio from dimensions if available
           let sizeAspectRatio = s.aspectRatio || productType.aspectRatio;
           if (sizeType === "dimensional" && s.width && s.height) {
