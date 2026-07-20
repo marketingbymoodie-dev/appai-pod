@@ -684,24 +684,15 @@ function extractCameraLabel(url: string): string {
   }
 }
 
-/** True when inline create-product images are likely incomplete (e.g. decor lifestyle views). */
+/**
+ * True when inline create-product images are likely incomplete.
+ * Only wait when we have a single view — ≥2 images is enough for storefront
+ * (front/back/carousel). Blocking on lifestyle/context often burns ~2 minutes
+ * for blueprints (e.g. tumbler) that never return those camera labels.
+ */
 export function shouldSupplementInlineMockups(images: MockupImage[], isAop: boolean): boolean {
   if (isAop || images.length === 0) return false;
-  if (images.length >= 2) {
-    const norms = images.map((img) => normalizeMockupCameraLabel(img.label));
-    return !norms.some(
-      (n) =>
-        n.includes("lifestyle") ||
-        n.includes("context") ||
-        n.includes("room") ||
-        n.includes("bed") ||
-        n.includes("bedroom") ||
-        n.includes("duvet") ||
-        n.includes("home") ||
-        n.includes("side person"),
-    );
-  }
-  return true;
+  return images.length < 2;
 }
 
 function mergeMockupImages(
@@ -1328,7 +1319,8 @@ export async function generatePrintifyMockup(
 
     if (!mockupData || supplementInline) {
       const pollStarted = Date.now();
-      const pollRetries = supplementInline && mockupData ? 50 : 60;
+      // Single-view supplement: short budget (~8–12s). Full poll when create returned nothing.
+      const pollRetries = supplementInline && mockupData ? 5 : 60;
       try {
         const polled = await pRetry(
           async (attemptNumber) => {
@@ -1340,9 +1332,9 @@ export async function generatePrintifyMockup(
             const merged = mergeMockupImages(mockupData, data);
             if (supplementInline && shouldSupplementInlineMockups(merged.images, isAop)) {
               console.log(
-                `[Printify Mockup] Poll attempt ${attemptNumber}: ${merged.images.length} image(s), still waiting for lifestyle/context`,
+                `[Printify Mockup] Poll attempt ${attemptNumber}: ${merged.images.length} image(s), still waiting for additional views`,
               );
-              throw new Error("Lifestyle mockups not ready yet");
+              throw new Error("Additional mockup views not ready yet");
             }
             return data;
           },

@@ -415,10 +415,19 @@ describe("Mockup camera_label preference", () => {
     ]);
   });
 
-  it("shouldSupplementInlineMockups when only front returned for decor", () => {
+  it("shouldSupplementInlineMockups only when a single non-AOP view is inline", () => {
     expect(
       shouldSupplementInlineMockups([{ url: "https://x.example/f.png", label: "front" }], false),
     ).toBe(true);
+    expect(
+      shouldSupplementInlineMockups(
+        [
+          { url: "https://x.example/f.png", label: "front" },
+          { url: "https://x.example/b.png", label: "back" },
+        ],
+        false,
+      ),
+    ).toBe(false);
     expect(
       shouldSupplementInlineMockups(
         [
@@ -429,6 +438,9 @@ describe("Mockup camera_label preference", () => {
       ),
     ).toBe(false);
     expect(shouldSupplementInlineMockups([], true)).toBe(false);
+    expect(
+      shouldSupplementInlineMockups([{ url: "https://x.example/f.png", label: "front" }], true),
+    ).toBe(false);
   });
 
   it("dedupes by URL when the same asset appears under two labels", () => {
