@@ -8564,7 +8564,10 @@ ${textEdgeRestrictions}
 
   app.get("/api/storefront/mockup-status", handleMockupStatus);
   app.get("/api/shopify/mockup-status", handleMockupStatus);
-  app.get("/api/mockup/status", isAuthenticated, handleMockupStatus);
+  // No isAuthenticated: App Bridge session JWTs expire ~60s, and tumbler/Printify
+  // jobs often poll longer. Storefront/shopify status are already public by jobId
+  // (unguessable UUID). Generate still requires auth.
+  app.get("/api/mockup/status", handleMockupStatus);
 
   // ==================== STOREFRONT VARIANT IMAGE (FOR CHECKOUT) ====================
   // Updates the Shopify variant image so checkout displays the custom mockup.
