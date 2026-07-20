@@ -356,46 +356,14 @@ export default function AdminProducts() {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
-      const hasImages = data.baseMockupImages?.front || data.baseMockupImages?.lifestyle || data.baseMockupImages?.primary;
-      const orientNote = data.orientationBlanksUpdated
-        ? " Also auto-selected Horizontal / Vertical / Square blanks from the Printify pool."
-        : "";
+      const hasImages = data.baseMockupImages?.front || data.baseMockupImages?.lifestyle;
       toast({ 
         title: hasImages ? "Images refreshed" : "No images available",
-        description: hasImages
-          ? `Product placeholder images updated from Printify.${orientNote}`
-          : "This product type has no placeholder images in Printify."
+        description: hasImages ? "Product placeholder images updated from Printify." : "This product type has no placeholder images in Printify."
       });
     },
     onError: (error: Error) => {
       toast({ title: "Failed to refresh images", description: error.message, variant: "destructive" });
-    },
-  });
-
-  const fixOrientationBlanksMutation = useMutation({
-    mutationFn: async (id: number) => {
-      const response = await apiRequest(
-        "POST",
-        `/api/admin/product-types/${id}/fix-orientation-blanks`,
-      );
-      return response.json();
-    },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
-      toast({
-        title: data.changed ? "Orientation blanks updated" : "Orientation blanks already set",
-        description: data.needed?.length
-          ? `Covered: ${data.needed.join(", ")}. Open Customizer Pages to review Primary / Gallery.`
-          : "Primary and gallery placeholders updated for mixed orientations.",
-      });
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Could not fix orientation blanks",
-        description: error.message,
-        variant: "destructive",
-      });
     },
   });
 
@@ -1050,21 +1018,6 @@ export default function AdminProducts() {
                         >
                           <RefreshCw className={`h-3 w-3 mr-1 ${refreshVariantsMutatingId === pt.id ? 'animate-spin' : ''}`} />
                           Refresh Variants
-                        </Button>
-                      )}
-                      {pt.printifyBlueprintId && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => fixOrientationBlanksMutation.mutate(pt.id)}
-                          disabled={fixOrientationBlanksMutation.isPending}
-                          data-testid={`button-fix-orientation-blanks-${pt.id}`}
-                          title="Auto-pick Primary + Gallery blanks for Horizontal / Vertical / Square sizes"
-                        >
-                          <RefreshCw
-                            className={`h-3 w-3 mr-1 ${fixOrientationBlanksMutation.isPending ? "animate-spin" : ""}`}
-                          />
-                          Fix Orientation Blanks
                         </Button>
                       )}
                       {pt.printifyBlueprintId && JSON.parse(pt.frameColors || "[]").length > 0 && (
