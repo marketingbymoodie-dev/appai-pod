@@ -19,6 +19,7 @@ import {
 import FlatDesignRectOverlay from "./FlatDesignRectOverlay";
 import {
   loadFlatImage,
+  orientFlatHarvestPixelsForLandscape,
   resolveFlatBlank,
   resolveFlatViewCalibration,
   resolveCalibratorLayerAdjust,
@@ -278,7 +279,12 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             ? loadFlatImage(calib.shadingUrl)
             : Promise.resolve(null),
         ]);
-        next[v] = { blank: b, mask: m, shading: s };
+        if (landscapeOrientation) {
+          const oriented = await orientFlatHarvestPixelsForLandscape(m, s);
+          next[v] = { blank: b, mask: oriented.mask, shading: oriented.shading };
+        } else {
+          next[v] = { blank: b, mask: m, shading: s };
+        }
       }
       if (cancelled) return;
       setAssets(next);

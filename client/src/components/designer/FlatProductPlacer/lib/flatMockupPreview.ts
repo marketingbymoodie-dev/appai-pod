@@ -14,10 +14,20 @@ export async function renderFlatMockupDataUrl(
   placerState: FlatProductPlacerState,
   view: FlatViewName,
   artworkUrl: string,
-  opts?: { decorMode?: boolean; fabricWeave?: boolean },
+  opts?: {
+    decorMode?: boolean;
+    fabricWeave?: boolean;
+    landscapeOrientation?: boolean;
+    blankUrlOverride?: string | null;
+  },
 ): Promise<string | null> {
-  const assets = await loadFlatViewAssets(manifest, colorId, view);
-  const calib = resolveFlatViewCalibration(manifest, colorId, view);
+  const assets = await loadFlatViewAssets(manifest, colorId, view, {
+    landscapeOrientation: opts?.landscapeOrientation,
+    blankUrlOverride: opts?.blankUrlOverride,
+  });
+  const calib = resolveFlatViewCalibration(manifest, colorId, view, {
+    landscapeOrientation: !!opts?.landscapeOrientation,
+  });
   if (!assets?.blank || !calib) return null;
 
   const includeArtwork = !!placerState.enabled[view];

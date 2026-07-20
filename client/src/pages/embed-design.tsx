@@ -7395,7 +7395,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             stateForRender,
             view,
             artworkUrl,
-            { decorMode: flatDecorMode, fabricWeave: flatFabricWeave },
+            {
+              decorMode: flatDecorMode,
+              fabricWeave: flatFabricWeave,
+              landscapeOrientation: flatLandscapeOrientation,
+              blankUrlOverride: orientationBlankOverride,
+            },
           );
           if (cancelled || !dataUrl) continue;
           let hostedUrl = dataUrl;
@@ -7443,6 +7448,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     printPlacement,
     flatDecorMode,
     flatFabricWeave,
+    flatLandscapeOrientation,
+    orientationBlankOverride,
     persistFlatMockupsForGallery,
   ]);
 
