@@ -100,6 +100,14 @@ const DATA_MIGRATIONS: string[] = [
   `UPDATE product_types SET fabric_weave_texture = true
    WHERE printify_blueprint_id = 1649
      AND fabric_weave_texture IS NULL`,
+  // Vintage Poster: drop "travel poster" portrait bias — follow canvas orientation.
+  `UPDATE style_presets
+   SET prompt_prefix = 'A full-bleed vintage travel illustration in classic Art Deco advertising-lithograph style (flat color fields, bold graphic shapes, period typography) that fills the entire canvas edge-to-edge in the canvas orientation — wider-than-tall when the canvas is landscape, taller-than-wide when portrait — with color and scene extending to all edges of'
+   WHERE LOWER(name) = 'vintage poster'
+     AND (
+       prompt_prefix ILIKE '%vintage travel poster%'
+       OR prompt_prefix NOT ILIKE '%canvas orientation%'
+     )`,
   // Backfill materialized balances from the legacy customer columns.
   `INSERT INTO credit_balances (
       customer_id,
