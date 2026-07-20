@@ -4,10 +4,12 @@ import {
   apparelMotifDesignColors,
   buildAopPatternSizingRequirements,
   buildAopSizingRequirements,
+  buildOrientationCompositionExtra,
   filterStyleReferenceUrls,
   hasUserArtworkDescription,
   shouldUseStyleReferenceImage,
   styleIsPatternMaker,
+  useCylindricalWrapPrompt,
   userPromptRequestsMonochrome,
 } from "./generationPromptHints";
 
@@ -65,5 +67,22 @@ describe("generationPromptHints", () => {
   it("styleIsPatternMaker detects pattern maker styles", () => {
     expect(styleIsPatternMaker("Pattern Maker", "Create a repeating pattern of")).toBe(true);
     expect(styleIsPatternMaker("Minimalist Icon", "Create a minimal icon of")).toBe(false);
+  });
+
+  it("does not treat landscape framed posters as cylindrical wrap", () => {
+    expect(
+      useCylindricalWrapPrompt({ designerType: "framed-print", isKnownWrapAround: true }),
+    ).toBe(false);
+    expect(useCylindricalWrapPrompt({ designerType: "mug", isKnownWrapAround: false })).toBe(true);
+    expect(
+      useCylindricalWrapPrompt({ designerType: "hard-goods", isKnownWrapAround: true }),
+    ).toBe(true);
+  });
+
+  it("locks landscape framed composition against side letterboxing", () => {
+    const block = buildOrientationCompositionExtra(1.25, "framed-print");
+    expect(block).toContain("ORIENTATION LOCK — LANDSCAPE");
+    expect(block).toContain("blank white/empty side margins");
+    expect(buildOrientationCompositionExtra(1.25, "mug")).toBe("");
   });
 });

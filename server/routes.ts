@@ -69,9 +69,13 @@ import {
   apparelMotifDesignColors,
   buildAopPatternSizingRequirements,
   buildAopSizingRequirements,
+  buildDecorTextEdgeRestrictions,
+  buildOrientationCompositionExtra,
   filterStyleReferenceUrls,
   styleIsPatternMaker,
+  useCylindricalWrapPrompt,
 } from "@shared/generationPromptHints";
+import { resolveSizeAspectRatio } from "@shared/productVariantOptions";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShopifyToken } from "./shopify";
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { syncCreditEntitlementMetafield } from "./credit-entitlements";
@@ -2413,17 +2417,15 @@ export async function registerRoutes(
       }
 
 
-      // Find size config - check product type sizes first, then fall back to PRINT_SIZES
-      let sizeConfig = PRINT_SIZES.find(s => s.id === size);
-      
-
-
-      if (!sizeConfig && productType) {
-        // Try to find size in product type's sizes (for apparel, etc.)
+      // Prefer product-type sizes (per-blueprint AR) over hardcoded PRINT_SIZES ids.
+      let sizeConfig: (typeof PRINT_SIZES)[number] | any | undefined;
+      if (productType) {
         const productSizes = JSON.parse(productType.sizes || "[]");
         const productSize = productSizes.find((s: any) => s.id === size);
         if (productSize) {
-          let aspectRatioStr = productSize.aspectRatio || productType.aspectRatio || "3:4";
+          let aspectRatioStr =
+            productSize.aspectRatio ||
+            resolveSizeAspectRatio(productSize, productType.aspectRatio);
 
           // For double-sided products, convert combined ratio to per-side ratio
           if (productType.doubleSidedPrint) {
@@ -2449,6 +2451,9 @@ export async function registerRoutes(
             genHeight: genDims.genHeight,
           } as any;
         }
+      }
+      if (!sizeConfig) {
+        sizeConfig = PRINT_SIZES.find(s => s.id === size);
       }
       
       if (!sizeConfig) {
@@ -2599,19 +2604,15 @@ RECTANGULAR PRINT AREA:
           orientationDescription = `SQUARE`;
         }
         
-        // For wrap-around products like tumblers, add specific guidance
-        const isWrapAround = aspectRatioValue >= 1.2; // 4:3 or wider is wrap-around
-        const textEdgeRestrictions = isWrapAround 
-          ? `
-TEXT AND ELEMENT PLACEMENT - CRITICAL:
-- DO NOT place any text, letters, words, or important elements within 20% of ANY edge
-- ALL text must be positioned in the CENTER 60% of the image both horizontally and vertically
-- The outer 20% margins on ALL sides should contain ONLY background/scenery - NO text whatsoever
-- This is a WRAP-AROUND cylindrical product - edges will be hidden or wrapped around`
-          : `
-TEXT AND ELEMENT PLACEMENT:
-- Keep all text and important elements within the central 75% of the image
-- Avoid placing critical content near the edges where it may be cut off during printing`;
+        const cylindricalWrap = useCylindricalWrapPrompt({
+          designerType: productType?.designerType,
+          isKnownWrapAround: productType ? resolveWrapAround(productType) : false,
+        });
+        const textEdgeRestrictions = buildDecorTextEdgeRestrictions(cylindricalWrap);
+        const orientationExtra = buildOrientationCompositionExtra(
+          aspectRatioValue,
+          productType?.designerType,
+        );
         
         sizingRequirements = `
 
@@ -2620,6 +2621,7 @@ CANVAS: ${orientationDescription} format
 FULL-BLEED MANDATORY: The artwork MUST fill the ENTIRE canvas edge-to-edge with NO blank margins, borders, or empty space. Paint/draw to ALL four edges.
 ${shapeInstructions}
 ${textEdgeRestrictions}
+${orientationExtra}
 
 === IMAGE CONTENT REQUIREMENTS ===
 1. The background/scene MUST extend fully to ALL four edges - no visible canvas boundaries
@@ -3350,29 +3352,31 @@ console.log("[shopify/session] installation ok", {
       
 
 
-      // Find size config - check product type first, then fall back to PRINT_SIZES
-      let sizeConfig = PRINT_SIZES.find(s => s.id === size);
-      
-      if (!sizeConfig && productType) {
-        // Use size-specific or product type's aspect ratio to calculate proper generation dimensions
+      // Prefer product-type sizes (per-blueprint AR) over hardcoded PRINT_SIZES ids.
+      let sizeConfig: (typeof PRINT_SIZES)[number] | any | undefined;
+      if (productType) {
         const productSizes = JSON.parse(productType.sizes || "[]");
         const productSize = productSizes.find((s: any) => s.id === size);
-        const aspectRatioStr = productSize?.aspectRatio || productType.aspectRatio || "3:4";
-        const genDims = calculateGenDimensions(aspectRatioStr);
-        
-        sizeConfig = {
-          id: productSize?.id || size,
-          name: productSize?.name || size,
-          width: productSize?.width || 12,
-          height: productSize?.height || 16,
-          aspectRatio: aspectRatioStr,
-          genWidth: genDims.genWidth,
-          genHeight: genDims.genHeight,
-        } as any;
+        if (productSize) {
+          const aspectRatioStr =
+            productSize.aspectRatio ||
+            resolveSizeAspectRatio(productSize, productType.aspectRatio);
+          const genDims = calculateGenDimensions(aspectRatioStr);
+          sizeConfig = {
+            id: productSize.id,
+            name: productSize.name,
+            width: productSize.width || 12,
+            height: productSize.height || 16,
+            aspectRatio: aspectRatioStr,
+            genWidth: genDims.genWidth,
+            genHeight: genDims.genHeight,
+          } as any;
+        }
       }
-      
       if (!sizeConfig) {
-        // Default fallback
+        sizeConfig = PRINT_SIZES.find(s => s.id === size);
+      }
+      if (!sizeConfig) {
         sizeConfig = PRINT_SIZES[0];
       }
 
@@ -3446,19 +3450,15 @@ RECTANGULAR PRINT AREA:
         orientationDescription = `SQUARE`;
       }
       
-      // For wrap-around products like tumblers, add specific guidance
-      const isWrapAround = aspectRatioValue >= 1.2; // 4:3 or wider is wrap-around
-      const textEdgeRestrictions = isWrapAround 
-        ? `
-TEXT AND ELEMENT PLACEMENT - CRITICAL:
-- DO NOT place any text, letters, words, or important elements within 20% of ANY edge
-- ALL text must be positioned in the CENTER 60% of the image both horizontally and vertically
-- The outer 20% margins on ALL sides should contain ONLY background/scenery - NO text whatsoever
-- This is a WRAP-AROUND cylindrical product - edges will be hidden or wrapped around`
-        : `
-TEXT AND ELEMENT PLACEMENT:
-- Keep all text and important elements within the central 75% of the image
-- Avoid placing critical content near the edges where it may be cut off during printing`;
+      const cylindricalWrap = useCylindricalWrapPrompt({
+        designerType: productType?.designerType,
+        isKnownWrapAround: productType ? resolveWrapAround(productType) : false,
+      });
+      const textEdgeRestrictions = buildDecorTextEdgeRestrictions(cylindricalWrap);
+      const orientationExtra = buildOrientationCompositionExtra(
+        aspectRatioValue,
+        productType?.designerType,
+      );
       
       const sizingRequirements = `
 
@@ -3467,6 +3467,7 @@ CANVAS: ${orientationDescription} format
 FULL-BLEED MANDATORY: The artwork MUST fill the ENTIRE canvas edge-to-edge with NO blank margins, borders, or empty space. Paint/draw to ALL four edges.
 ${shapeInstructions}
 ${textEdgeRestrictions}
+${orientationExtra}
 
 === IMAGE CONTENT REQUIREMENTS ===
 1. The background/scene MUST extend fully to ALL four edges - no visible canvas boundaries
@@ -7396,43 +7397,46 @@ ${textEdgeRestrictions}
 
 
 
-      // Find size config
-      let sizeConfig = PRINT_SIZES.find(s => s.id === size);
-
-      if (!sizeConfig && productType) {
+      // Prefer product-type sizes (per-blueprint AR) over hardcoded PRINT_SIZES ids.
+      let sizeConfig: (typeof PRINT_SIZES)[number] | any | undefined;
+      if (productType) {
         const productSizes = JSON.parse(productType.sizes || "[]");
         const productSize = productSizes.find((s: any) => s.id === size);
-        let aspectRatioStr = productSize?.aspectRatio || productType.aspectRatio || "3:4";
+        if (productSize) {
+          let aspectRatioStr =
+            productSize.aspectRatio ||
+            resolveSizeAspectRatio(productSize, productType.aspectRatio);
 
-        // For double-sided products, the stored ratio may be the combined front+back ratio.
-        // Convert to per-side ratio so the AI generates artwork for one side only.
-        if (productType.doubleSidedPrint) {
-          const [arW, arH] = aspectRatioStr.split(":").map(Number);
-          if (arW && arH && !isNaN(arW) && !isNaN(arH)) {
-            const ratio = arW / arH;
-            if (ratio >= 1.9) {
-              // Likely a combined ratio (e.g. 2:1 for square pillow front+back).
-              // Halve the width to get per-side ratio.
-              const perSideW = arW / 2;
-              const gcdFn = (a: number, b: number): number => b === 0 ? a : gcdFn(b, a % b);
-              const d = gcdFn(Math.round(perSideW), arH);
-              aspectRatioStr = `${Math.round(perSideW / d)}:${Math.round(arH / d)}`;
-              console.log(P, reqId, `Double-sided ratio override: ${arW}:${arH} → ${aspectRatioStr} (per-side)`);
+          // For double-sided products, the stored ratio may be the combined front+back ratio.
+          // Convert to per-side ratio so the AI generates artwork for one side only.
+          if (productType.doubleSidedPrint) {
+            const [arW, arH] = aspectRatioStr.split(":").map(Number);
+            if (arW && arH && !isNaN(arW) && !isNaN(arH)) {
+              const ratio = arW / arH;
+              if (ratio >= 1.9) {
+                const perSideW = arW / 2;
+                const gcdFn = (a: number, b: number): number => b === 0 ? a : gcdFn(b, a % b);
+                const d = gcdFn(Math.round(perSideW), arH);
+                aspectRatioStr = `${Math.round(perSideW / d)}:${Math.round(arH / d)}`;
+                console.log(P, reqId, `Double-sided ratio override: ${arW}:${arH} → ${aspectRatioStr} (per-side)`);
+              }
             }
           }
+
+          const genDims = calculateGenDimensions(aspectRatioStr);
+          sizeConfig = {
+            id: productSize.id,
+            name: productSize.name,
+            width: productSize.width || 12,
+            height: productSize.height || 16,
+            aspectRatio: aspectRatioStr,
+            genWidth: genDims.genWidth,
+            genHeight: genDims.genHeight,
+          } as any;
         }
-
-        const genDims = calculateGenDimensions(aspectRatioStr);
-
-        sizeConfig = {
-          id: productSize?.id || size,
-          name: productSize?.name || size,
-          width: productSize?.width || 12,
-          height: productSize?.height || 16,
-          aspectRatio: aspectRatioStr,
-          genWidth: genDims.genWidth,
-          genHeight: genDims.genHeight,
-        } as any;
+      }
+      if (!sizeConfig) {
+        sizeConfig = PRINT_SIZES.find(s => s.id === size);
       }
 
       if (!sizeConfig) {
@@ -7566,18 +7570,15 @@ RECTANGULAR PRINT AREA:
           orientationDescription = `SQUARE`;
         }
 
-        const isWrapAround = aspectRatioValue >= 1.2;
-        const textEdgeRestrictions = isWrapAround
-          ? `
-TEXT AND ELEMENT PLACEMENT - CRITICAL:
-- DO NOT place any text, letters, words, or important elements within 20% of ANY edge
-- ALL text must be positioned in the CENTER 60% of the image both horizontally and vertically
-- The outer 20% margins on ALL sides should contain ONLY background/scenery - NO text whatsoever
-- This is a WRAP-AROUND cylindrical product - edges will be hidden or wrapped around`
-          : `
-TEXT AND ELEMENT PLACEMENT:
-- Keep all text and important elements within the central 75% of the image
-- Avoid placing critical content near the edges where it may be cut off during printing`;
+        const cylindricalWrap = useCylindricalWrapPrompt({
+          designerType: productType?.designerType,
+          isKnownWrapAround: productType ? resolveWrapAround(productType) : false,
+        });
+        const textEdgeRestrictions = buildDecorTextEdgeRestrictions(cylindricalWrap);
+        const orientationExtra = buildOrientationCompositionExtra(
+          aspectRatioValue,
+          productType?.designerType,
+        );
 
         sizingRequirements = `
 
@@ -7586,6 +7587,7 @@ CANVAS: ${orientationDescription} format
 FULL-BLEED MANDATORY: The artwork MUST fill the ENTIRE canvas edge-to-edge with NO blank margins, borders, or empty space. Paint/draw to ALL four edges.
 ${shapeInstructions}
 ${textEdgeRestrictions}
+${orientationExtra}
 
 === IMAGE CONTENT REQUIREMENTS ===
 1. The background/scene MUST extend fully to ALL four edges - no visible canvas boundaries

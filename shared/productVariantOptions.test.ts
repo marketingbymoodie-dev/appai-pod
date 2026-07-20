@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   extractDimensionalKey,
+  findFramedOrientationSibling,
   frameColorsRedundantWithSizes,
+  framedProductFamilyKey,
+  inferProductCanvasOrientation,
   isLandscapeSizeAspect,
   isOrientationSizeProduct,
   resolveFrameColorForSize,
   resolveSizeAspectRatio,
+  sizesHaveMixedCanvasOrientation,
 } from "./productVariantOptions";
 
 describe("productVariantOptions", () => {
@@ -88,5 +92,34 @@ describe("productVariantOptions", () => {
     ];
     expect(isOrientationSizeProduct(sizes, frameColors, "Option")).toBe(true);
     expect(isLandscapeSizeAspect("18:13")).toBe(true);
+  });
+
+  it("infers framed orientation and finds sibling product types", () => {
+    expect(framedProductFamilyKey("Horizontal Framed Poster")).toBe("framed poster");
+    expect(framedProductFamilyKey("Vertical Framed Poster")).toBe("framed poster");
+    const horizontal = {
+      id: 1,
+      name: "Horizontal Framed Poster",
+      designerType: "framed-print",
+      aspectRatio: "5:4",
+      sizes: [{ id: "20x16", name: '20" x 16"', width: 20, height: 16 }],
+    };
+    const vertical = {
+      id: 2,
+      name: "Vertical Framed Poster",
+      designerType: "framed-print",
+      aspectRatio: "4:5",
+      sizes: [{ id: "16x20", name: '16" x 20"', width: 16, height: 20 }],
+    };
+    expect(inferProductCanvasOrientation(horizontal)).toBe("horizontal");
+    expect(inferProductCanvasOrientation(vertical)).toBe("vertical");
+    expect(findFramedOrientationSibling([horizontal, vertical], horizontal, "vertical")?.id).toBe(2);
+    expect(sizesHaveMixedCanvasOrientation(horizontal.sizes)).toBe(false);
+    expect(
+      sizesHaveMixedCanvasOrientation([
+        { id: "26x36", name: '26" x 36"', width: 26, height: 36 },
+        { id: "36x26", name: '36" x 26"', width: 36, height: 26 },
+      ]),
+    ).toBe(true);
   });
 });

@@ -56,10 +56,13 @@ import {
 } from "@shared/stylePromptCompatibility";
 import { STOREFRONT_FREE_GENERATION_LIMIT, storefrontArtworksRemaining } from "@shared/storefront-credits";
 import {
+  filterSizesByCanvasOrientation,
   frameColorsRedundantWithSizes,
   isLandscapeSizeAspect,
   resolveFrameColorForSize,
   resolveSizeAspectRatio,
+  sizesHaveMixedCanvasOrientation,
+  type CanvasOrientation,
 } from "@shared/productVariantOptions";
 import { resolveFabricWeaveTexture } from "@shared/fabricWeave";
 import {
@@ -1430,6 +1433,68 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       })),
     [productTypeConfig],
   );
+
+  const [canvasOrientationFilter, setCanvasOrientationFilter] =
+    useState<CanvasOrientation | null>(null);
+
+  const showCanvasOrientationPills = useMemo(
+    () =>
+      sizesHaveMixedCanvasOrientation(
+        printSizes,
+        productTypeConfig?.aspectRatio,
+      ),
+    [printSizes, productTypeConfig?.aspectRatio],
+  );
+
+  const orientationFilteredSizes: PrintSize[] = useMemo(() => {
+    if (!showCanvasOrientationPills || !canvasOrientationFilter) return printSizes;
+    const filtered = filterSizesByCanvasOrientation(
+      printSizes,
+      canvasOrientationFilter,
+      productTypeConfig?.aspectRatio,
+    ) as PrintSize[];
+    return filtered.length > 0 ? filtered : printSizes;
+  }, [
+    printSizes,
+    showCanvasOrientationPills,
+    canvasOrientationFilter,
+    productTypeConfig?.aspectRatio,
+  ]);
+
+  useEffect(() => {
+    if (!showCanvasOrientationPills) {
+      setCanvasOrientationFilter(null);
+      return;
+    }
+    const sizeConfig = printSizes.find((s) => s.id === selectedSize);
+    if (sizeConfig) {
+      const ar =
+        sizeConfig.aspectRatio ||
+        resolveSizeAspectRatio(sizeConfig, productTypeConfig?.aspectRatio);
+      setCanvasOrientationFilter(isLandscapeSizeAspect(ar) ? "horizontal" : "vertical");
+      return;
+    }
+    setCanvasOrientationFilter((prev) => prev ?? "horizontal");
+  }, [
+    showCanvasOrientationPills,
+    productTypeConfig?.id,
+    selectedSize,
+    printSizes,
+    productTypeConfig?.aspectRatio,
+  ]);
+
+  useEffect(() => {
+    if (!showCanvasOrientationPills || !canvasOrientationFilter) return;
+    if (!selectedSize) return;
+    if (orientationFilteredSizes.some((s) => s.id === selectedSize)) return;
+    const next = orientationFilteredSizes[0];
+    if (next) setSelectedSize(next.id);
+  }, [
+    showCanvasOrientationPills,
+    canvasOrientationFilter,
+    orientationFilteredSizes,
+    selectedSize,
+  ]);
 
   const frameOptionsRedundantWithSizes = useMemo(
     () =>
@@ -8760,8 +8825,58 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 {/* Size Selector */}
                 {printSizes.length > 0 && (
                   <div className="space-y-1" data-guide-box={guideActiveBox === 2 ? "active" : undefined}>
+                    {showCanvasOrientationPills && (
+                      <div className="space-y-1.5 mb-2">
+                        <Label>Orientation</Label>
+                        <div className="flex flex-wrap gap-2">
+                          {(
+                            [
+                              { id: "horizontal" as const, name: "Horizontal" },
+                              { id: "vertical" as const, name: "Vertical" },
+                            ] as const
+                          ).map((choice) => {
+                            const isSelected = canvasOrientationFilter === choice.id;
+                            return (
+                              <button
+                                key={choice.id}
+                                type="button"
+                                onClick={() => setCanvasOrientationFilter(choice.id)}
+                                data-testid={`button-size-orientation-${choice.id}`}
+                                style={
+                                  isSelected
+                                    ? {
+                                        backgroundColor: "#111827",
+                                        color: "#ffffff",
+                                        border: "2px solid #111827",
+                                        borderRadius: "9999px",
+                                        padding: "5px 14px",
+                                        fontSize: "12px",
+                                        fontWeight: 600,
+                                        cursor: "pointer",
+                                        outline: "none",
+                                      }
+                                    : {
+                                        backgroundColor: "transparent",
+                                        color: "#374151",
+                                        border: "1px solid #9ca3af",
+                                        borderRadius: "9999px",
+                                        padding: "5px 14px",
+                                        fontSize: "12px",
+                                        fontWeight: 500,
+                                        cursor: "pointer",
+                                        outline: "none",
+                                      }
+                                }
+                              >
+                                {choice.name}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
                     <SizeSelector
-                      sizes={printSizes}
+                      sizes={orientationFilteredSizes}
                       selectedSize={selectedSize}
                       onSizeChange={(sizeId) => {
                         const prevSize = printSizes.find((s) => s.id === selectedSize);

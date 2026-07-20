@@ -105,3 +105,60 @@ MANDATORY IMAGE REQUIREMENTS FOR ALL-OVER PRINT (AOP) PATTERN - FOLLOW EXACTLY:
 8. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, or extra subjects unless the user explicitly asked for them.
 `;
 }
+
+/**
+ * Tumbler/mug wrap prompts must NOT apply to framed posters just because AR is wide.
+ * Landscape framed art was getting cylindrical "keep margins empty" rules → portrait
+ * composition with blank side bars inside a landscape canvas.
+ */
+export function useCylindricalWrapPrompt(opts: {
+  designerType?: string | null;
+  isKnownWrapAround?: boolean;
+}): boolean {
+  const dt = opts.designerType || "";
+  if (dt === "framed-print" || dt === "apparel" || dt === "all-over-print") return false;
+  if (dt === "mug") return true;
+  return !!opts.isKnownWrapAround;
+}
+
+/** Edge / text placement rules for decor & hard goods (not apparel chroma). */
+export function buildDecorTextEdgeRestrictions(cylindricalWrap: boolean): string {
+  if (cylindricalWrap) {
+    return `
+TEXT AND ELEMENT PLACEMENT - CRITICAL:
+- DO NOT place any text, letters, words, or important elements within 20% of ANY edge
+- ALL text must be positioned in the CENTER 60% of the image both horizontally and vertically
+- The outer 20% margins on ALL sides should contain ONLY background/scenery - NO text whatsoever
+- This is a WRAP-AROUND cylindrical product - edges will be hidden or wrapped around`;
+  }
+  return `
+TEXT AND ELEMENT PLACEMENT:
+- Keep all text and important elements within the central 75% of the image
+- Avoid placing critical content near the edges where it may be cut off during printing`;
+}
+
+/**
+ * Extra composition rules so landscape framed posters don't get a tall vignette
+ * with white letterbox bars (common Vintage Poster model bias).
+ */
+export function buildOrientationCompositionExtra(
+  aspectRatioValue: number,
+  designerType?: string | null,
+): string {
+  if (designerType !== "framed-print") return "";
+  if (aspectRatioValue > 1.05) {
+    return `
+ORIENTATION LOCK — LANDSCAPE FRAME:
+- The painted scene MUST be wider than tall and fill the full width of the canvas
+- DO NOT compose a tall/vertical poster, portrait panel, or centered artwork with blank white/empty side margins
+- DO NOT leave empty bars on the left and right — extend color and scene to the left and right edges`;
+  }
+  if (aspectRatioValue < 0.95) {
+    return `
+ORIENTATION LOCK — PORTRAIT FRAME:
+- The painted scene MUST be taller than wide and fill the full height of the canvas
+- DO NOT compose a wide/landscape panel with blank empty bars on the top and bottom
+- Extend color and scene to the top and bottom edges`;
+  }
+  return "";
+}
