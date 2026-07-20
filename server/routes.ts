@@ -82,6 +82,7 @@ import {
   resolveCatalogSizeBlankUrlMap,
 } from "@shared/catalogSizeBlanks";
 import { getSupabaseDesignPublicUrl } from "./supabaseDesigns";
+import { stripLetterboxBars } from "./stripLetterboxBars";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShopifyToken } from "./shopify";
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { syncCreditEntitlementMetafield } from "./credit-entitlements";
@@ -852,14 +853,31 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
     if (matting.qa.softAlphaRatio > 0.03 || matting.qa.cornerBgOpaqueRatio > 0.5) {
       console.warn("[saveImageToStorage] Matting QA:", JSON.stringify(matting.qa));
     }
-  } else if (targetDims && targetDims.width !== targetDims.height) {
-    const outputFormat =
-      actualMimeType.includes("jpeg") || actualMimeType.includes("jpg")
-        ? "jpeg"
-        : "png";
-    buffer = (await resizeToAspectRatio(buffer, targetDims, outputFormat)) as Buffer;
-    extension = outputFormat === "jpeg" ? "jpg" : "png";
-    actualMimeType = outputFormat === "jpeg" ? "image/jpeg" : "image/png";
+  } else {
+    // Vintage Poster (and similar) often paints cream letterbox bars inside an
+    // already-correct landscape/portrait canvas — strip those so flat placement
+    // fills the dashed print rect edge-to-edge.
+    try {
+      const stripped = await stripLetterboxBars(buffer);
+      if (stripped.changed) {
+        buffer = stripped.buffer;
+        console.log(
+          `[saveImageToStorage] Stripped letterbox bars L=${stripped.left} R=${stripped.right} T=${stripped.top} B=${stripped.bottom}`,
+        );
+      }
+    } catch (err) {
+      console.warn("[saveImageToStorage] letterbox strip skipped:", (err as Error).message);
+    }
+
+    if (targetDims && targetDims.width !== targetDims.height) {
+      const outputFormat =
+        actualMimeType.includes("jpeg") || actualMimeType.includes("jpg")
+          ? "jpeg"
+          : "png";
+      buffer = (await resizeToAspectRatio(buffer, targetDims, outputFormat)) as Buffer;
+      extension = outputFormat === "jpeg" ? "jpg" : "png";
+      actualMimeType = outputFormat === "jpeg" ? "image/jpeg" : "image/png";
+    }
   }
 
   const filename = `${imageId}.${extension}`;
