@@ -261,20 +261,41 @@ export async function rotateFlatImage90Cw(img: HTMLImageElement): Promise<HTMLIm
 }
 
 /**
- * When print geometry is swapped to landscape but mask/shading pixels are still
- * portrait (shared harvest), rotate them so destination-in clip matches the
- * wide dashed placement box — otherwise blank white shows as fixed side bars.
+ * True when landscapeOrientation remapped portrait printFileDims → landscape.
+ * Harvest masks are usually square (mockup px) with a tall opaque silhouette —
+ * pixel aspect alone cannot detect that, so callers use this geometry check.
+ */
+export function flatCalibrationSwappedToLandscape(
+  manifest: FlatCalibrationManifest,
+  colorId: string,
+  view: FlatViewName,
+  landscapeOrientation: boolean,
+): boolean {
+  if (!landscapeOrientation) return false;
+  const base = resolveFlatViewCalibration(manifest, colorId, view);
+  if (!base?.printFileDims?.width || !base.printFileDims.height) return false;
+  if (base.printFileDims.width >= base.printFileDims.height) return false;
+  const oriented = resolveFlatViewCalibration(manifest, colorId, view, {
+    landscapeOrientation: true,
+  });
+  if (!oriented?.printFileDims) return false;
+  return oriented.printFileDims.width > oriented.printFileDims.height;
+}
+
+/**
+ * When print geometry is swapped to landscape but mask/shading still encode a
+ * portrait silhouette (often on a square mockup canvas), rotate 90° so
+ * destination-in clip matches the wide placement box. Without this, blank white
+ * shows as fixed side bars while art pans underneath.
  */
 export async function orientFlatHarvestPixelsForLandscape(
   mask: HTMLImageElement | null,
   shading: HTMLImageElement | null,
 ): Promise<{ mask: HTMLImageElement | null; shading: HTMLImageElement | null }> {
-  const maskPortrait = !!mask && imagePixelSize(mask).h > imagePixelSize(mask).w;
-  const shadingPortrait = !!shading && imagePixelSize(shading).h > imagePixelSize(shading).w;
-  if (!maskPortrait && !shadingPortrait) return { mask, shading };
+  if (!mask && !shading) return { mask, shading };
   const [nextMask, nextShading] = await Promise.all([
-    maskPortrait && mask ? rotateFlatImage90Cw(mask) : Promise.resolve(mask),
-    shadingPortrait && shading ? rotateFlatImage90Cw(shading) : Promise.resolve(shading),
+    mask ? rotateFlatImage90Cw(mask) : Promise.resolve(null),
+    shading ? rotateFlatImage90Cw(shading) : Promise.resolve(null),
   ]);
   return { mask: nextMask, shading: nextShading };
 }
@@ -288,8 +309,9 @@ export async function loadFlatViewAssets(
   const blank = resolveFlatBlank(manifest, colorId);
   const blankUrl =
     view === "front" && opts?.blankUrlOverride ? opts.blankUrlOverride : blank[view];
+  const landscapeOrientation = !!opts?.landscapeOrientation;
   const calib = resolveFlatViewCalibration(manifest, colorId, view, {
-    landscapeOrientation: !!opts?.landscapeOrientation,
+    landscapeOrientation,
   });
   if (!blankUrl || !calib) return null;
 
@@ -305,7 +327,7 @@ export async function loadFlatViewAssets(
     shouldLoadShading ? loadFlatImage(calib.shadingUrl!) : Promise.resolve(null),
   ]);
   if (!b) return null;
-  if (opts?.landscapeOrientation) {
+  if (flatCalibrationSwappedToLandscape(manifest, colorId, view, landscapeOrientation)) {
     const oriented = await orientFlatHarvestPixelsForLandscape(m, s);
     return { blank: b, mask: oriented.mask, shading: oriented.shading };
   }
