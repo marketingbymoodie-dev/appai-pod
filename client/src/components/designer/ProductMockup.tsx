@@ -88,13 +88,11 @@ const GENERATING_MESSAGES = [
   { line1: "Almost", line2: "there..." },
 ];
 
-const MOCKUP_PHASES = [
-  { at: 0, text: "Rendering Artwork" },
-  { at: 2500, text: "Generating Patterns" },
-  { at: 5500, text: "Fine Tuning" },
-  { at: 9000, text: "Nearly Ready" },
-  { at: 12500, text: "Finishing Touches" },
-  { at: 16000, text: "Loading Mockups" },
+/** Shown while Printify composites load — artwork is already ready underneath. */
+const MOCKUP_WAIT_PHASES = [
+  { at: 0, text: "Loading Mockups" },
+  { at: 8000, text: "Still Loading Mockups" },
+  { at: 16000, text: "Almost Ready" },
 ];
 
 function GeneratingLoader({ isAop = false }: { isAop?: boolean }) {
@@ -222,7 +220,7 @@ function MockupsLoader({ imageUrl, transform, printShape }: {
   printShape: PrintShape;
 }) {
   ensureStyles();
-  const [phaseText, setPhaseText] = useState(MOCKUP_PHASES[0].text);
+  const [phaseText, setPhaseText] = useState(MOCKUP_WAIT_PHASES[0].text);
   const scaleVal = transform.scale / 100;
   const xOffset = transform.x - 50;
   const yOffset = transform.y - 50;
@@ -231,7 +229,9 @@ function MockupsLoader({ imageUrl, transform, printShape }: {
     const started = Date.now();
     const intervalId = window.setInterval(() => {
       const elapsed = Date.now() - started;
-      const phase = [...MOCKUP_PHASES].reverse().find((p) => elapsed >= p.at) || MOCKUP_PHASES[0];
+      const phase =
+        [...MOCKUP_WAIT_PHASES].reverse().find((p) => elapsed >= p.at) ||
+        MOCKUP_WAIT_PHASES[0];
       setPhaseText(phase.text);
     }, 400);
     return () => window.clearInterval(intervalId);

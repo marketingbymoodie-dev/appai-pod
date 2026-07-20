@@ -9492,13 +9492,23 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               <div className="absolute inset-0">
                 {(() => {
                   const isGeneratingArtwork = generateMutation.isPending;
-                  // mockupTriggered bridges the gap between isPending=false and mockupLoading=true
-                  const isGeneratingMockups = isStorefront && (mockupLoading || mockupTriggered) && !getPreferredMockupUrl();
+                  // mockupTriggered bridges the gap between isPending=false and mockupLoading=true.
+                  // Use showsPrintifyMockupPreview (storefront + Shopify + admin-tester) so the
+                  // Generator Tester keeps the Loading Mockups overlay over raw artwork until
+                  // Printify composites arrive — not storefront-only.
+                  const isGeneratingMockups =
+                    showsPrintifyMockupPreview &&
+                    (mockupLoading || mockupTriggered) &&
+                    !getPreferredMockupUrl();
                   const isAopProduct = !!(useAopCustomizer);
                   // isAopReapplying: AOP product is regenerating mockups after a pattern re-apply.
                   // Unlike the first apply, getPreferredMockupUrl() returns the OLD mockup URL so
                   // isGeneratingMockups is false — but we still need to show the blue shimmer.
-                  const isAopReapplying = isStorefront && isAopProduct && (mockupLoading || mockupTriggered) && !!aopPatternUrl;
+                  const isAopReapplying =
+                    showsPrintifyMockupPreview &&
+                    isAopProduct &&
+                    (mockupLoading || mockupTriggered) &&
+                    !!aopPatternUrl;
                   // isLoadingSaved: true while a shared design OR a saved design (loadDesignId) is
                   // being restored and generatedDesign hasn't been set yet — shows skeleton shimmer
                   // instead of the blank product mockup.
