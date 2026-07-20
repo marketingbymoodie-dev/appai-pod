@@ -41,6 +41,8 @@ import {
   validateCustomizerPageStyleConfig,
   type CustomizerPageStyleConfig,
 } from "@shared/customizerPageStyles";
+import { sizesHaveMixedCanvasOrientation } from "@shared/productVariantOptions";
+import type { ProductType } from "@shared/schema";
 
 interface CustomizerPage {
   id: string;
@@ -292,6 +294,59 @@ export default function AdminCustomizerPages() {
   const { data: blanksData, isLoading: blanksLoading } = useQuery<{ blanks: Blank[] }>({
     queryKey: ["/api/appai/blanks"],
     enabled: createOpen || !!editTarget,
+  });
+
+  const { data: productTypesForBlanks } = useQuery<ProductType[]>({
+    queryKey: ["/api/admin/product-types"],
+    enabled: createOpen || !!editTarget,
+  });
+
+  const blankNeedsOrientationCoverage = (productTypeId: number | null | undefined) => {
+    if (productTypeId == null || !productTypesForBlanks) return false;
+    const pt = productTypesForBlanks.find((p) => p.id === productTypeId);
+    if (!pt) return false;
+    try {
+      const sizes = JSON.parse(pt.sizes || "[]");
+      return sizesHaveMixedCanvasOrientation(sizes, pt.aspectRatio);
+    } catch {
+      return false;
+    }
+  };
+
+  const fixOrientationBlanksMutation = useMutation({
+    mutationFn: async (productTypeId: number) => {
+      const res = await apiRequest(
+        "POST",
+        `/api/admin/product-types/${productTypeId}/fix-orientation-blanks`,
+      );
+      return res.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
+      const imgs = data.baseMockupImages || {};
+      if (imgs.primary) {
+        setEditPrimaryPlaceholder(imgs.primary);
+        setFormPrimaryPlaceholder(imgs.primary);
+      }
+      if (Array.isArray(imgs.gallery)) {
+        setEditGalleryPlaceholders(new Set(imgs.gallery.filter(Boolean)));
+        setFormGalleryPlaceholders(new Set(imgs.gallery.filter(Boolean)));
+      }
+      toast({
+        title: data.changed ? "Orientation blanks preselected" : "Orientation blanks reviewed",
+        description: data.needed?.length
+          ? `Covered: ${data.needed.join(", ")}. Review Primary / Gallery below, then save.`
+          : "Review Primary / Gallery, then save the page.",
+      });
+    },
+    onError: (err: Error) => {
+      toast({
+        title: "Could not preselect orientation blanks",
+        description: err.message,
+        variant: "destructive",
+      });
+    },
   });
 
   // Open the create wizard as soon as we know a deep-linked product is pending.
@@ -993,12 +1048,38 @@ export default function AdminCustomizerPages() {
 
                     {selectedBlank && (
                       <div className="space-y-2">
-                        <div className="flex items-center justify-between">
+                        <div className="flex items-center justify-between gap-2">
                           <Label>Placeholder Images</Label>
                           <span className="text-xs text-muted-foreground">
                             Choose 1 primary and up to {MAX_GALLERY_PLACEHOLDERS} gallery images
                           </span>
                         </div>
+                        {blankNeedsOrientationCoverage(selectedBlank.productTypeId) && (
+                          <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100 space-y-2">
+                            <p>
+                              This product has Horizontal / Vertical / Square sizes. Preselect
+                              matching blanks from Printify (or upload missing orientations), then
+                              keep them in Primary + Gallery.
+                            </p>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-7 text-xs"
+                              disabled={fixOrientationBlanksMutation.isPending}
+                              onClick={() =>
+                                fixOrientationBlanksMutation.mutate(selectedBlank.productTypeId)
+                              }
+                            >
+                              {fixOrientationBlanksMutation.isPending ? (
+                                <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                              ) : (
+                                <Wand2 className="h-3 w-3 mr-1" />
+                              )}
+                              Auto-select orientation blanks
+                            </Button>
+                          </div>
+                        )}
                         {(() => {
                           const available = buildAvailablePlaceholderImages(
                             selectedBlank.baseMockupImages,
@@ -1889,10 +1970,36 @@ export default function AdminCustomizerPages() {
               )}
 
               <div className="space-y-2">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2">
                   <Label>Placeholder Images</Label>
                   <span className="text-xs text-muted-foreground">Choose 1 primary and up to {MAX_GALLERY_PLACEHOLDERS} gallery images</span>
                 </div>
+                {editBlank && blankNeedsOrientationCoverage(editBlank.productTypeId) && (
+                  <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100 space-y-2">
+                    <p>
+                      Mixed orientations detected. We can preselect landscape / portrait / square
+                      blanks from the Printify pool. Upload any missing orientation, keep each in
+                      Primary or Gallery, then save.
+                    </p>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-xs"
+                      disabled={fixOrientationBlanksMutation.isPending}
+                      onClick={() =>
+                        fixOrientationBlanksMutation.mutate(editBlank.productTypeId)
+                      }
+                    >
+                      {fixOrientationBlanksMutation.isPending ? (
+                        <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                      ) : (
+                        <Wand2 className="h-3 w-3 mr-1" />
+                      )}
+                      Auto-select orientation blanks
+                    </Button>
+                  </div>
+                )}
                 {(() => {
                   const available = buildAvailablePlaceholderImages(
                     editBlank.baseMockupImages,

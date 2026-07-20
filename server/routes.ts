@@ -58,6 +58,7 @@ import { getGoogleOAuthClientId, verifyGoogleIdToken } from "./storefront-google
 import { STOREFRONT_FREE_GENERATION_LIMIT, storefrontArtworksRemaining } from "@shared/storefront-credits";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
 import { detectPrintifyAllOverPrint } from "./printify-aop-detection";
+import { maybePreselectOrientationBlanks } from "./orientationBlankPreselect";
 import {
   resolveFulfillmentLayout,
   resolveStorefrontMockupMode,
@@ -13708,12 +13709,33 @@ ${orientationExtra}
       const selectedPrimaryUrl = typeof placeholderPrimaryUrl === "string" ? placeholderPrimaryUrl : undefined;
       const selectedGalleryUrls = Array.isArray(placeholderGalleryUrls) ? placeholderGalleryUrls.map(String) : undefined;
       const selectedCustomUrls = Array.isArray(customPlaceholderUrls) ? customPlaceholderUrls.map(String) : undefined;
-      const baseMockupImages = buildBaseMockupImagesFromOptions(
+      let baseMockupImages = buildBaseMockupImagesFromOptions(
         availablePlaceholderImages,
         selectedPrimaryUrl,
         selectedGalleryUrls,
         selectedCustomUrls,
       );
+      // When the merchant didn't pick placeholders in the import wizard, auto-cover
+      // Horizontal / Vertical / Square blanks for mixed-orientation size catalogs.
+      const merchantPickedPlaceholders =
+        !!selectedPrimaryUrl || (selectedGalleryUrls && selectedGalleryUrls.length > 0);
+      if (!merchantPickedPlaceholders && sizes.length > 0) {
+        try {
+          const pre = await maybePreselectOrientationBlanks(
+            baseMockupImages as any,
+            sizes,
+            { force: true },
+          );
+          if (pre.changed) {
+            baseMockupImages = pre.images as typeof baseMockupImages;
+            console.log(
+              `[Import] Auto-selected orientation blanks for [${pre.needed.join(", ")}]`,
+            );
+          }
+        } catch (e) {
+          console.warn("[Import] Orientation blank preselect failed:", e);
+        }
+      }
 
       // Detect product type FIRST to determine sizeType
       // This is more reliable than checking dimensions since some dimensional products
@@ -14371,7 +14393,7 @@ ${orientationExtra}
         productType.printifyBlueprintId,
         productType.printifyProviderId,
       );
-      const baseMockupImages = buildBaseMockupImagesFromOptions(
+      let baseMockupImages = buildBaseMockupImagesFromOptions(
         availablePlaceholderImages,
         existingImages.primary,
         existingImages.gallery,
@@ -14386,6 +14408,28 @@ ${orientationExtra}
         });
       }
 
+      let orientationBlanksUpdated = false;
+      try {
+        const sizes = JSON.parse(productType.sizes || "[]");
+        const pre = await maybePreselectOrientationBlanks(
+          baseMockupImages as any,
+          sizes,
+          {
+            force: false,
+            productAspectRatio: productType.aspectRatio,
+          },
+        );
+        if (pre.changed) {
+          baseMockupImages = pre.images as typeof baseMockupImages;
+          orientationBlanksUpdated = true;
+          console.log(
+            `[Refresh Images] Auto-selected orientation blanks for [${pre.needed.join(", ")}]`,
+          );
+        }
+      } catch (e) {
+        console.warn("[Refresh Images] Orientation blank preselect failed:", e);
+      }
+
       // Update the product type with new images
       const updated = await storage.updateProductType(productTypeId, {
         baseMockupImages: JSON.stringify(baseMockupImages)
@@ -14394,11 +14438,91 @@ ${orientationExtra}
       res.json({ 
         success: true, 
         baseMockupImages,
+        orientationBlanksUpdated,
         productType: updated 
       });
     } catch (error) {
       console.error("Error refreshing product images:", error);
       res.status(500).json({ error: "Failed to refresh images" });
+    }
+  });
+
+  // POST /api/admin/product-types/:id/fix-orientation-blanks
+  // Force-pick Primary + Gallery from available images so H/V/Square sizes get matching blanks.
+  app.post("/api/admin/product-types/:id/fix-orientation-blanks", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const productTypeId = parseInt(req.params.id);
+      const merchant = await storage.getMerchantByUserId(userId);
+      if (!merchant) {
+        return res.status(404).json({ error: "Merchant not found" });
+      }
+
+      const productType = await storage.getProductType(productTypeId);
+      const accessErr = adminProductTypeAccessError(req, productType, merchant);
+      if (accessErr) {
+        return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
+      }
+
+      let images =
+        typeof productType.baseMockupImages === "string"
+          ? JSON.parse(productType.baseMockupImages || "{}")
+          : productType.baseMockupImages || {};
+
+      // Refresh available pool from Printify when linked, so we have images to classify.
+      if (merchant.printifyApiToken && productType.printifyBlueprintId && productType.printifyProviderId) {
+        try {
+          const available = await fetchPrintifyPlaceholderOptions(
+            merchant.printifyApiToken,
+            productType.printifyBlueprintId,
+            productType.printifyProviderId,
+          );
+          images = buildBaseMockupImagesFromOptions(
+            available,
+            images.primary,
+            images.gallery,
+            images.custom,
+          );
+        } catch (e) {
+          console.warn("[Fix Orientation Blanks] Printify refresh skipped:", e);
+        }
+      }
+
+      const sizes = JSON.parse(productType.sizes || "[]");
+      const pre = await maybePreselectOrientationBlanks(images as any, sizes, {
+        force: true,
+        productAspectRatio: productType.aspectRatio,
+      });
+
+      if (pre.needed.length < 2) {
+        return res.status(400).json({
+          error: "This product does not have mixed Horizontal / Vertical / Square sizes",
+          needed: pre.needed,
+        });
+      }
+
+      if (!pre.changed && !pre.images.primary) {
+        return res.status(400).json({
+          error: "Could not classify placeholder images for orientation coverage",
+          hint: "Upload landscape/portrait/square blanks in Customizer Pages, or ensure Printify has multiple catalog images.",
+          needed: pre.needed,
+        });
+      }
+
+      const updated = await storage.updateProductType(productTypeId, {
+        baseMockupImages: JSON.stringify(pre.images),
+      });
+
+      res.json({
+        success: true,
+        changed: pre.changed,
+        needed: pre.needed,
+        baseMockupImages: pre.images,
+        productType: updated,
+      });
+    } catch (error) {
+      console.error("Error fixing orientation blanks:", error);
+      res.status(500).json({ error: "Failed to fix orientation blanks" });
     }
   });
 
