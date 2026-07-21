@@ -1033,6 +1033,8 @@ export interface EmbedDesignProps {
         onTesterDesignStatus?: (status: TesterDesignStatus) => void;
         /** Set by EmbedDesign — parent calls `.current()` to save the on-screen design to My Designs. */
         saveDesignRef?: React.MutableRefObject<(() => Promise<void>) | null>;
+        /** Set by EmbedDesign — parent awaits `.current()` to flush placement/zoom before test order. */
+        flushDesignRef?: React.MutableRefObject<(() => Promise<void>) | null>;
       }
     | {
         mode: 'merchant-studio';
@@ -2022,7 +2024,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     useState<FlatProductPlacerState | null>(null);
   const [flatPlacerEditOpen, setFlatPlacerEditOpen] = useState(false);
   const [flatApplyStatus, setFlatApplyStatus] = useState<FlatApplyStatus>("idle");
+  /** Local placement/zoom changed since last Apply — blocks ATC / test order. */
+  const [flatPlacementDirty, setFlatPlacementDirty] = useState(false);
   const [flatRenderFailed, setFlatRenderFailed] = useState(false);
+  const flatPlacementDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Bumps to force flat gallery re-raster / placer remount. */
   const [flatMockupRefreshNonce, setFlatMockupRefreshNonce] = useState(0);
   /** True while framed flat decor is re-rastering after size/colour change. */
@@ -2054,6 +2059,21 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const lastTesterFlatAutoFlushJobRef = useRef<string | null>(null);
   /** Skip the first size/colour sync after a new job (initial Apply handles it). */
   const testerVariantSyncSkipRef = useRef(true);
+  /** Prevents size/colour sync from re-firing on unstable callback identity. */
+  const lastSyncedVariantKeyRef = useRef<string | null>(null);
+  /** Mutex so overlapping force-Applies cannot stack. */
+  const flatApplyInFlightRef = useRef(false);
+  /** Live colour/size for save-time reads (avoid stale closures / "default" writes). */
+  const selectedFrameColorRef = useRef(selectedFrameColor);
+  const selectedSizeRef = useRef(selectedSize);
+  selectedFrameColorRef.current = selectedFrameColor;
+  selectedSizeRef.current = selectedSize;
+  const onTesterDesignStatusRef = useRef<
+    ((status: TesterDesignStatus) => void) | undefined
+  >(undefined);
+  if (embeddedContext?.mode === "admin-tester") {
+    onTesterDesignStatusRef.current = embeddedContext.onTesterDesignStatus;
+  }
   /** Whether this merchant's plan allows saving to My Designs (Starter+). */
   const canSaveMerchantDesignsRef = useRef(false);
   // Monotonic sequence for AOP print-panel captures. Each apply bumps it; a capture
@@ -2065,11 +2085,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const emitTesterDesignStatus = useCallback(
     (patch: Partial<TesterDesignStatus>) => {
       testerDesignStatusRef.current = { ...testerDesignStatusRef.current, ...patch };
-      if (embeddedContext?.mode === 'admin-tester') {
-        embeddedContext.onTesterDesignStatus?.({ ...testerDesignStatusRef.current });
+      if (isAdminTester) {
+        onTesterDesignStatusRef.current?.({ ...testerDesignStatusRef.current });
       }
     },
-    [embeddedContext],
+    [isAdminTester],
   );
   const bgRemovedLoadedDesignsRef = useRef<Set<string>>(new Set());
   const creditsReturnHandledRef = useRef(false);
@@ -4308,20 +4328,31 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     );
   }, [isStorefront, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, printifyMockupImages.length, mockupLoading, mockupFailed, transform, fetchPrintifyMockups]);
 
-  // Mark mockups as stale when transform changes and mockups already exist
+  // Mark mockups as stale when transform changes and mockups already exist.
+  // Flat decor included — zoom/Reset must require Refresh before ATC / test order.
   useEffect(() => {
-    if (!printifyTransformEligible) return;
-    if (usesFlatOnTheFlyPreview) {
-      return;
-    }
+    if (!printifyTransformEligible && !usesFlatOnTheFlyPreview) return;
     if (suppressMockupStaleRef.current) {
       // Transform changed during design load — mockups are already correct, don't mark stale
       suppressMockupStaleRef.current = false;
       return;
     }
     const hasMockups = printifyMockups.length > 0 || printifyMockupImages.length > 0;
-    if (hasMockups && !mockupLoading) {
+    const hasFlatDesign = !!(usesFlatOnTheFlyPreview && generatedDesign?.imageUrl);
+    if ((hasMockups || hasFlatDesign) && !mockupLoading) {
       setMockupsStale(true);
+      setFlatPlacementDirty(true);
+      // Don't clobber an in-flight Apply (generate auto-flush / size sync).
+      if (
+        isAdminTester &&
+        savedJobIdRef.current &&
+        testerDesignStatusRef.current.aopPanels !== "saving"
+      ) {
+        emitTesterDesignStatus({
+          jobId: savedJobIdRef.current,
+          aopPanels: "none",
+        });
+      }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transform.scale, transform.x, transform.y]);
@@ -4776,12 +4807,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       !flatRenderFailed &&
       flatPlacerEditOpen
     );
-    const flatSaveBlocking = !!(flatPlacerOn && flatApplyStatus === "saving");
-    const mockupsStaleBlocksCart = mockupsStale && !flatOnTheFlyEligible;
+    const flatSaveBlocking = !!(
+      flatPlacerOn &&
+      (flatApplyStatus === "saving" || flatPlacementDirty)
+    );
+    const mockupsStaleBlocksCart = mockupsStale;
     const shouldDisable =
       waitingForMockups || isAddingToCart || mockupsStaleBlocksCart || mockupLoading || flatSaveBlocking;
     const label = flatSaveBlocking
-      ? "Saving design\u2026"
+      ? flatApplyStatus === "saving"
+        ? "Saving design\u2026"
+        : "Refresh Mockups to Continue"
       : waitingForMockups
         ? "Generating preview\u2026"
         : mockupLoading
@@ -4802,7 +4838,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         properties,
       },
     }, '*');
-  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, frameColorObjects, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatRenderFailed, flatPlacerEditOpen]);
+  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, frameColorObjects, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatPlacementDirty, flatRenderFailed, flatPlacerEditOpen]);
 
   const generateMutation = useMutation({
     mutationFn: async (payload: {
@@ -5059,6 +5095,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       flatFrontMockupsRef.current = [];
       lastTesterFlatAutoFlushJobRef.current = null;
       testerVariantSyncSkipRef.current = true;
+      lastSyncedVariantKeyRef.current = null;
+      setFlatPlacementDirty(false);
+      setMockupsStale(false);
+      // Generate sets transform — don't treat that as a merchant zoom edit.
+      suppressMockupStaleRef.current = true;
       // AOP needs panel upload; flat/mesh auto-Applies in tester (status → saved).
       // Other Printify products can mark saved immediately after generate.
       emitTesterDesignStatus({
@@ -5089,7 +5130,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               shop: panelSaveShop,
               designState: {
                 selectedSize: selectedSize ?? null,
-                selectedFrameColor: selectedFrameColor || "default",
+                selectedFrameColor: selectedFrameColor || undefined,
                 artworkUrl: artworkAbs,
               },
             }),
@@ -5879,6 +5920,93 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     return flatPlacerRef.current.applyIfNeeded(opts);
   }, []);
 
+  const flushDesignForTester = useCallback(async () => {
+    if (!usesFlatOnTheFlyPreview || !generatedDesign?.imageUrl) {
+      if (mockupsStale) {
+        throw new Error("Refresh mockups before sending a test order.");
+      }
+      return;
+    }
+    if (flatApplyInFlightRef.current) {
+      for (let i = 0; i < 60; i++) {
+        if (!flatApplyInFlightRef.current) break;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    }
+    if (mockupsStale || flatPlacementDirty || flatPlacerRef.current?.hasPendingChanges()) {
+      emitTesterDesignStatus({
+        jobId: savedJobIdRef.current,
+        aopPanels: "saving",
+      });
+      flatApplyInFlightRef.current = true;
+      try {
+        const nextScale = Math.max(0.05, Math.min(2.5, transform.scale / 100));
+        setFlatPlacerState((prev) => {
+          if (!prev) return prev;
+          const front = prev.placements?.front ?? { scale: 1, offsetX: 0, offsetY: 0 };
+          const back = prev.placements?.back ?? { scale: 1, offsetX: 0, offsetY: 0 };
+          return {
+            ...prev,
+            placements: prev.linkSides
+              ? {
+                  front: { ...front, scale: nextScale },
+                  back: { ...back, scale: nextScale },
+                }
+              : {
+                  ...prev.placements,
+                  [prev.view]: {
+                    ...(prev.placements?.[prev.view] ?? front),
+                    scale: nextScale,
+                  },
+                },
+          };
+        });
+        await new Promise((r) => setTimeout(r, 100));
+        let applied = false;
+        for (let i = 0; i < 30; i++) {
+          if (flatPlacerRef.current) {
+            applied = !!(await flushFlatPlacer({ force: true }));
+            if (applied) break;
+          }
+          await new Promise((r) => setTimeout(r, 150));
+        }
+        setMockupsStale(false);
+        setFlatPlacementDirty(false);
+        if (!applied && savedJobIdRef.current) {
+          emitTesterDesignStatus({
+            jobId: savedJobIdRef.current,
+            aopPanels: "saved",
+          });
+        }
+      } finally {
+        flatApplyInFlightRef.current = false;
+      }
+    }
+    if (testerDesignStatusRef.current.aopPanels !== "saved") {
+      throw new Error(
+        "Design is not saved yet — wait for Design saved, then send the test order.",
+      );
+    }
+  }, [
+    usesFlatOnTheFlyPreview,
+    generatedDesign?.imageUrl,
+    mockupsStale,
+    flatPlacementDirty,
+    transform.scale,
+    emitTesterDesignStatus,
+    flushFlatPlacer,
+  ]);
+
+  useEffect(() => {
+    if (embeddedContext?.mode !== "admin-tester") return;
+    const ref = embeddedContext.flushDesignRef;
+    if (!ref) return;
+    ref.current = flushDesignForTester;
+    return () => {
+      ref.current = null;
+    };
+  }, [embeddedContext, flushDesignForTester]);
+
   useEffect(() => {
     const onHide = () => {
       if (!flatPlacerEditOpen) return;
@@ -5944,18 +6072,26 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     // First bind after generate — initial auto-Apply owns the save.
     if (testerVariantSyncSkipRef.current) {
       testerVariantSyncSkipRef.current = false;
+      lastSyncedVariantKeyRef.current = `${jobId}|${selectedSize}|${selectedFrameColor || ""}`;
       return;
     }
+
+    const variantKey = `${jobId}|${selectedSize}|${selectedFrameColor || ""}`;
+    if (lastSyncedVariantKeyRef.current === variantKey) return;
+    lastSyncedVariantKeyRef.current = variantKey;
 
     let cancelled = false;
     emitTesterDesignStatus({ jobId, aopPanels: "saving" });
     const t = window.setTimeout(() => {
       void (async () => {
+        if (flatApplyInFlightRef.current) return;
+        flatApplyInFlightRef.current = true;
         const artworkAbs = toAbsoluteImageUrl(generatedDesign.imageUrl);
+        const liveColor = selectedFrameColorRef.current;
         const phoneColor =
           isPhoneCaseProduct && !frameColorsArePhoneModels
             ? "default"
-            : selectedFrameColor || "default";
+            : liveColor || selectedFrameColorRef.current || "";
         try {
           const res = await safeFetch(`${API_BASE}/api/storefront/save-state`, {
             method: "POST",
@@ -5964,8 +6100,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               jobId,
               shop,
               designState: {
-                selectedSize: selectedSize ?? null,
-                selectedFrameColor: phoneColor,
+                selectedSize: selectedSizeRef.current || selectedSize,
+                selectedFrameColor: phoneColor || undefined,
                 artworkUrl: artworkAbs,
               },
             }),
@@ -5982,6 +6118,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             await new Promise((r) => setTimeout(r, 200));
           }
           if (cancelled) return;
+          setFlatPlacementDirty(false);
+          setMockupsStale(false);
           if (!applied) {
             // Size/colour are on the job; bake can still use default placement.
             emitTesterDesignStatus({ jobId, aopPanels: "saved" });
@@ -5990,6 +6128,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           if (cancelled) return;
           console.warn("[AdminTester] size/colour re-Apply failed:", e);
           emitTesterDesignStatus({ jobId, aopPanels: "error" });
+        } finally {
+          flatApplyInFlightRef.current = false;
         }
       })();
     }, 450);
@@ -6007,7 +6147,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     shopDomain,
     isPhoneCaseProduct,
     frameColorsArePhoneModels,
-    emitTesterDesignStatus,
     flushFlatPlacer,
   ]);
 
@@ -6021,9 +6160,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       !flatRenderFailed &&
       flatPlacerEditOpen
     );
-    if (flatEditorOpen) {
+    if (flatEditorOpen || flatPlacementDirty) {
       try {
-        await flushFlatPlacer();
+        await flushFlatPlacer({ force: true });
+        setFlatPlacementDirty(false);
       } catch {
         setVariantError("Couldn't save your placement. Please try again.");
         return;
@@ -6031,15 +6171,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
 
     if (mockupsStale) {
-      const flatOnTheFly = !!(
-        usesFlatOnTheFlyPreview &&
-        generatedDesign?.imageUrl &&
-        !flatRenderFailed
+      setVariantError(
+        "Please refresh mockups before adding to cart — zoom or colour changed since the last preview.",
       );
-      if (!flatOnTheFly) {
-      setVariantError("Please refresh mockups before adding to cart — your frame color selection has changed.");
       return;
-      }
     }
 
     const variantId = findVariantId();
@@ -6755,10 +6890,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         const artworkUrl = generatedDesign?.imageUrl
           ? toAbsoluteImageUrl(generatedDesign.imageUrl)
           : result.state.artworkUrl;
+        const liveColor = selectedFrameColorRef.current || selectedFrameColor;
         const phoneColor =
           isPhoneCaseProduct && !frameColorsArePhoneModels
             ? "default"
-            : selectedFrameColor || "default";
+            : liveColor || undefined;
         try {
           await safeFetch(`${API_BASE}/api/storefront/save-state`, {
             method: "POST",
@@ -6769,8 +6905,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               designState: {
                 flatPlacerState: { ...result.state, artworkUrl },
                 flatMockups: { front: frontHosted, back: backHosted },
-                selectedSize: selectedSize ?? null,
-                selectedFrameColor: phoneColor,
+                selectedSize: selectedSizeRef.current || selectedSize || null,
+                selectedFrameColor: phoneColor ?? null,
                 artworkUrl: artworkUrl || null,
               },
             }),
@@ -6783,6 +6919,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               `${flatBlankColorId}::${selectedSize ?? ""}::apply`,
             );
           }
+          setFlatPlacementDirty(false);
+          setMockupsStale(false);
           emitTesterDesignStatus({ jobId, aopPanels: "saved" });
         } catch (e) {
           console.error("[FlatApply] Failed to persist designState:", e);
@@ -6790,6 +6928,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         }
       } else if (isAdminTester && savedJobIdRef.current) {
         // Placement ready even if shop persist is unavailable — allow test order bake from job+state.
+        setFlatPlacementDirty(false);
+        setMockupsStale(false);
         emitTesterDesignStatus({
           jobId: savedJobIdRef.current,
           aopPanels: "saved",
@@ -6853,8 +6993,60 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         ? toAbsoluteImageUrl(generatedDesign.imageUrl)
         : s.artworkUrl;
       setFlatPlacerState({ ...s, artworkUrl });
+      setFlatPlacementDirty(true);
+      if (isAdminTester && savedJobIdRef.current) {
+        emitTesterDesignStatus({
+          jobId: savedJobIdRef.current,
+          aopPanels: "none",
+        });
+      }
+      // Debounced auto-Apply so scale/position reach the job before test order.
+      if (flatPlacementDebounceRef.current) {
+        clearTimeout(flatPlacementDebounceRef.current);
+      }
+      flatPlacementDebounceRef.current = setTimeout(() => {
+        void (async () => {
+          if (flatApplyInFlightRef.current) return;
+          // No force — skip if placer already matches last Apply (avoids save loop).
+          if (flatPlacerRef.current && !flatPlacerRef.current.hasPendingChanges()) {
+            setFlatPlacementDirty(false);
+            if (isAdminTester && savedJobIdRef.current) {
+              emitTesterDesignStatus({
+                jobId: savedJobIdRef.current,
+                aopPanels: "saved",
+              });
+            }
+            return;
+          }
+          flatApplyInFlightRef.current = true;
+          try {
+            if (isAdminTester && savedJobIdRef.current) {
+              emitTesterDesignStatus({
+                jobId: savedJobIdRef.current,
+                aopPanels: "saving",
+              });
+            }
+            const applied = await flushFlatPlacer();
+            if (applied) {
+              setFlatPlacementDirty(false);
+              setMockupsStale(false);
+            } else if (isAdminTester && savedJobIdRef.current) {
+              emitTesterDesignStatus({
+                jobId: savedJobIdRef.current,
+                aopPanels: "saved",
+              });
+              setFlatPlacementDirty(false);
+            }
+          } catch (e) {
+            console.warn("[FlatPlacer] debounced Apply failed:", e);
+            if (isAdminTester) emitTesterDesignStatus({ aopPanels: "error" });
+          } finally {
+            flatApplyInFlightRef.current = false;
+          }
+        })();
+      }, 700);
     },
-    [generatedDesign?.imageUrl],
+    [generatedDesign?.imageUrl, isAdminTester, emitTesterDesignStatus, flushFlatPlacer],
   );
 
   const handleFlatAssetsFailed = useCallback((reason: string) => {
@@ -7787,10 +7979,64 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     setFlatRenderFailed(false);
     currentMockupColorRef.current = "";
     lastFlatGalleryMockupKeyRef.current = "";
-    setMockupsStale(false);
     setFlatMockupRefreshing(true);
+
+    // Map gallery zoom into placer placement so bake matches what the merchant sees.
+    const nextScale = Math.max(0.05, Math.min(2.5, transform.scale / 100));
+    setFlatPlacerState((prev) => {
+      if (!prev) return prev;
+      const front = prev.placements?.front ?? { scale: 1, offsetX: 0, offsetY: 0 };
+      const back = prev.placements?.back ?? { scale: 1, offsetX: 0, offsetY: 0 };
+      const placements = prev.linkSides
+        ? {
+            front: { ...front, scale: nextScale },
+            back: { ...back, scale: nextScale },
+          }
+        : {
+            ...prev.placements,
+            [prev.view]: { ...(prev.placements?.[prev.view] ?? front), scale: nextScale },
+          };
+      return { ...prev, placements };
+    });
+
     setFlatMockupRefreshNonce((n) => n + 1);
-  }, []);
+
+    void (async () => {
+      if (flatApplyInFlightRef.current) {
+        setMockupsStale(false);
+        return;
+      }
+      flatApplyInFlightRef.current = true;
+      try {
+        if (isAdminTester && savedJobIdRef.current) {
+          emitTesterDesignStatus({
+            jobId: savedJobIdRef.current,
+            aopPanels: "saving",
+          });
+        }
+        // Allow placer remount after nonce bump.
+        for (let i = 0; i < 25; i++) {
+          if (flatPlacerRef.current) break;
+          await new Promise((r) => setTimeout(r, 120));
+        }
+        const applied = await flushFlatPlacer({ force: true });
+        setMockupsStale(false);
+        setFlatPlacementDirty(false);
+        if (!applied && isAdminTester && savedJobIdRef.current) {
+          emitTesterDesignStatus({
+            jobId: savedJobIdRef.current,
+            aopPanels: "saved",
+          });
+        }
+      } catch (e) {
+        console.warn("[RefreshMockups] flat Apply failed:", e);
+        if (isAdminTester) emitTesterDesignStatus({ aopPanels: "error" });
+      } finally {
+        flatApplyInFlightRef.current = false;
+        setFlatMockupRefreshing(false);
+      }
+    })();
+  }, [transform.scale, isAdminTester, emitTesterDesignStatus, flushFlatPlacer]);
 
   useEffect(() => {
     if (!flatPlacerEligible) return;
@@ -10129,7 +10375,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             {/* Main interactive canvas - full size, always visible for editing */}
             <div
               ref={previewLandingRef}
-              className="w-full rounded-md overflow-hidden relative"
+              className="mx-auto rounded-md overflow-hidden relative"
               style={{
                 aspectRatio: (() => {
                   // Mugs/tumblers: the blank product photo is a tall portrait shot.
@@ -10167,10 +10413,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   const ar = productTypeConfig?.aspectRatio || "3:4";
                   return ar.replace(":", "/");
                 })(),
-                // Cap height so tall/portrait products (phone cases, body pillows, etc.)
-                // don't push the form controls off-screen. The aspect-ratio still governs
-                // the natural proportions; maxHeight just prevents extreme cases.
+                // Cap height without forcing full width — otherwise maxHeight + w-full
+                // shortens the box and object-cover chops the top (frame hangers).
                 maxHeight: "520px",
+                width: "auto",
+                maxWidth: "100%",
+                height: "auto",
               }}
               data-testid="container-mockup"
               data-appai-wheel-forward="true"
@@ -10276,9 +10524,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         selectedSizeConfig?.aspectRatio ||
                         productTypeConfig?.aspectRatio
                       }
-                      // Cover crops landscape framed mockups (e.g. 36×24) against the box.
+                      // Cover crops framed mockups (hangers / landscape) against the box.
                       mockupFit={
-                        flatEdgeWrapMode || flatDecorMode ? "contain" : "cover"
+                        flatEdgeWrapMode ||
+                        flatDecorMode ||
+                        productTypeConfig?.designerType === "framed-print"
+                          ? "contain"
+                          : "cover"
                       }
                     />
                   );

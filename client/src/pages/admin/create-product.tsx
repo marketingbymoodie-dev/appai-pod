@@ -38,6 +38,8 @@ export default function AdminCreateProduct() {
   // Ref (not state) — updates arrive mid-edit and shouldn't rerender the page.
   const testerStatusRef = useRef<TesterDesignStatus>({ jobId: null, aopPanels: "none" });
   const saveDesignRef = useRef<(() => Promise<void>) | null>(null);
+  /** Flushes pending flat placement / zoom before a test order. */
+  const flushDesignRef = useRef<(() => Promise<void>) | null>(null);
   const [testerHasDesign, setTesterHasDesign] = useState(false);
   const [testerPanelStatus, setTesterPanelStatus] = useState<TesterDesignStatus["aopPanels"]>("none");
   const handleTesterDesignStatus = useCallback((status: TesterDesignStatus) => {
@@ -45,6 +47,20 @@ export default function AdminCreateProduct() {
     setTesterHasDesign(!!status.jobId);
     setTesterPanelStatus(status.aopPanels);
   }, []);
+
+  const embeddedContext = useMemo(
+    () =>
+      selectedProductTypeId != null
+        ? {
+            mode: "admin-tester" as const,
+            productTypeId: selectedProductTypeId,
+            onTesterDesignStatus: handleTesterDesignStatus,
+            saveDesignRef,
+            flushDesignRef,
+          }
+        : undefined,
+    [selectedProductTypeId, handleTesterDesignStatus],
+  );
 
   const {
     data: productTypesRaw,
@@ -86,6 +102,10 @@ export default function AdminCreateProduct() {
   // Never sent to production, never charges.
   const testOrderMutation = useMutation({
     mutationFn: async (id: number) => {
+      // Persist any pending zoom/placement before ordering.
+      if (flushDesignRef.current) {
+        await flushDesignRef.current();
+      }
       const waitStart = Date.now();
       while (
         testerStatusRef.current.aopPanels === "saving" &&
@@ -107,7 +127,7 @@ export default function AdminCreateProduct() {
       }
       if (testerStatusRef.current.aopPanels !== "saved") {
         throw new Error(
-          "Apply your design first and wait for Design saved, then send the test order.",
+          "Refresh mockups / apply your design and wait for Design saved, then send the test order.",
         );
       }
       const jobId = testerStatusRef.current.jobId;
@@ -211,7 +231,9 @@ export default function AdminCreateProduct() {
               <Button
                 onClick={() => testOrderMutation.mutate(selectedProductTypeId)}
                 disabled={
-                  testOrderMutation.isPending || testerPanelStatus === "saving"
+                  testOrderMutation.isPending ||
+                  testerPanelStatus === "saving" ||
+                  testerPanelStatus === "none"
                 }
                 data-testid="button-send-test-order"
               >
@@ -224,7 +246,9 @@ export default function AdminCreateProduct() {
                   ? "Sending Test Order…"
                   : testerPanelStatus === "saving"
                     ? "Design saving…"
-                    : "Send a Test Order to Printify"}
+                    : testerPanelStatus === "none"
+                      ? "Save design / Refresh Mockups first"
+                      : "Send a Test Order to Printify"}
               </Button>
               {testerPanelStatus === "saving" && (
                 <p className="text-xs text-muted-foreground w-full" data-testid="text-design-saving">
@@ -315,12 +339,7 @@ export default function AdminCreateProduct() {
             <CardContent className="p-0">
               <EmbedDesign
                 key={selectedProductTypeId}
-                embeddedContext={{
-                  mode: "admin-tester",
-                  productTypeId: selectedProductTypeId,
-                  onTesterDesignStatus: handleTesterDesignStatus,
-                  saveDesignRef,
-                }}
+                embeddedContext={embeddedContext}
               />
             </CardContent>
           </Card>

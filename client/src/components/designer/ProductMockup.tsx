@@ -508,8 +508,10 @@ export function ProductMockup({
     }
 
     if (blankImageUrl) {
+      // Framed posters include hangers/moulding above the print — cover crops the top.
       const useContainBlank =
         designerType === "mug" ||
+        designerType === "framed-print" ||
         (designerType === "pillow" &&
           (printShape === "square" || printShape === "circle"));
       if (useContainBlank) {
