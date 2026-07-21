@@ -27,10 +27,10 @@ export function SizeSelector({
   prices,
 }: SizeSelectorProps) {
   return (
-    <div className="space-y-2">
-      {showLabel && <Label>{label}</Label>}
+    <div className="space-y-1">
+      {showLabel && <Label className="text-xs">{label}</Label>}
       <Select value={selectedSize} onValueChange={onSizeChange}>
-        <SelectTrigger data-testid="select-size" className="h-11">
+        <SelectTrigger data-testid="select-size" className="h-9">
           <SelectValue placeholder={`Select a ${label.toLowerCase()}`} />
         </SelectTrigger>
         <SelectContent position="popper" className="max-h-64 overflow-y-auto">

@@ -49,10 +49,10 @@ export function FrameColorSelector({
   const isColorOption = colorLabel !== "Option";
 
   return (
-    <div className="space-y-2">
-      {showLabel && <Label>{colorLabel}</Label>}
+    <div className="space-y-1">
+      {showLabel && <Label className="text-xs">{colorLabel}</Label>}
       <Select value={selectedFrameColor} onValueChange={onFrameColorChange}>
-        <SelectTrigger data-testid="select-frame-color" className="h-11">
+        <SelectTrigger data-testid="select-frame-color" className="h-9">
           <SelectValue placeholder={`Select ${colorLabel.toLowerCase()}`}>
             {selected && (
               <span className="flex items-center gap-2">

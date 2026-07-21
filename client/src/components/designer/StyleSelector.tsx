@@ -22,10 +22,10 @@ export function StyleSelector({
   showLabel = true,
 }: StyleSelectorProps) {
   return (
-    <div className="space-y-2">
-      {showLabel && <Label>Art Style</Label>}
+    <div className="space-y-1">
+      {showLabel && <Label className="text-xs">Art Style</Label>}
       <Select value={selectedStyle} onValueChange={onStyleChange}>
-        <SelectTrigger data-testid="select-style" className="h-11">
+        <SelectTrigger data-testid="select-style" className="h-9">
           <SelectValue placeholder="Choose an art style" />
         </SelectTrigger>
         <SelectContent>

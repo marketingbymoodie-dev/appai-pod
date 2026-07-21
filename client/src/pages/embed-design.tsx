@@ -8831,7 +8831,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   };
 
   return (
-    <div className={`p-3 sm:p-4 ${isEmbedded || isStorefront ? "bg-transparent" : "bg-background min-h-screen"}`}>
+    <div className={`p-2 sm:p-3 ${isEmbedded || isStorefront ? "bg-transparent" : "bg-background min-h-screen"}`}>
       <Dialog open={!!styleMismatchDialog} onOpenChange={(open) => !open && setStyleMismatchDialog(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -8939,13 +8939,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         }
 
       `}</style>
-      <div
-        className={
+        <div
+          className={
           (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
-            ? "w-full max-w-[min(100%,92rem)] mx-auto px-1 sm:px-3 space-y-3"
-            : "max-w-6xl mx-auto space-y-3"
-        }
-      >
+            ? "w-full max-w-[min(100%,92rem)] mx-auto px-1 sm:px-2 space-y-2"
+            : "max-w-6xl mx-auto space-y-2"
+          }
+        >
         {/* Free generation limit reached — prompt to create account */}
         {freeLimitReached && (
           <Card className="border-orange-500 bg-orange-50 dark:bg-orange-950">
@@ -9027,7 +9027,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         )}
 
         <div
-          className={`grid grid-cols-1 gap-4 sm:gap-6 ${
+          className={`grid grid-cols-1 gap-3 sm:gap-4 ${
             (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
               ? "lg:grid-cols-[minmax(0,1fr)_minmax(220px,280px)_minmax(0,1fr)]"
               : "md:grid-cols-2"
@@ -9035,7 +9035,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         >
           {/* Generator/form panel — right on desktop, first on mobile */}
           <div
-            className={`space-y-4 order-1 ${
+            className={`space-y-2.5 order-1 ${
               (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
                 ? "lg:order-3 lg:col-start-3"
                 : "md:order-2"
@@ -9526,9 +9526,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             )}
             {/* Product title + price */}
             {(isStorefront || isShopify) && (
-              <div className="space-y-1">
+              <div className="space-y-0.5">
                 <h1
-                  className="text-xl font-bold leading-tight"
+                  className="text-lg font-bold leading-tight"
                   data-testid="text-product-title"
                 >
                   {productTypeConfig?.name || displayName || productTitle}
@@ -9538,14 +9538,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   const selected = shopifyVariants.find(v => v.id === activeId) || shopifyVariants[0];
                   if (!selected || !selected.price || parseFloat(selected.price) <= 0) return null;
                   return (
-                    <p className="text-lg font-semibold text-muted-foreground" data-testid="text-product-price">
+                    <p className="text-base font-semibold text-muted-foreground" data-testid="text-product-price">
                       ${parseFloat(selected.price).toFixed(2)}
                     </p>
                   );
                 })()}
               </div>
             )}
-            <div className="space-y-4 mt-4">
+            <div className="space-y-2.5 mt-2">
               {/* Row 1: Generate/AddToCart + Upload side-by-side */}
               <div className="flex flex-col sm:flex-row gap-2">
                 {/* Primary action button — left, wider: Generate OR Add to Cart */}
@@ -9825,7 +9825,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               </div>
 
               {/* Art Style | Orientation (or Size), then Size | Color when orientation pills show */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 items-start">
                 {showPresetsParam && filteredStylePresets.length > 0 && (
                   <div data-guide-box={guideActiveBox === 1 ? "active" : undefined}>
                     <StyleSelector
@@ -9834,18 +9834,18 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       onStyleChange={(id) => { setSelectedPreset(id); setSelectedStyleOption(""); }}
                     />
                     {/* Reserve helper-line height so Art Style / Size triggers stay aligned. */}
-                    <div className="mt-1 min-h-[1.25rem]">
+                    <div className="mt-0.5 min-h-[1rem]">
                       {selectedPreset === "" && (
-                        <p className="text-xs text-muted-foreground">Please select an art style before generating</p>
+                        <p className="text-[11px] text-muted-foreground leading-tight">Please select an art style before generating</p>
                       )}
                     </div>
                   </div>
                 )}
 
                 {(showSizeDrivenOrientationPills || showSquareOrientationPillOnly) ? (
-                  <div className="space-y-2" data-testid="container-size-orientation-pills">
-                    <Label>Orientation</Label>
-                    <div className="flex flex-wrap gap-2 min-h-11 items-center">
+                  <div className="space-y-1" data-testid="container-size-orientation-pills">
+                    <Label className="text-xs">Orientation</Label>
+                    <div className="flex flex-wrap gap-1.5 min-h-9 items-center">
                       {(
                         [
                           { id: "horizontal" as const, name: "Horizontal" },
@@ -9897,7 +9897,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                           );
                         })}
                     </div>
-                    <div className="mt-1 min-h-[1.25rem]" />
+                    <div className="mt-0.5 min-h-[1rem]" />
                   </div>
                 ) : (
                   printSizes.length > 0 && (
@@ -9945,9 +9945,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         }}
                         prices={buildPriceMap()}
                       />
-                      <div className="mt-1 min-h-[1.25rem]">
+                      <div className="mt-0.5 min-h-[1rem]">
                         {selectedSize === "" && (
-                          <p className="text-xs text-muted-foreground">
+                          <p className="text-[11px] text-muted-foreground leading-tight">
                             {isPhoneCaseProduct ? "Please select a model" : "Please select a size"}
                           </p>
                         )}
@@ -10002,9 +10002,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       }}
                       prices={buildPriceMap()}
                     />
-                    <div className="mt-1 min-h-[1.25rem]">
+                    <div className="mt-0.5 min-h-[1rem]">
                       {selectedSize === "" && (
-                        <p className="text-xs text-muted-foreground">
+                        <p className="text-[11px] text-muted-foreground leading-tight">
                           {isPhoneCaseProduct ? "Please select a model" : "Please select a size"}
                         </p>
                       )}
@@ -10024,8 +10024,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 )}
 
                 {supportsPrintPlacementSelection && (
-                  <div className="space-y-2">
-                    <Label htmlFor="print-placement-select">Print Side</Label>
+                  <div className="space-y-1">
+                    <Label htmlFor="print-placement-select" className="text-xs">Print Side</Label>
                     <Select
                       value={printPlacement}
                       onValueChange={(value) => {
@@ -10047,6 +10047,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                               front: nextPlacement === "front" || nextPlacement === "both",
                               back: nextPlacement === "back" || nextPlacement === "both",
                             },
+                            linkSides: prev?.linkSides ?? true,
                           }));
                           currentMockupColorRef.current = "";
                           lastFlatGalleryMockupKeyRef.current = "";
@@ -10067,7 +10068,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         );
                       }}
                     >
-                      <SelectTrigger id="print-placement-select" className="h-11">
+                      <SelectTrigger id="print-placement-select" className="h-9">
                         <SelectValue placeholder="Select print side" />
                       </SelectTrigger>
                       <SelectContent position="popper">
@@ -10143,11 +10144,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 const _activePresetForLabel = filteredStylePresets.find(p => p.id === selectedPreset);
                 const _descOptional = !!_activePresetForLabel?.descriptionOptional;
                 return (
-              <div className="space-y-2" data-guide-box={guideActiveBox === 3 ? "active" : undefined}>
-                <Label htmlFor="prompt" data-testid="label-prompt">
+              <div className="space-y-1" data-guide-box={guideActiveBox === 3 ? "active" : undefined}>
+                <Label htmlFor="prompt" data-testid="label-prompt" className="text-xs">
                   Describe your artwork
                   {_descOptional && (
-                    <span className="ml-1.5 text-xs font-normal text-muted-foreground">(optional)</span>
+                    <span className="ml-1.5 text-[11px] font-normal text-muted-foreground">(optional)</span>
                   )}
                 </Label>
                 <Textarea
@@ -10189,7 +10190,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     }
                     setPrompt(e.target.value);
                   }}
-                  className="min-h-[80px]"
+                  className="min-h-[64px] text-sm"
                 />
                 {renderPrimaryAction("md:hidden", "mobile")}
               </div>

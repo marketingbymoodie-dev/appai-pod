@@ -485,7 +485,7 @@
       // assume a typical header height — overlapping the menu bar is the one
       // thing this button must never do. 16px only applies once scrolled.
       if (headerBottom === 0 && (window.scrollY || window.pageYOffset || 0) < 40) headerBottom = 72;
-      var top = headerBottom > 0 ? headerBottom + 14 : 16;
+      var top = headerBottom > 0 ? headerBottom + 8 : 10;
       top = verifiedClearOfHeaderChrome(btn, settings, top);
       btn.style.setProperty('--appai-tray-top', Math.round(top) + 'px');
     } else {
