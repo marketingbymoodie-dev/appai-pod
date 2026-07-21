@@ -63,9 +63,11 @@ import {
   listCanvasOrientationsInSizes,
   parseCanvasOrientationFromLabel,
   pickSizeForCanvasOrientation,
+  looksLikePhoneModelName,
   resolveFrameColorForSize,
   resolveSizeAspectRatio,
   sizesHaveMixedCanvasOrientation,
+  sizesLookLikePhoneModels,
   sortDimensionalSizesAscending,
   styleChoicesIncludeCanvasOrientation,
   type CanvasOrientation,
@@ -1488,8 +1490,25 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     [productTypeConfig],
   );
 
+  /** Phone cases: Size list is device models; Printify often also ships a junk "Model" option. */
+  const isPhoneCaseProduct = useMemo(() => {
+    const edgeWrap = !!productTypeConfig?.flatCalibration?.edgeWrap;
+    return edgeWrap || sizesLookLikePhoneModels(printSizes);
+  }, [productTypeConfig?.flatCalibration?.edgeWrap, printSizes]);
+
+  const frameColorsArePhoneModels = useMemo(
+    () =>
+      frameColorObjects.some(
+        (c) => looksLikePhoneModelName(c.name) || looksLikePhoneModelName(c.id),
+      ),
+    [frameColorObjects],
+  );
+
+  // Hide the redundant Printify "Model" dropdown when models already live in Size.
   const showFrameColorSelector =
-    frameColorObjects.length > 0 && !frameOptionsRedundantWithSizes;
+    frameColorObjects.length > 0 &&
+    !frameOptionsRedundantWithSizes &&
+    !(isPhoneCaseProduct && !frameColorsArePhoneModels);
 
   /** Flat/mesh on-the-fly preview — respects merchant `storefrontMockupMode` override. */
   const usesFlatOnTheFlyPreview = useMemo(() => {
@@ -9182,6 +9201,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     <SizeSelector
                       sizes={orientationFilteredSizes}
                       selectedSize={selectedSize}
+                      label={isPhoneCaseProduct ? "Model" : "Size"}
                       onSizeChange={(sizeId) => {
                         const prevSize = printSizes.find((s) => s.id === selectedSize);
                         const nextSize = printSizes.find((s) => s.id === sizeId);
@@ -9201,7 +9221,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                           );
                           if (prevAr !== nextAr) {
                             toast({
-                              title: "Size proportions changed",
+                              title: isPhoneCaseProduct
+                                ? "Model proportions changed"
+                                : "Size proportions changed",
                               description:
                                 "Generate new artwork so it matches this size's aspect ratio.",
                             });
@@ -9220,7 +9242,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       prices={buildPriceMap()}
                     />
                     {selectedSize === "" && (
-                      <p className="text-xs text-muted-foreground mt-1">Please select a size</p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {isPhoneCaseProduct ? "Please select a model" : "Please select a size"}
+                      </p>
                     )}
                   </div>
                 )}

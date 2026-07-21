@@ -13,6 +13,8 @@ interface SizeSelectorProps {
   selectedSize: string;
   onSizeChange: (sizeId: string) => void;
   showLabel?: boolean;
+  /** Override label — phone cases use "Model". */
+  label?: string;
   prices?: Record<string, number>;
 }
 
@@ -21,14 +23,15 @@ export function SizeSelector({
   selectedSize,
   onSizeChange,
   showLabel = true,
+  label = "Size",
   prices,
 }: SizeSelectorProps) {
   return (
     <div className="space-y-2">
-      {showLabel && <Label>Size</Label>}
+      {showLabel && <Label>{label}</Label>}
       <Select value={selectedSize} onValueChange={onSizeChange}>
         <SelectTrigger data-testid="select-size" className="h-11">
-          <SelectValue placeholder="Select a size" />
+          <SelectValue placeholder={`Select a ${label.toLowerCase()}`} />
         </SelectTrigger>
         <SelectContent position="popper" className="max-h-64 overflow-y-auto">
           {sizes.map((size) => (

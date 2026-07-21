@@ -304,3 +304,28 @@ export function styleChoicesIncludeCanvasOrientation(
       parseCanvasOrientationFromLabel(c.id) != null,
   );
 }
+
+/** Phone-case size/colour tokens (iPhone 13, Galaxy S23, …). */
+export function looksLikePhoneModelName(name: string): boolean {
+  const lower = (name || "").toLowerCase().trim();
+  return (
+    /^iphone[-\s](\d|x|xs|xr|se|pro|plus|max|air)/i.test(lower) ||
+    /^galaxy[-\s](s\d|a\d|note|z\s*(fold|flip)|ultra)/i.test(lower) ||
+    /^pixel[-\s](\d|fold|pro)/i.test(lower) ||
+    /^samsung[-\s](galaxy|note)/i.test(lower) ||
+    /^oneplus[-\s]\d/i.test(lower) ||
+    /^for[-\s](iphone|galaxy|pixel|samsung)/i.test(lower) ||
+    /^(iphone|samsung|galaxy|pixel|oneplus|motorola)\b/i.test(lower)
+  );
+}
+
+/** True when the Size list is really device models (phone cases). */
+export function sizesLookLikePhoneModels(
+  sizes: Array<{ id?: string; name?: string }> | null | undefined,
+): boolean {
+  if (!sizes?.length) return false;
+  const hits = sizes.filter(
+    (s) => looksLikePhoneModelName(s.name || "") || looksLikePhoneModelName(s.id || ""),
+  );
+  return hits.length >= Math.max(1, Math.ceil(sizes.length * 0.5));
+}

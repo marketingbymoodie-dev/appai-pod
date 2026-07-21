@@ -54,6 +54,45 @@ function findBlankKey(manifest: FlatCalibrationManifest, id: string): string | n
 }
 
 /**
+ * Resolve a geometryByBlank / blank key for calibration lookup.
+ *
+ * decorPerSize harvests store geometry under `size:color` (e.g. `20x30:white`),
+ * while FlatProductPlacer passes a size-only placement key (`20x30`). Without a
+ * prefix match we fall back to the shared 11×14 mask and white mat bars appear.
+ */
+export function findGeometryBlankKey(
+  manifest: FlatCalibrationManifest,
+  id: string,
+): string | null {
+  if (!id) return null;
+  const geo = (manifest as FlatCalibrationManifestWithGeometry).geometryByBlank || {};
+  if (geo[id]) return id;
+  const blankHit = findBlankKey(manifest, id);
+  if (blankHit && geo[blankHit]) return blankHit;
+  if (blankHit) return blankHit;
+
+  const norm = normalizeFlatColorKey(id);
+  // Prefer an exact size:color geometry key whose size prefix matches.
+  const geoKeys = Object.keys(geo);
+  for (const k of geoKeys) {
+    const kn = normalizeFlatColorKey(k);
+    if (kn === norm) return k;
+  }
+  for (const k of geoKeys) {
+    const kn = normalizeFlatColorKey(k);
+    // `20x30-white` starts with `20x30-` when id is size-only `20x30`
+    if (kn.startsWith(`${norm}-`)) return k;
+  }
+  // Same prefix scan on blank keys (geometry may share ids).
+  for (const k of Object.keys(manifest.blanks || {})) {
+    if (!flatBlankHasViews(manifest.blanks?.[k])) continue;
+    const kn = normalizeFlatColorKey(k);
+    if (kn === norm || kn.startsWith(`${norm}-`)) return k;
+  }
+  return null;
+}
+
+/**
  * Pick the blank photo set for `colorId`, with graceful fallback: exact key →
  * normalized-key match → first entry with usable URLs.
  *
@@ -104,7 +143,11 @@ export function resolveCalibratorLayerAdjust(
   geometryKey: string,
   view: FlatViewName,
 ): FlatRenderInput["layerAdjust"] | undefined {
-  const entry = manifest.calibratorGeometry?.models?.[geometryKey]?.[view];
+  const resolvedKey =
+    findGeometryBlankKey(manifest, geometryKey) || geometryKey;
+  const entry =
+    manifest.calibratorGeometry?.models?.[resolvedKey]?.[view] ||
+    manifest.calibratorGeometry?.models?.[geometryKey]?.[view];
   if (!entry) return undefined;
   const hasMask =
     entry.mask.offsetX !== 0 || entry.mask.offsetY !== 0 || entry.mask.scale !== 1;
@@ -132,7 +175,7 @@ export function resolveFlatViewCalibration(
 ): FlatViewCalibration | undefined {
   const base = manifest.views[view];
   if (!base) return undefined;
-  const blankKey = findBlankKey(manifest, colorId);
+  const blankKey = findGeometryBlankKey(manifest, colorId);
   const override = blankKey ? manifest.geometryByBlank?.[blankKey]?.[view] : undefined;
   let merged: FlatViewCalibration;
   if (!override) {

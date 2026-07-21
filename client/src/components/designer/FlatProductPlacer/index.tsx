@@ -266,7 +266,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         back: EMPTY_ASSETS,
       };
       for (const v of availableViews) {
-        const calib = resolveFlatViewCalibration(manifest, geometryKey, v, calibOpts);
+        // Use colorId (e.g. 20x30:white) for mask/geometry — size-only geometryKey
+        // misses decorPerSize geometryByBlank and falls back to the shared 11×14 mask.
+        const calib = resolveFlatViewCalibration(manifest, colorId, v, calibOpts);
         const blankUrl =
           v === "front" && blankUrlOverride ? blankUrlOverride : blank[v];
         if (!calib || !blankUrl) continue;
@@ -280,7 +282,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             ? loadFlatImage(calib.shadingUrl)
             : Promise.resolve(null),
         ]);
-        if (flatCalibrationSwappedToLandscape(manifest, geometryKey, v, landscapeOrientation)) {
+        if (flatCalibrationSwappedToLandscape(manifest, colorId, v, landscapeOrientation)) {
           const oriented = await orientFlatHarvestPixelsForLandscape(m, s);
           next[v] = { blank: b, mask: oriented.mask, shading: oriented.shading };
         } else {
@@ -417,7 +419,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     (canvas: HTMLCanvasElement, v: ViewName, forApply: boolean): boolean => {
       if (!state) return false;
       const a = assets[v];
-      const calib = resolveFlatViewCalibration(manifest, geometryKey, v, calibOpts);
+      const calib = resolveFlatViewCalibration(manifest, colorId, v, calibOpts);
       if (!a?.blank || !calib) return false;
       const enabled = !!state.enabled[v];
       try {
@@ -437,7 +439,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           fabricWeave,
           cropToBackFace: false,
           sizeId: colorId,
-          layerAdjust: resolveCalibratorLayerAdjust(manifest, geometryKey, v),
+          layerAdjust: resolveCalibratorLayerAdjust(manifest, colorId, v),
         });
         return true;
       } catch (e) {
@@ -446,7 +448,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         return false;
       }
     },
-    [state, assets, manifest, geometryKey, artworkImg, artworkCorsClean, edgeWrapMode, decorMode, fabricWeave],
+    [state, assets, manifest, colorId, artworkImg, artworkCorsClean, edgeWrapMode, decorMode, fabricWeave, calibOpts],
   );
 
   // ---------- Live canvas ----------
@@ -591,7 +593,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     (view: ViewName, axis: "x" | "y", direction: 1 | -1) => {
       setState((prev) => {
         if (!prev) return prev;
-        const cal = resolveFlatViewCalibration(manifest, geometryKey, view, calibOpts);
+        const cal = resolveFlatViewCalibration(manifest, colorId, view, calibOpts);
         const va = assets[view];
         const canvas = canvasRef.current;
         if (!cal || !va.blank || !canvas) return prev;
@@ -629,7 +631,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         return applyPlacementToState(prev, view, next, availableViews);
       });
     },
-    [manifest, geometryKey, assets, edgeWrapMode, decorMode, availableViews],
+    [manifest, colorId, assets, edgeWrapMode, decorMode, availableViews, calibOpts],
   );
 
   const hasDisplayableAssets = availableViews.some((v) => assets[v].blank);
@@ -653,7 +655,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     );
   }
 
-  const calib = resolveFlatViewCalibration(manifest, geometryKey, state.view, calibOpts);
+  const calib = resolveFlatViewCalibration(manifest, colorId, state.view, calibOpts);
   const viewAssets = assets[state.view];
   const placement = state.placements[state.view] ?? DEFAULT_ARTWORK_PLACEMENT;
   const viewEnabled = !!state.enabled[state.view];
@@ -722,7 +724,12 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       {/* Live canvas + overlay */}
       <div className="relative flex-1 overflow-hidden rounded-lg border border-border bg-card">
         <div
-          className="relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 lg:max-h-none lg:aspect-square lg:p-4"
+          className={
+            // Phone cases are tall — square crop (lg:aspect-square) clips the bottom.
+            edgeWrapMode
+              ? "relative flex max-h-[75vh] min-h-[320px] items-center justify-center bg-zinc-100 p-3 lg:max-h-[85vh] lg:p-4"
+              : "relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 lg:max-h-none lg:aspect-square lg:p-4"
+          }
           onClick={() => {
             if (canvasDragRef.current) {
               canvasDragRef.current = false;
@@ -732,10 +739,14 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           }}
           data-testid="flat-placer-canvas-area"
         >
-          <div className="relative max-h-full max-w-full overflow-hidden">
+          <div className="relative flex max-h-full max-w-full items-center justify-center overflow-hidden">
             <canvas
               ref={canvasRef}
-              className="block max-h-[50vh] max-w-full h-auto w-auto rounded lg:max-h-[78vh]"
+              className={
+                edgeWrapMode
+                  ? "block max-h-[70vh] max-w-full h-auto w-auto rounded lg:max-h-[82vh]"
+                  : "block max-h-[50vh] max-w-full h-auto w-auto rounded lg:max-h-[78vh]"
+              }
               data-testid="flat-placer-canvas"
             />
             {showOverlay && calib && viewAssets.blank && artworkImg && (

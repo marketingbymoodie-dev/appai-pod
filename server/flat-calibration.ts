@@ -23,7 +23,9 @@ import { normalizeApparelSizeId, resolveVariantFromMap, type VariantMap } from "
 import {
   extractDimensionalKey,
   frameColorsRedundantWithSizes,
+  looksLikePhoneModelName,
 } from "@shared/productVariantOptions";
+export { looksLikePhoneModelName };
 import { normalizePrintifyColorKey, slugPrintifyColorId } from "@shared/printifyColorSlug";
 import {
   uploadToFlatCalibrationBucket,
@@ -952,18 +954,6 @@ function parseJsonRecord(raw: unknown): Record<string, any> {
     }
   }
   return raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, any>) : {};
-}
-
-export function looksLikePhoneModelName(name: string): boolean {
-  const lower = (name || "").toLowerCase().trim();
-  return (
-    /^iphone[-\s](\d|x|xs|xr|se|pro|plus|max|air)/i.test(lower) ||
-    /^galaxy[-\s](s\d|a\d|note|z\s*(fold|flip)|ultra)/i.test(lower) ||
-    /^pixel[-\s](\d|fold|pro)/i.test(lower) ||
-    /^samsung[-\s](galaxy|note)/i.test(lower) ||
-    /^oneplus[-\s]\d/i.test(lower) ||
-    /^for[-\s](iphone|galaxy|pixel|samsung)/i.test(lower)
-  );
 }
 
 /** Detect phone-case / edge-print products for harvest + storefront guides. */

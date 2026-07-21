@@ -10,6 +10,8 @@ import {
   resolveFrameColorForSize,
   resolveSizeAspectRatio,
   sizesHaveMixedCanvasOrientation,
+  looksLikePhoneModelName,
+  sizesLookLikePhoneModels,
   sortDimensionalSizesAscending,
   styleChoicesIncludeCanvasOrientation,
 } from "./productVariantOptions";
@@ -21,6 +23,19 @@ describe("productVariantOptions", () => {
     expect(extractDimensionalKey("26''_×_36''")).toBe("26x36");
     expect(extractDimensionalKey("36''_×_26''")).toBe("36x26");
     expect(extractDimensionalKey("104''_x_88\"")).toBe("104x88");
+  });
+
+  it("detects phone model size lists", () => {
+    expect(looksLikePhoneModelName("iPhone 13")).toBe(true);
+    expect(looksLikePhoneModelName("Galaxy S23")).toBe(true);
+    expect(looksLikePhoneModelName("Model")).toBe(false);
+    expect(
+      sizesLookLikePhoneModels([
+        { id: "iphone-13", name: "iPhone 13" },
+        { id: "iphone-14", name: "iPhone 14" },
+        { id: "iphone-15-pro", name: "iPhone 15 Pro" },
+      ]),
+    ).toBe(true);
   });
 
   it("sortDimensionalSizesAscending orders by first number then second", () => {
