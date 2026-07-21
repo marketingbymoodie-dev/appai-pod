@@ -275,6 +275,19 @@ export default function AdminCreateProduct() {
                 // job id no longer describes what's on screen.
                 testerStatusRef.current = { jobId: null, aopPanels: "none" };
                 setTesterHasDesign(false);
+                setTesterPanelStatus("none");
+                // Drop session restore keys so landscape art from HFP doesn't reload
+                // into VFP (keys used to omit productTypeId).
+                try {
+                  const toRemove: string[] = [];
+                  for (let i = 0; i < sessionStorage.length; i++) {
+                    const k = sessionStorage.key(i);
+                    if (k && k.startsWith("aiart:design:")) toRemove.push(k);
+                  }
+                  for (const k of toRemove) sessionStorage.removeItem(k);
+                } catch {
+                  /* sessionStorage may be unavailable */
+                }
                 setSelectedProductTypeId(parseInt(v));
               }}
             >

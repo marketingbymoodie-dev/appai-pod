@@ -675,6 +675,19 @@ function variantCatalogIsUsable(
   return catalog.some((v) => v.option1 || v.option2);
 }
 
+/** Session restore key — must include productTypeId so art does not leak across products in the Generator Tester. */
+function designSessionStorageKey(
+  shop: string | null | undefined,
+  productHandle: string | null | undefined,
+  productTypeId: string | number | null | undefined,
+): string {
+  const pt =
+    productTypeId != null && String(productTypeId) !== "" && String(productTypeId) !== "0"
+      ? String(productTypeId)
+      : "unknown";
+  return `aiart:design:${shop || "local"}:${productHandle || "unknown"}:pt${pt}`;
+}
+
 /** Prefer productTypeId (Admin API) over handle — customizer pages often pass the page handle, not the Shopify product handle. */
 function buildProductVariantsFetchUrl(
   shop: string,
@@ -2037,6 +2050,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const savedJobShopRef = useRef<string | null>(null);
   /** Merchant shop from design-studio identity — fallback when save-design needs a shop. */
   const adminTesterShopRef = useRef<string | null>(null);
+  /** Admin tester: auto-flush flat Apply once per job after generate. */
+  const lastTesterFlatAutoFlushJobRef = useRef<string | null>(null);
   /** Whether this merchant's plan allows saving to My Designs (Starter+). */
   const canSaveMerchantDesignsRef = useRef(false);
   // Monotonic sequence for AOP print-panel captures. Each apply bumps it; a capture
@@ -3536,7 +3551,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // Clear sessionStorage when the user navigates away so returning to the page
   // starts fresh (blank mockup). The entry only survives a hard refresh (F5).
   useEffect(() => {
-    const stateKey = `aiart:design:${shopDomain || 'local'}:${productHandle || 'unknown'}`;
+    const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
     const clearOnExit = () => {
       try { sessionStorage.removeItem(stateKey); } catch (_) {}
     };
@@ -3547,7 +3562,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       window.removeEventListener('pagehide', clearOnExit);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shopDomain, productHandle]);
+  }, [shopDomain, productHandle, productTypeId]);
 
   // Restore design state from sessionStorage on load (survives hard refresh only)
   useEffect(() => {
@@ -3555,7 +3570,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     // Also skip if loadDesignId is present — the saved design restore will handle it instead
     if (generatedDesign || sharedDesignId || isLoadingSharedDesign || effectiveLoadDesignId) return;
     try {
-      const stateKey = `aiart:design:${shopDomain || 'local'}:${productHandle || 'unknown'}`;
+      const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
       const saved = sessionStorage.getItem(stateKey);
       if (!saved) return;
       const state = JSON.parse(saved);
@@ -5004,7 +5019,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
       // Persist design state to sessionStorage so refresh doesn't lose it
       try {
-        const stateKey = `aiart:design:${shopDomain || 'local'}:${productHandle || 'unknown'}`;
+        const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
         sessionStorage.setItem(stateKey, JSON.stringify({
           designId,
           imageUrl,
@@ -5022,17 +5037,49 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       // Store jobId for mockup saving after fetchPrintifyMockups completes
       if (data.jobId) savedJobIdRef.current = data.jobId;
       savedJobShopRef.current = data.jobShop || null;
-      // AOP needs panel upload; flat/mesh needs Apply before test order.
+      // New artwork — drop prior flat placement / fronts so Apply isn't skipped and
+      // context merge doesn't reuse stale fronts from the previous design.
+      setFlatPlacerState(null);
+      flatFrontMockupsRef.current = [];
+      lastTesterFlatAutoFlushJobRef.current = null;
+      // AOP needs panel upload; flat/mesh auto-Applies in tester (status → saved).
       // Other Printify products can mark saved immediately after generate.
       emitTesterDesignStatus({
         jobId: data.jobId || null,
-        aopPanels:
-          useAopCustomizer || usesFlatOnTheFlyPreview ? "none" : "saved",
+        aopPanels: useAopCustomizer
+          ? "none"
+          : usesFlatOnTheFlyPreview
+            ? "saving"
+            : "saved",
       });
       lastFlatGalleryMockupKeyRef.current = "";
       // Reset pre-created shadow variant for this new design
       setPreShadowVariantId(null);
       if (preShadowPollRef.current) { clearTimeout(preShadowPollRef.current); preShadowPollRef.current = null; }
+
+      // Admin tester: persist size/colour/artwork immediately so test orders don't
+      // use generate-time defaults after the merchant changes the Colour dropdown.
+      if (isAdminTester && data.jobId) {
+        const panelSaveShop =
+          saveShop || data.jobShop || adminTesterShopRef.current || shopDomain;
+        if (panelSaveShop) {
+          const artworkAbs = toAbsoluteImageUrl(imageUrl);
+          void safeFetch(`${API_BASE}/api/storefront/save-state`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              jobId: data.jobId,
+              shop: panelSaveShop,
+              designState: {
+                selectedSize: selectedSize ?? null,
+                selectedFrameColor: selectedFrameColor || "default",
+                artworkUrl: artworkAbs,
+                flatPlacerState: { artworkUrl: artworkAbs },
+              },
+            }),
+          }).catch((e) => console.warn("[AdminTester] early save-state failed:", e));
+        }
+      }
       console.log('[AutoSave] isStorefront:', isStorefront, 'customerId:', saveCustomerId, 'jobId:', data.jobId);
       const merchantStudioSaveAllowed = !isMerchantStudio || canSaveMerchantDesignsRef.current;
       if (isStorefront && saveCustomerId && data.jobId && merchantStudioSaveAllowed) {
@@ -5483,7 +5530,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       
       // Persist design state to sessionStorage so refresh doesn't lose it
       try {
-        const stateKey = `aiart:design:${shopDomain || 'local'}:${productHandle || 'unknown'}`;
+        const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
         sessionStorage.setItem(stateKey, JSON.stringify({
           designId: crypto.randomUUID(),
           imageUrl: importedImageUrl,
@@ -5823,6 +5870,86 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     };
   }, [flatPlacerEditOpen, flushFlatPlacer]);
 
+  // Generator Tester has no ATC — auto-Apply flat placement after generate so
+  // test orders get current size/colour/artwork and status reaches "saved".
+  useEffect(() => {
+    if (!isAdminTester || !usesFlatOnTheFlyPreview) return;
+    if (!flatPlacerEditOpen || !generatedDesign?.imageUrl) return;
+    const jobId = savedJobIdRef.current;
+    if (!jobId || lastTesterFlatAutoFlushJobRef.current === jobId) return;
+
+    let cancelled = false;
+    void (async () => {
+      for (let i = 0; i < 30 && !cancelled; i++) {
+        await new Promise((r) => setTimeout(r, 200));
+        if (cancelled) return;
+        if (!flatPlacerRef.current) continue;
+        lastTesterFlatAutoFlushJobRef.current = jobId;
+        try {
+          await flushFlatPlacer();
+        } catch (e) {
+          lastTesterFlatAutoFlushJobRef.current = null;
+          console.warn("[AdminTester] auto flat Apply failed:", e);
+          emitTesterDesignStatus({ jobId, aopPanels: "error" });
+        }
+        return;
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    isAdminTester,
+    usesFlatOnTheFlyPreview,
+    flatPlacerEditOpen,
+    generatedDesign?.imageUrl,
+    generatedDesign?.id,
+    flushFlatPlacer,
+    emitTesterDesignStatus,
+  ]);
+
+  // Keep job size/colour in sync when the merchant changes dropdowns after generate.
+  useEffect(() => {
+    if (!isAdminTester || !usesFlatOnTheFlyPreview) return;
+    const jobId = savedJobIdRef.current;
+    const shop =
+      shopDomain || savedJobShopRef.current || adminTesterShopRef.current;
+    if (!jobId || !shop || !generatedDesign?.imageUrl) return;
+
+    const t = window.setTimeout(() => {
+      const artworkAbs = toAbsoluteImageUrl(generatedDesign.imageUrl);
+      const phoneColor =
+        isPhoneCaseProduct && !frameColorsArePhoneModels
+          ? "default"
+          : selectedFrameColor || "default";
+      void safeFetch(`${API_BASE}/api/storefront/save-state`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jobId,
+          shop,
+          designState: {
+            selectedSize: selectedSize ?? null,
+            selectedFrameColor: phoneColor,
+            artworkUrl: artworkAbs,
+          },
+        }),
+      }).catch((e) => console.warn("[AdminTester] size/colour sync failed:", e));
+    }, 400);
+
+    return () => window.clearTimeout(t);
+  }, [
+    isAdminTester,
+    usesFlatOnTheFlyPreview,
+    selectedSize,
+    selectedFrameColor,
+    generatedDesign?.imageUrl,
+    shopDomain,
+    isPhoneCaseProduct,
+    frameColorsArePhoneModels,
+  ]);
+
   const handleAddToCart = async () => {
     if (!generatedDesign || (!isShopify && !isStorefront)) return;
     if (isAddingToCart) return; // double-click guard
@@ -6090,7 +6217,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             setSelectedSize('');
             setSelectedFrameColor('');
             try {
-              const stateKey = `aiart:design:${shopDomain || 'local'}:${productHandle || 'unknown'}`;
+              const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
               sessionStorage.removeItem(stateKey);
             } catch (_) { /* sessionStorage may be unavailable */ }
             const url = new URL(window.location.href);
@@ -7714,8 +7841,29 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         }
         setFlatRenderFailed(false);
         flatFrontMockupsRef.current = images;
-        setPrintifyMockupImages(images);
-        setPrintifyMockups(images.map((i) => i.url));
+        // Keep lifestyle/context shots when replacing local fronts (regen / size swap).
+        setPrintifyMockupImages((prev) => {
+          const seen = new Set(images.map((i) => mockupImageUrlKey(i.url)));
+          const extras = prev.filter(
+            (img) =>
+              isPrintifyContextMockupLabel(img.label) ||
+              (!/^(front|back|mockup 1|mockup 2)$/i.test(img.label || "") &&
+                !seen.has(mockupImageUrlKey(img.url))),
+          );
+          return [...images, ...extras].slice(0, 4);
+        });
+        setPrintifyMockups((prev) => {
+          const next = images.map((i) => i.url);
+          const seen = new Set(next.map(mockupImageUrlKey));
+          for (const url of prev) {
+            const key = mockupImageUrlKey(url);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            next.push(url);
+            if (next.length >= 4) break;
+          }
+          return next;
+        });
         setSelectedMockupIndex((prev) => (prev === 0 ? 1 : prev));
         setMockupsStale(false);
         currentMockupColorRef.current = flatMockupBlankKey;
@@ -8200,7 +8348,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 setSelectedSize('');
                 setSelectedFrameColor('');
                 try {
-                  const stateKey = `aiart:design:${shopDomain || 'local'}:${productHandle || 'unknown'}`;
+                  const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
                   sessionStorage.removeItem(stateKey);
                 } catch (_) {}
                 const url = new URL(window.location.href);
@@ -9123,7 +9271,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                           setSelectedSize('');
                           setSelectedFrameColor('');
                           try {
-                            const stateKey = `aiart:design:${shopDomain || 'local'}:${productHandle || 'unknown'}`;
+                            const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
                             sessionStorage.removeItem(stateKey);
                           } catch (_) {}
                           const url = new URL(window.location.href);
@@ -9532,7 +9680,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       setPrintifyMockupImages([]);
                       setSelectedMockupIndex(0);
                       try {
-                        const stateKey = `aiart:design:${shopDomain || 'local'}:${productHandle || 'unknown'}`;
+                        const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
                         sessionStorage.removeItem(stateKey);
                       } catch (_) {}
                       const url = new URL(window.location.href);
@@ -9905,7 +10053,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     landscapeOrientation={flatLandscapeOrientation}
                     // Never pin catalog orientation photos over decorPerSize frame-colour blanks.
                     blankUrlOverride={flatDecorMode ? null : orientationBlankOverride}
-                    skipInitialAutoApply={!!flatPlacerState}
+                    // Tester auto-flushes Apply after generate; never seed "saved"
+                    // from onChange alone or flush becomes a no-op.
+                    skipInitialAutoApply={!isAdminTester && !!flatPlacerState}
                   />
                 </div>
               </div>
