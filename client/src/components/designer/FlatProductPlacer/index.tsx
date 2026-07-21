@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { Eye, EyeOff, Loader2, RotateCcw, AlertTriangle } from "lucide-react";
+import { Eye, EyeOff, ImagePlus, Loader2, RotateCcw, AlertTriangle } from "lucide-react";
 import {
   FinePositionNudge,
   mockupDeltaFromScreenNudge,
@@ -127,6 +127,19 @@ export type FlatProductPlacerProps = {
   landscapeOrientation?: boolean;
   /** Fallback blank photo when manifest lacks per-orientation blanks (tapestry). */
   blankUrlOverride?: string | null;
+  /**
+   * On-demand lifestyle/context action under "Placement ready".
+   * `active` = shimmer + clickable; inactive = dimmed, no shimmer.
+   */
+  lifestyleAction?: {
+    onClick: () => void;
+    loading?: boolean;
+    active?: boolean;
+    label: string;
+    error?: string | null;
+  } | null;
+  /** When set, canvas shows this image (e.g. Printify Context) instead of live placer. */
+  canvasOverrideUrl?: string | null;
 };
 
 type LoadedAssets = {
@@ -232,6 +245,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       fabricWeave = false,
       landscapeOrientation = false,
       blankUrlOverride = null,
+      lifestyleAction = null,
+      canvasOverrideUrl = null,
     },
     ref,
   ) {
@@ -725,7 +740,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   // the page's left 2/3 (col-span-2 of the wide 3-column embed grid).
   return (
     <div className="flex w-full flex-col gap-4 lg:flex-row">
-      {/* Live canvas + overlay */}
+      {/* Live canvas + overlay (or lifestyle/context override) */}
       <div className="relative flex-1 overflow-hidden rounded-lg border border-border bg-card">
         <div
           className={
@@ -738,6 +753,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                 : "relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 lg:max-h-none lg:aspect-square lg:p-4"
           }
           onClick={() => {
+            if (canvasOverrideUrl) return;
             if (canvasDragRef.current) {
               canvasDragRef.current = false;
               return;
@@ -750,44 +766,67 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             <canvas
               ref={canvasRef}
               className={
-                edgeWrapMode
-                  ? "block max-h-[80vh] max-w-full h-auto w-auto rounded lg:max-h-[88vh]"
-                  : decorMode
-                    ? "block max-h-[50vh] max-w-full h-auto w-auto rounded lg:max-h-[82vh]"
-                    : "block max-h-[50vh] max-w-full h-auto w-auto rounded lg:max-h-[78vh]"
+                canvasOverrideUrl
+                  ? "hidden"
+                  : edgeWrapMode
+                    ? "block max-h-[80vh] max-w-full h-auto w-auto rounded lg:max-h-[88vh]"
+                    : decorMode
+                      ? "block max-h-[50vh] max-w-full h-auto w-auto rounded lg:max-h-[82vh]"
+                      : "block max-h-[50vh] max-w-full h-auto w-auto rounded lg:max-h-[78vh]"
               }
               data-testid="flat-placer-canvas"
             />
-            {showOverlay && calib && viewAssets.blank && artworkImg && (
-              <FlatDesignRectOverlay
-                canvasRef={canvasRef}
-                view={calib}
-                artwork={artworkImg}
-                placement={placement}
-                edgeWrapMode={edgeWrapMode}
-                innerGuideRect={displayEdgeGuides?.inner ?? null}
-                outerGuideRect={displayEdgeGuides?.outer ?? null}
-                placementRect={placementRect}
-                scaleMax={scaleMax}
-                onChange={(next) => updatePlacement(state.view, next)}
-                onDragActivity={() => {
-                  canvasDragRef.current = true;
-                }}
+            {canvasOverrideUrl ? (
+              <img
+                src={canvasOverrideUrl}
+                alt="Lifestyle context"
+                className={
+                  decorMode
+                    ? "block max-h-[50vh] max-w-full h-auto w-auto rounded object-contain lg:max-h-[82vh]"
+                    : "block max-h-[50vh] max-w-full h-auto w-auto rounded object-contain lg:max-h-[78vh]"
+                }
+                data-testid="flat-placer-context-preview"
               />
+            ) : (
+              showOverlay &&
+              calib &&
+              viewAssets.blank &&
+              artworkImg && (
+                <FlatDesignRectOverlay
+                  canvasRef={canvasRef}
+                  view={calib}
+                  artwork={artworkImg}
+                  placement={placement}
+                  edgeWrapMode={edgeWrapMode}
+                  innerGuideRect={displayEdgeGuides?.inner ?? null}
+                  outerGuideRect={displayEdgeGuides?.outer ?? null}
+                  placementRect={placementRect}
+                  scaleMax={scaleMax}
+                  onChange={(next) => updatePlacement(state.view, next)}
+                  onDragActivity={() => {
+                    canvasDragRef.current = true;
+                  }}
+                />
+              )
             )}
-            {!artworkImg && !artworkLoading && (
+            {!canvasOverrideUrl && !artworkImg && !artworkLoading && (
               <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-center text-xs text-muted-foreground">
                 Create a design to preview it on the product →
               </div>
             )}
-            {artworkLoading && (
+            {!canvasOverrideUrl && artworkLoading && (
               <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
                 <Loader2 className="mr-1 h-3 w-3 animate-spin" /> Loading artwork…
               </div>
             )}
-            {assetsLoading && hasDisplayableAssets && (
+            {!canvasOverrideUrl && assetsLoading && hasDisplayableAssets && (
               <div className="pointer-events-none absolute right-2 top-2 flex items-center gap-1 rounded bg-background/80 px-2 py-1 text-[10px] text-muted-foreground shadow-sm">
                 <Loader2 className="h-3 w-3 animate-spin" /> Updating colour…
+              </div>
+            )}
+            {canvasOverrideUrl && (
+              <div className="pointer-events-none absolute left-2 top-2 rounded bg-background/85 px-2 py-1 text-[10px] font-medium text-foreground shadow-sm">
+                Context
               </div>
             )}
           </div>
@@ -967,6 +1006,49 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             ) : (
               <span className="opacity-60">Placement ready</span>
             )}
+          </div>
+        )}
+
+        {lifestyleAction && (
+          <div className="flex flex-col gap-1 pt-1">
+            <button
+              type="button"
+              onClick={() => {
+                if (!lifestyleAction.active || lifestyleAction.loading) return;
+                lifestyleAction.onClick();
+              }}
+              disabled={!lifestyleAction.active || !!lifestyleAction.loading}
+              data-testid="button-lifestyle-shot-placer"
+              className={`flex w-full items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs font-semibold transition-opacity ${
+                lifestyleAction.active && !lifestyleAction.loading
+                  ? "border-foreground/80 bg-foreground text-background"
+                  : "border-border bg-muted text-muted-foreground opacity-45 cursor-not-allowed"
+              }`}
+            >
+              {lifestyleAction.loading ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+              ) : (
+                <ImagePlus className="h-3.5 w-3.5 shrink-0" />
+              )}
+              <span
+                className={
+                  lifestyleAction.active && !lifestyleAction.loading
+                    ? "shimmer-text-white"
+                    : undefined
+                }
+              >
+                {lifestyleAction.loading ? "Generating lifestyle…" : lifestyleAction.label}
+              </span>
+            </button>
+            {lifestyleAction.error ? (
+              <p className="text-center text-[11px] text-destructive" data-testid="text-lifestyle-shot-error-placer">
+                {lifestyleAction.error}
+              </p>
+            ) : !lifestyleAction.active && !lifestyleAction.loading ? (
+              <p className="text-center text-[10px] text-muted-foreground">
+                Finish placement (or generate artwork) to enable Lifestyle Shot
+              </p>
+            ) : null}
           </div>
         )}
       </div>

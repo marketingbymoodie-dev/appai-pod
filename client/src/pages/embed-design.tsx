@@ -4110,11 +4110,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           setPrintifyMockupImages(mergedImages);
           setPrintifyMockups(mergedUrls);
           sendMockupsToParent(mergedUrls);
-          // Jump to first context shot when the customer asked for a lifestyle image.
+          // Jump to Context in post-gen gallery (Artwork is index 0, then printify images).
           const firstContextIdx = mergedImages.findIndex((m) =>
             isPrintifyContextMockupLabel(m.label),
           );
-          if (firstContextIdx >= 0) setSelectedMockupIndex(firstContextIdx);
+          if (firstContextIdx >= 0) setSelectedMockupIndex(1 + firstContextIdx);
           console.log(
             '[Mockups] Merged',
             extras.length,
@@ -8016,6 +8016,22 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const hasLifestyleShot = printifyMockupImages.some((img) =>
     isPrintifyContextMockupLabel(img.label),
   );
+  /** Shimmer/clickable only after generate + placement settled; dims when dirty. */
+  const lifestyleShotActive = !!(
+    canRequestLifestyleShot &&
+    generatedDesign?.imageUrl &&
+    !lifestyleShotLoading &&
+    !flatPlacementDirty &&
+    flatApplyStatus !== "saving" &&
+    flatApplyStatus !== "error"
+  );
+  const selectedPostGenItem = postGenGalleryItems[selectedMockupIndex] ?? null;
+  const flatCanvasOverrideUrl =
+    flatPlacerActive &&
+    selectedPostGenItem?.kind === "mockup" &&
+    isPrintifyContextMockupLabel(selectedPostGenItem.label)
+      ? selectedPostGenItem.url
+      : null;
 
   /**
    * On-demand Printify lifestyle/context for framed/pillow flat products.
@@ -8024,6 +8040,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const requestLifestyleShot = useCallback(async () => {
     if (
       !canRequestLifestyleShot ||
+      !lifestyleShotActive ||
       !productTypeConfig?.id ||
       !generatedDesign?.imageUrl ||
       lifestyleShotLoading
@@ -8072,13 +8089,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       }
       toast({
         title: "Lifestyle shot ready",
-        description: "Swipe the gallery to see the room / context view.",
+        description: "Showing Context — use the dots or arrows under the preview to switch views.",
       });
     } finally {
       setLifestyleShotLoading(false);
     }
   }, [
     canRequestLifestyleShot,
+    lifestyleShotActive,
     productTypeConfig?.id,
     generatedDesign?.imageUrl,
     lifestyleShotLoading,
@@ -8089,6 +8107,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     selectedFrameColor,
     toast,
   ]);
+
+  // Dim lifestyle when the customer nudges/scales after a ready state.
+  useEffect(() => {
+    if (flatPlacementDirty) setLifestyleShotError(null);
+  }, [flatPlacementDirty]);
 
   const flatPlacerSaveBlocking = !!(
     flatPlacerActive && flatApplyStatus === "saving"
@@ -9795,65 +9818,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 </div>
               </div>
 
-              {/* Orientation on its own row so Art Style | Size|Model share one baseline */}
-              {(showSizeDrivenOrientationPills || showSquareOrientationPillOnly) && (
-                <div className="space-y-2">
-                  <Label>Orientation</Label>
-                  <div className="flex flex-wrap gap-2">
-                    {(
-                      [
-                        { id: "horizontal" as const, name: "Horizontal" },
-                        { id: "vertical" as const, name: "Vertical" },
-                        { id: "square" as const, name: "Square" },
-                      ] as const
-                    )
-                      .filter((choice) => {
-                        if (!availableCanvasOrientations.includes(choice.id)) return false;
-                        if (showSquareOrientationPillOnly) return choice.id === "square";
-                        return true;
-                      })
-                      .map((choice) => {
-                        const isSelected = sizeCanvasOrientation === choice.id;
-                        return (
-                          <button
-                            key={choice.id}
-                            type="button"
-                            onClick={() => applyCanvasOrientation(choice.id)}
-                            data-testid={`button-size-orientation-${choice.id}`}
-                            style={
-                              isSelected
-                                ? {
-                                    backgroundColor: "#111827",
-                                    color: "#ffffff",
-                                    border: "2px solid #111827",
-                                    borderRadius: "9999px",
-                                    padding: "5px 14px",
-                                    fontSize: "12px",
-                                    fontWeight: 600,
-                                    cursor: "pointer",
-                                    outline: "none",
-                                  }
-                                : {
-                                    backgroundColor: "transparent",
-                                    color: "#374151",
-                                    border: "1px solid #9ca3af",
-                                    borderRadius: "9999px",
-                                    padding: "5px 14px",
-                                    fontSize: "12px",
-                                    fontWeight: 500,
-                                    cursor: "pointer",
-                                    outline: "none",
-                                  }
-                            }
-                          >
-                            {choice.name}
-                          </button>
-                        );
-                      })}
-                  </div>
-                </div>
-              )}
-
+              {/* Art Style | Orientation (or Size), then Size | Color when orientation pills show */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
                 {showPresetsParam && filteredStylePresets.length > 0 && (
                   <div data-guide-box={guideActiveBox === 1 ? "active" : undefined}>
@@ -9871,7 +9836,122 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   </div>
                 )}
 
-                {printSizes.length > 0 && (
+                {(showSizeDrivenOrientationPills || showSquareOrientationPillOnly) ? (
+                  <div className="space-y-2" data-testid="container-size-orientation-pills">
+                    <Label>Orientation</Label>
+                    <div className="flex flex-wrap gap-2 min-h-11 items-center">
+                      {(
+                        [
+                          { id: "horizontal" as const, name: "Horizontal" },
+                          { id: "vertical" as const, name: "Vertical" },
+                          { id: "square" as const, name: "Square" },
+                        ] as const
+                      )
+                        .filter((choice) => {
+                          if (!availableCanvasOrientations.includes(choice.id)) return false;
+                          if (showSquareOrientationPillOnly) return choice.id === "square";
+                          return true;
+                        })
+                        .map((choice) => {
+                          const isSelected = sizeCanvasOrientation === choice.id;
+                          return (
+                            <button
+                              key={choice.id}
+                              type="button"
+                              onClick={() => applyCanvasOrientation(choice.id)}
+                              data-testid={`button-size-orientation-${choice.id}`}
+                              style={
+                                isSelected
+                                  ? {
+                                      backgroundColor: "#111827",
+                                      color: "#ffffff",
+                                      border: "2px solid #111827",
+                                      borderRadius: "9999px",
+                                      padding: "5px 14px",
+                                      fontSize: "12px",
+                                      fontWeight: 600,
+                                      cursor: "pointer",
+                                      outline: "none",
+                                    }
+                                  : {
+                                      backgroundColor: "transparent",
+                                      color: "#374151",
+                                      border: "1px solid #9ca3af",
+                                      borderRadius: "9999px",
+                                      padding: "5px 14px",
+                                      fontSize: "12px",
+                                      fontWeight: 500,
+                                      cursor: "pointer",
+                                      outline: "none",
+                                    }
+                              }
+                            >
+                              {choice.name}
+                            </button>
+                          );
+                        })}
+                    </div>
+                    <div className="mt-1 min-h-[1.25rem]" />
+                  </div>
+                ) : (
+                  printSizes.length > 0 && (
+                    <div data-guide-box={guideActiveBox === 2 ? "active" : undefined}>
+                      <SizeSelector
+                        sizes={orientationFilteredSizes}
+                        selectedSize={selectedSize}
+                        label={isPhoneCaseProduct ? "Model" : "Size"}
+                        onSizeChange={(sizeId) => {
+                          const prevSize = printSizes.find((s) => s.id === selectedSize);
+                          const nextSize = printSizes.find((s) => s.id === sizeId);
+                          if (
+                            generatedDesign?.imageUrl &&
+                            prevSize &&
+                            nextSize &&
+                            prevSize.id !== nextSize.id
+                          ) {
+                            const prevAr = resolveSizeAspectRatio(
+                              prevSize,
+                              productTypeConfig?.aspectRatio,
+                            );
+                            const nextAr = resolveSizeAspectRatio(
+                              nextSize,
+                              productTypeConfig?.aspectRatio,
+                            );
+                            if (prevAr !== nextAr) {
+                              toast({
+                                title: isPhoneCaseProduct
+                                  ? "Model proportions changed"
+                                  : "Size proportions changed",
+                                description:
+                                  "Generate new artwork so it matches this size's aspect ratio.",
+                              });
+                            }
+                          }
+                          setSelectedSize(sizeId);
+                          if (frameOptionsRedundantWithSizes) {
+                            const matched = resolveFrameColorForSize(nextSize, frameColorObjects);
+                            if (matched) setSelectedFrameColor(matched);
+                          }
+                          const flatOnTheFly = usesFlatOnTheFlyPreview;
+                          if (!flatOnTheFly) {
+                            setTransform({ scale: defaultZoom, x: 50, y: 50 });
+                          }
+                        }}
+                        prices={buildPriceMap()}
+                      />
+                      <div className="mt-1 min-h-[1.25rem]">
+                        {selectedSize === "" && (
+                          <p className="text-xs text-muted-foreground">
+                            {isPhoneCaseProduct ? "Please select a model" : "Please select a size"}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  )
+                )}
+
+                {(showSizeDrivenOrientationPills || showSquareOrientationPillOnly) &&
+                  printSizes.length > 0 && (
                   <div data-guide-box={guideActiveBox === 2 ? "active" : undefined}>
                     <SizeSelector
                       sizes={orientationFilteredSizes}
@@ -10426,37 +10506,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     </Button>
                   </div>
                 )}
-                {canRequestLifestyleShot && (
-                  <div className="flex flex-col gap-1">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="w-full"
-                      onClick={() => void requestLifestyleShot()}
-                      disabled={lifestyleShotLoading || flatApplyStatus === "saving"}
-                      data-testid="button-lifestyle-shot-placer"
-                    >
-                      {lifestyleShotLoading ? (
-                        <Loader2 className="w-4 h-4 animate-spin mr-1 shrink-0" />
-                      ) : (
-                        <ImagePlus className="w-4 h-4 mr-1 shrink-0" />
-                      )}
-                      <span className="text-xs truncate">
-                        {lifestyleShotLoading
-                          ? "Generating lifestyle…"
-                          : hasLifestyleShot
-                            ? "Refresh Lifestyle Shot"
-                            : "Lifestyle Shot"}
-                      </span>
-                    </Button>
-                    {lifestyleShotError && (
-                      <p className="text-xs text-destructive" data-testid="text-lifestyle-shot-error-placer">
-                        {lifestyleShotError}
-                      </p>
-                    )}
-                  </div>
-                )}
                 <div className="relative min-h-0">
                   {(flatMockupRefreshing || (flatDecorMode && mockupsStale)) && (
                     <div
@@ -10496,7 +10545,56 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     // Tester auto-flushes Apply after generate; never seed "saved"
                     // from onChange alone or flush becomes a no-op.
                     skipInitialAutoApply={!isAdminTester && !!flatPlacerState}
+                    canvasOverrideUrl={flatCanvasOverrideUrl}
+                    lifestyleAction={
+                      canRequestLifestyleShot
+                        ? {
+                            onClick: () => void requestLifestyleShot(),
+                            loading: lifestyleShotLoading,
+                            active: lifestyleShotActive,
+                            label: hasLifestyleShot
+                              ? "Refresh Lifestyle Shot"
+                              : "Lifestyle Shot",
+                            error: lifestyleShotError,
+                          }
+                        : null
+                    }
                   />
+                  {/* Gallery arrows while placer is open (ProductMockup arrows are hidden). */}
+                  {showsPrintifyMockupPreview &&
+                    generatedDesign?.imageUrl &&
+                    postGenGalleryItems.length > 1 && (
+                    <>
+                      <button
+                        type="button"
+                        aria-label="Previous"
+                        onClick={() =>
+                          setSelectedMockupIndex(
+                            (i) =>
+                              (i - 1 + postGenGalleryItems.length) %
+                              postGenGalleryItems.length,
+                          )
+                        }
+                        className="absolute left-1 top-[28%] -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
+                        data-testid="button-flat-gallery-prev"
+                      >
+                        <ChevronLeft className="w-5 h-5" />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Next"
+                        onClick={() =>
+                          setSelectedMockupIndex(
+                            (i) => (i + 1) % postGenGalleryItems.length,
+                          )
+                        }
+                        className="absolute right-1 top-[28%] -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors lg:right-[calc(20rem+0.75rem)]"
+                        data-testid="button-flat-gallery-next"
+                      >
+                        <ChevronRight className="w-5 h-5" />
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             ) : (<>
@@ -10917,73 +11015,43 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             )}
 
             {generatedDesign?.imageUrl && flatPlacerEligible && !flatPlacerEditOpen && (
-              <div className="flex flex-col gap-2 pt-2 border-t">
-                <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setFlatPlacerEditOpen(true)}
-                    className="shrink-0"
-                    data-testid="button-edit-flat-placement"
-                  >
-                    <RefreshCw className="w-4 h-4 mr-1" />
-                    <span className="text-xs">Edit Placement</span>
-                  </Button>
-                  {canRequestLifestyleShot && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => void requestLifestyleShot()}
-                      disabled={lifestyleShotLoading || flatApplyStatus === "saving"}
-                      className="shrink-0"
-                      data-testid="button-lifestyle-shot"
-                    >
-                      {lifestyleShotLoading ? (
-                        <Loader2 className="w-4 h-4 animate-spin mr-1" />
-                      ) : (
-                        <ImagePlus className="w-4 h-4 mr-1" />
-                      )}
-                      <span className="text-xs">
-                        {lifestyleShotLoading
-                          ? "Lifestyle…"
-                          : hasLifestyleShot
-                            ? "Refresh Lifestyle"
-                            : "Lifestyle Shot"}
-                      </span>
-                    </Button>
+              <div className="flex items-center justify-between pt-2 border-t gap-2 flex-wrap">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setFlatPlacerEditOpen(true)}
+                  className="shrink-0"
+                  data-testid="button-edit-flat-placement"
+                >
+                  <RefreshCw className="w-4 h-4 mr-1" />
+                  <span className="text-xs">Edit Placement</span>
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void handleDownloadArtwork(generatedDesign?.imageUrl, `${productTitle || "appai"}-artwork.png`)}
+                  disabled={!generatedDesign?.imageUrl}
+                  data-testid="button-download-artwork-flat"
+                  className="shrink-0"
+                >
+                  <Download className="w-4 h-4 mr-1" />
+                  <span className="text-xs">Download Artwork</span>
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleShare}
+                  disabled={isSharing || !generatedDesign?.imageUrl}
+                  data-testid="button-share-flat"
+                  className="shrink-0"
+                >
+                  {isSharing ? (
+                    <Loader2 className="w-4 h-4 animate-spin mr-1" />
+                  ) : (
+                    <Share2 className="w-4 h-4 mr-1" />
                   )}
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => void handleDownloadArtwork(generatedDesign?.imageUrl, `${productTitle || "appai"}-artwork.png`)}
-                    disabled={!generatedDesign?.imageUrl}
-                    data-testid="button-download-artwork-flat"
-                    className="shrink-0"
-                  >
-                    <Download className="w-4 h-4 mr-1" />
-                    <span className="text-xs">Download Artwork</span>
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleShare}
-                    disabled={isSharing || !generatedDesign?.imageUrl}
-                    data-testid="button-share-flat"
-                    className="shrink-0"
-                  >
-                    {isSharing ? (
-                      <Loader2 className="w-4 h-4 animate-spin mr-1" />
-                    ) : (
-                      <Share2 className="w-4 h-4 mr-1" />
-                    )}
-                    <span className="text-xs">Share</span>
-                  </Button>
-                </div>
-                {lifestyleShotError && (
-                  <p className="text-xs text-destructive" data-testid="text-lifestyle-shot-error">
-                    {lifestyleShotError}
-                  </p>
-                )}
+                  <span className="text-xs">Share</span>
+                </Button>
               </div>
             )}
 
