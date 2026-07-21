@@ -801,15 +801,29 @@ export function pickPreferredMockupViews(
 }
 
 async function deleteProduct(shopId: string, productId: string, apiToken: string) {
-  try {
-    await fetch(
-      `${PRINTIFY_API_BASE}/shops/${shopId}/products/${productId}.json`,
-      {
+  const url = `${PRINTIFY_API_BASE}/shops/${shopId}/products/${productId}.json`;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const response = await fetch(url, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${apiToken}` },
+      });
+      if (response.ok || response.status === 404) {
+        return;
       }
-    );
-  } catch (error) {}
+      const body = await response.text().catch(() => "");
+      console.warn(
+        `[Printify Mockup] Failed to delete temp product ${productId} (attempt ${attempt}/2): ${response.status} ${body.slice(0, 160)}`,
+      );
+      if (attempt < 2) await sleep(500 * attempt);
+    } catch (error) {
+      console.warn(
+        `[Printify Mockup] Delete temp product ${productId} threw (attempt ${attempt}/2):`,
+        error,
+      );
+      if (attempt < 2) await sleep(500 * attempt);
+    }
+  }
 }
 
 export async function generatePrintifyMockup(

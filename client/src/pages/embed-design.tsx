@@ -2045,6 +2045,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [flatMockupRefreshNonce, setFlatMockupRefreshNonce] = useState(0);
   /** True while framed flat decor is re-rastering after size/colour change. */
   const [flatMockupRefreshing, setFlatMockupRefreshing] = useState(false);
+  /** On-demand Printify lifestyle/context for flat framed (not auto-fetched). */
+  const [lifestyleShotLoading, setLifestyleShotLoading] = useState(false);
+  const [lifestyleShotError, setLifestyleShotError] = useState<string | null>(null);
   const flatPlacerRef = useRef<FlatProductPlacerHandle>(null);
   /** Dedupes save-mockups + gallery refresh for flat on-the-fly previews. */
   const lastFlatGalleryMockupKeyRef = useRef<string>("");
@@ -3872,12 +3875,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     printPlacementOverride?: "front" | "back" | "both",
     bgColorOverride?: string,
     fetchOpts?: { mergeContextOnly?: boolean },
-  ) => {
+  ): Promise<{ ok: boolean; contextCount?: number; error?: string }> => {
     const mergeContextOnly = !!fetchOpts?.mergeContextOnly;
     // Guard: never call the mockup endpoint without a real design image.
     if (!designImageUrl) {
       console.warn('[EmbedDesign] fetchPrintifyMockups called without designImageUrl — skipping');
-      return;
+      return { ok: false, error: "Missing design image" };
     }
 
     // AOP preflight: validate per-panel data URLs before sending to the server.
@@ -3905,7 +3908,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         if (runtimeMode !== 'standalone') {
           window.parent.postMessage({ type: 'AI_ART_STUDIO_MOCKUP_LOADING', loading: false }, '*');
         }
-        return;
+        return { ok: false, error: msg };
       }
       console.log(`[EmbedDesign] AOP preflight OK: ${panelUrls.length} panel(s) — sizes: ${panelUrls.map(p => `${p.position}:${(p.dataUrl.length / 1024).toFixed(0)}KB`).join(', ')}`);
     }
@@ -3929,8 +3932,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
     if (activeMockupJobKeyRef.current === mockupJobKey) {
       console.log('[Mockups] Duplicate mockup request ignored while job is in flight');
-      return;
+      return { ok: false, error: "Mockup already in progress" };
     }
+
+    let contextMergeOutcome: { ok: boolean; contextCount?: number; error?: string } | null =
+      mergeContextOnly ? null : { ok: true };
     // Context-only fetches must not cancel / block a primary mockup job.
     if (!mergeContextOnly) {
       activeMockupJobKeyRef.current = mockupJobKey;
@@ -4079,6 +4085,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               '[Mockups] Context merge: no lifestyle/context views from Printify',
               absImages.map((i: { label: string }) => i.label),
             );
+            contextMergeOutcome = {
+              ok: false,
+              error: "Printify returned no lifestyle/context views",
+            };
             return;
           }
           const fronts =
@@ -4100,6 +4110,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           setPrintifyMockupImages(mergedImages);
           setPrintifyMockups(mergedUrls);
           sendMockupsToParent(mergedUrls);
+          // Jump to first context shot when the customer asked for a lifestyle image.
+          const firstContextIdx = mergedImages.findIndex((m) =>
+            isPrintifyContextMockupLabel(m.label),
+          );
+          if (firstContextIdx >= 0) setSelectedMockupIndex(firstContextIdx);
           console.log(
             '[Mockups] Merged',
             extras.length,
@@ -4107,6 +4122,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             fronts.length,
             'flat front(s)',
           );
+          contextMergeOutcome = { ok: true, contextCount: extras.length };
           return;
         }
 
@@ -4231,12 +4247,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     } catch (error) {
       if (!mergeContextOnly && requestSeq !== mockupRequestSeqRef.current) {
         console.log('[Mockups] Ignoring stale mockup error', requestSeq);
-        return;
+        return { ok: false, error: "Stale mockup request" };
       }
       if (mergeContextOnly) {
-        // Flat front is already good — context is best-effort.
+        // Flat front is already good — context is best-effort for auto paths;
+        // Lifestyle Shot button surfaces this via the return value.
+        const msg = error instanceof Error ? error.message : "Lifestyle shot failed";
         console.warn("[Mockups] Context merge failed (non-fatal):", error);
-        return;
+        contextMergeOutcome = { ok: false, error: msg };
+        return contextMergeOutcome;
       }
       console.error("Failed to generate Printify mockups:", error);
       setMockupError(error instanceof Error ? error.message : "Failed to generate product preview");
@@ -4244,6 +4263,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       // Keep mockupsStale so the UI surfaces an error rather than silently
       // showing a stale mockup from a previous size/color combination.
       setMockupsStale(true);
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : "Failed to generate product preview",
+      };
     } finally {
       if (!mergeContextOnly && activeMockupJobKeyRef.current === mockupJobKey) {
         activeMockupJobKeyRef.current = null;
@@ -4257,6 +4280,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         }
       }
     }
+    if (mergeContextOnly) {
+      return (
+        contextMergeOutcome ?? {
+          ok: false,
+          error: "Printify returned no lifestyle/context views",
+        }
+      );
+    }
+    return { ok: true };
   }, [isShopify, isStorefront, shopDomain, sessionToken, sendMockupsToParent, runtimeMode, printPlacement, supportsPrintPlacementSelection, useAopCustomizer, aopPlacementSettings?.bgColor, aopPatternSettings?.bgColor]);
 
   // Reset mockupFailed when a new design image becomes available so the
@@ -6981,30 +7013,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         });
       }
 
-      // Refresh lifestyle/context after apply (same as size/colour raster path).
-      if (
-        flatDecorMode &&
-        productTypeConfig?.hasPrintifyMockups &&
-        selectedSize &&
-        generatedDesign?.imageUrl &&
-        !useAopCustomizer
-      ) {
-        void fetchPrintifyMockups(
-          toAbsoluteImageUrl(generatedDesign.imageUrl),
-          productTypeConfig.id,
-          selectedSize,
-          selectedFrameColor || "default",
-          100,
-          50,
-          50,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          { mergeContextOnly: true },
-        );
-      }
+      // Lifestyle/context is on-demand via Lifestyle Shot — do not auto-create
+      // Printify "Mockup Preview" products on every apply.
     } catch (err: any) {
       console.error("[FlatApply] Upload failed:", err);
       setMockupError(err?.message || "Failed to apply design");
@@ -7023,11 +7033,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     persistFlatMockupsForGallery,
     emitTesterDesignStatus,
     flatDecorMode,
-    productTypeConfig?.hasPrintifyMockups,
-    productTypeConfig?.id,
-    generatedDesign?.imageUrl,
-    useAopCustomizer,
-    fetchPrintifyMockups,
     isPhoneCaseProduct,
     frameColorsArePhoneModels,
   ]);
@@ -8001,6 +8006,89 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     !flatRenderFailed
   );
   const flatPlacerActive = flatPlacerEligible && flatPlacerEditOpen;
+  const canRequestLifestyleShot = !!(
+    flatDecorMode &&
+    flatPlacerEligible &&
+    productTypeConfig?.hasPrintifyMockups &&
+    selectedSize &&
+    !useAopCustomizer
+  );
+  const hasLifestyleShot = printifyMockupImages.some((img) =>
+    isPrintifyContextMockupLabel(img.label),
+  );
+
+  /**
+   * On-demand Printify lifestyle/context for framed/pillow flat products.
+   * Avoids creating a Mockup Preview product until the customer asks.
+   */
+  const requestLifestyleShot = useCallback(async () => {
+    if (
+      !canRequestLifestyleShot ||
+      !productTypeConfig?.id ||
+      !generatedDesign?.imageUrl ||
+      lifestyleShotLoading
+    ) {
+      return;
+    }
+    // Persist latest placement first so Printify scale matches what they see.
+    if (flatPlacerRef.current?.hasPendingChanges()) {
+      await flushFlatPlacer({ force: true });
+    }
+    const front = flatPlacerState?.placements?.front;
+    const scalePct = Math.round(Math.max(0.1, Math.min(2, front?.scale ?? 1.1)) * 100);
+    const xPct = Math.round(
+      Math.max(0, Math.min(100, 50 + (front?.offsetX ?? 0) * 50)),
+    );
+    const yPct = Math.round(
+      Math.max(0, Math.min(100, 50 + (front?.offsetY ?? 0) * 50)),
+    );
+    setLifestyleShotLoading(true);
+    setLifestyleShotError(null);
+    try {
+      const result = await fetchPrintifyMockups(
+        toAbsoluteImageUrl(generatedDesign.imageUrl),
+        productTypeConfig.id,
+        selectedSize!,
+        selectedFrameColor || "default",
+        scalePct,
+        xPct,
+        yPct,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { mergeContextOnly: true },
+      );
+      if (!result.ok) {
+        const msg = result.error || "Lifestyle shot failed";
+        setLifestyleShotError(msg);
+        toast({
+          title: "Lifestyle shot unavailable",
+          description: msg,
+          variant: "destructive",
+        });
+        return;
+      }
+      toast({
+        title: "Lifestyle shot ready",
+        description: "Swipe the gallery to see the room / context view.",
+      });
+    } finally {
+      setLifestyleShotLoading(false);
+    }
+  }, [
+    canRequestLifestyleShot,
+    productTypeConfig?.id,
+    generatedDesign?.imageUrl,
+    lifestyleShotLoading,
+    flushFlatPlacer,
+    flatPlacerState?.placements?.front,
+    fetchPrintifyMockups,
+    selectedSize,
+    selectedFrameColor,
+    toast,
+  ]);
 
   const flatPlacerSaveBlocking = !!(
     flatPlacerActive && flatApplyStatus === "saving"
@@ -8113,43 +8201,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           artworkUrl,
         };
         const views = flatViewsForColor(manifest, flatBlankColorId);
-        const requestContextMerge = () => {
-          if (
-            !flatDecorMode ||
-            !productTypeConfig.hasPrintifyMockups ||
-            !selectedSize ||
-            useAopCustomizer
-          ) {
-            return;
-          }
-          void fetchPrintifyMockups(
-            artworkUrl,
-            productTypeConfig.id,
-            selectedSize,
-            selectedFrameColor || "default",
-            100,
-            50,
-            50,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            { mergeContextOnly: true },
-          );
-        };
         if (
           flatMockupBlankKey === currentMockupColorRef.current &&
           flatFrontMockupsRef.current.length >= views.length
         ) {
           setFlatMockupRefreshing(false);
-          // Front already cached — still pull lifestyle/context if the gallery is front-only.
-          const hasContext = printifyMockupImages.some((img) =>
-            isPrintifyContextMockupLabel(img.label),
-          );
-          if (!hasContext && printifyMockupImages.length <= views.length) {
-            requestContextMerge();
-          }
+          // Front already cached — lifestyle/context is on-demand (Lifestyle Shot).
           return;
         }
         if (flatDecorMode) setFlatMockupRefreshing(true);
@@ -8193,8 +8250,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         }
         setFlatRenderFailed(false);
         flatFrontMockupsRef.current = images;
-        // Keep lifestyle/context shots when replacing local fronts (regen / size swap).
+        // Framed/decor: drop stale Printify lifestyle shots on size/colour swap —
+        // user re-requests via Lifestyle Shot. Apparel flat can keep prior extras.
         setPrintifyMockupImages((prev) => {
+          if (flatDecorMode) return images.slice(0, 4);
           const seen = new Set(images.map((i) => mockupImageUrlKey(i.url)));
           const extras = prev.filter(
             (img) =>
@@ -8205,6 +8264,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           return [...images, ...extras].slice(0, 4);
         });
         setPrintifyMockups((prev) => {
+          if (flatDecorMode) return images.map((i) => i.url);
           const next = images.map((i) => i.url);
           const seen = new Set(next.map(mockupImageUrlKey));
           for (const url of prev) {
@@ -8218,15 +8278,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         });
         setSelectedMockupIndex((prev) => (prev === 0 ? 1 : prev));
         setMockupsStale(false);
+        setLifestyleShotError(null);
         currentMockupColorRef.current = flatMockupBlankKey;
         setFlatMockupRefreshing(false);
         void persistFlatMockupsForGallery(
           images.map((i) => i.url),
           flatMockupBlankKey,
         );
-
-        // Horizontal Printify path includes lifestyle/context; merge those onto flat front.
-        requestContextMerge();
       })();
     }, 200);
 
@@ -8238,13 +8296,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flatPlacerEligible,
     flatPlacerState,
     productTypeConfig?.flatCalibration,
-    productTypeConfig?.hasPrintifyMockups,
-    productTypeConfig?.id,
     generatedDesign?.imageUrl,
     flatBlankColorId,
     flatMockupBlankKey,
-    selectedSize,
-    selectedFrameColor,
     printPlacement,
     flatDecorMode,
     flatFabricWeave,
@@ -8252,8 +8306,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     orientationBlankOverride,
     persistFlatMockupsForGallery,
     flatMockupRefreshNonce,
-    fetchPrintifyMockups,
-    useAopCustomizer,
   ]);
 
   // Flat tier: colour/size swap is local — never gate ATC on Printify refresh.
@@ -10374,6 +10426,37 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     </Button>
                   </div>
                 )}
+                {canRequestLifestyleShot && (
+                  <div className="flex flex-col gap-1">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="w-full"
+                      onClick={() => void requestLifestyleShot()}
+                      disabled={lifestyleShotLoading || flatApplyStatus === "saving"}
+                      data-testid="button-lifestyle-shot-placer"
+                    >
+                      {lifestyleShotLoading ? (
+                        <Loader2 className="w-4 h-4 animate-spin mr-1 shrink-0" />
+                      ) : (
+                        <ImagePlus className="w-4 h-4 mr-1 shrink-0" />
+                      )}
+                      <span className="text-xs truncate">
+                        {lifestyleShotLoading
+                          ? "Generating lifestyle…"
+                          : hasLifestyleShot
+                            ? "Refresh Lifestyle Shot"
+                            : "Lifestyle Shot"}
+                      </span>
+                    </Button>
+                    {lifestyleShotError && (
+                      <p className="text-xs text-destructive" data-testid="text-lifestyle-shot-error-placer">
+                        {lifestyleShotError}
+                      </p>
+                    )}
+                  </div>
+                )}
                 <div className="relative min-h-0">
                   {(flatMockupRefreshing || (flatDecorMode && mockupsStale)) && (
                     <div
@@ -10834,43 +10917,73 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             )}
 
             {generatedDesign?.imageUrl && flatPlacerEligible && !flatPlacerEditOpen && (
-              <div className="flex items-center justify-between pt-2 border-t gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setFlatPlacerEditOpen(true)}
-                  className="shrink-0"
-                  data-testid="button-edit-flat-placement"
-                >
-                  <RefreshCw className="w-4 h-4 mr-1" />
-                  <span className="text-xs">Edit Placement</span>
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void handleDownloadArtwork(generatedDesign?.imageUrl, `${productTitle || "appai"}-artwork.png`)}
-                  disabled={!generatedDesign?.imageUrl}
-                  data-testid="button-download-artwork-flat"
-                  className="shrink-0"
-                >
-                  <Download className="w-4 h-4 mr-1" />
-                  <span className="text-xs">Download Artwork</span>
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleShare}
-                  disabled={isSharing || !generatedDesign?.imageUrl}
-                  data-testid="button-share-flat"
-                  className="shrink-0"
-                >
-                  {isSharing ? (
-                    <Loader2 className="w-4 h-4 animate-spin mr-1" />
-                  ) : (
-                    <Share2 className="w-4 h-4 mr-1" />
+              <div className="flex flex-col gap-2 pt-2 border-t">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setFlatPlacerEditOpen(true)}
+                    className="shrink-0"
+                    data-testid="button-edit-flat-placement"
+                  >
+                    <RefreshCw className="w-4 h-4 mr-1" />
+                    <span className="text-xs">Edit Placement</span>
+                  </Button>
+                  {canRequestLifestyleShot && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void requestLifestyleShot()}
+                      disabled={lifestyleShotLoading || flatApplyStatus === "saving"}
+                      className="shrink-0"
+                      data-testid="button-lifestyle-shot"
+                    >
+                      {lifestyleShotLoading ? (
+                        <Loader2 className="w-4 h-4 animate-spin mr-1" />
+                      ) : (
+                        <ImagePlus className="w-4 h-4 mr-1" />
+                      )}
+                      <span className="text-xs">
+                        {lifestyleShotLoading
+                          ? "Lifestyle…"
+                          : hasLifestyleShot
+                            ? "Refresh Lifestyle"
+                            : "Lifestyle Shot"}
+                      </span>
+                    </Button>
                   )}
-                  <span className="text-xs">Share</span>
-                </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void handleDownloadArtwork(generatedDesign?.imageUrl, `${productTitle || "appai"}-artwork.png`)}
+                    disabled={!generatedDesign?.imageUrl}
+                    data-testid="button-download-artwork-flat"
+                    className="shrink-0"
+                  >
+                    <Download className="w-4 h-4 mr-1" />
+                    <span className="text-xs">Download Artwork</span>
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleShare}
+                    disabled={isSharing || !generatedDesign?.imageUrl}
+                    data-testid="button-share-flat"
+                    className="shrink-0"
+                  >
+                    {isSharing ? (
+                      <Loader2 className="w-4 h-4 animate-spin mr-1" />
+                    ) : (
+                      <Share2 className="w-4 h-4 mr-1" />
+                    )}
+                    <span className="text-xs">Share</span>
+                  </Button>
+                </div>
+                {lifestyleShotError && (
+                  <p className="text-xs text-destructive" data-testid="text-lifestyle-shot-error">
+                    {lifestyleShotError}
+                  </p>
+                )}
               </div>
             )}
 
