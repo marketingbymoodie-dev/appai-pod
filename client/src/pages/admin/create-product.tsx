@@ -98,11 +98,16 @@ export default function AdminCreateProduct() {
           "Design is still saving — wait a moment, then send the test order again.",
         );
       }
-      // AOP products report aopPanels saved/error after panel upload. Flat/phone
-      // products stay at "none" (no AOP panels) — that must not block test orders.
+      // AOP panels and flat Apply both report aopPanels saved/error. Do not send
+      // a test order until the on-screen design has been persisted.
       if (testerStatusRef.current.aopPanels === "error") {
         throw new Error(
           "Last design save failed — adjust placement once more, wait for Design saved, then try again.",
+        );
+      }
+      if (testerStatusRef.current.aopPanels !== "saved") {
+        throw new Error(
+          "Apply your design first and wait for Design saved, then send the test order.",
         );
       }
       const jobId = testerStatusRef.current.jobId;

@@ -1510,6 +1510,19 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     !frameOptionsRedundantWithSizes &&
     !(isPhoneCaseProduct && !frameColorsArePhoneModels);
 
+  // Phone cases with models in Size: never leave a junk Model fragment as frameColor.
+  useEffect(() => {
+    if (!isPhoneCaseProduct || frameColorsArePhoneModels) return;
+    const id = selectedFrameColor || "";
+    const looksLikeModel =
+      !id ||
+      looksLikePhoneModelName(id) ||
+      looksLikePhoneModelName(id.replace(/_/g, " "));
+    if (looksLikeModel && selectedFrameColor !== "default") {
+      setSelectedFrameColor("default");
+    }
+  }, [isPhoneCaseProduct, frameColorsArePhoneModels, selectedFrameColor]);
+
   /** Flat/mesh on-the-fly preview — respects merchant `storefrontMockupMode` override. */
   const usesFlatOnTheFlyPreview = useMemo(() => {
     const hasFlatAssets = !!(
@@ -5009,11 +5022,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       // Store jobId for mockup saving after fetchPrintifyMockups completes
       if (data.jobId) savedJobIdRef.current = data.jobId;
       savedJobShopRef.current = data.jobShop || null;
-      // AOP needs panel upload before test order. Flat / Printify products have no
-      // AOP panels — mark saved immediately so Generator Tester test orders work.
+      // AOP needs panel upload; flat/mesh needs Apply before test order.
+      // Other Printify products can mark saved immediately after generate.
       emitTesterDesignStatus({
         jobId: data.jobId || null,
-        aopPanels: useAopCustomizer ? "none" : "saved",
+        aopPanels:
+          useAopCustomizer || usesFlatOnTheFlyPreview ? "none" : "saved",
       });
       lastFlatGalleryMockupKeyRef.current = "";
       // Reset pre-created shadow variant for this new design
@@ -6550,6 +6564,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
       if (shouldPersist && savedJobIdRef.current && panelSaveShop) {
         const jobId = savedJobIdRef.current;
+        const artworkUrl = generatedDesign?.imageUrl
+          ? toAbsoluteImageUrl(generatedDesign.imageUrl)
+          : result.state.artworkUrl;
+        const phoneColor =
+          isPhoneCaseProduct && !frameColorsArePhoneModels
+            ? "default"
+            : selectedFrameColor || "default";
         try {
           await safeFetch(`${API_BASE}/api/storefront/save-state`, {
             method: "POST",
@@ -6558,8 +6579,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               jobId,
               shop: panelSaveShop,
               designState: {
-                flatPlacerState: result.state,
+                flatPlacerState: { ...result.state, artworkUrl },
                 flatMockups: { front: frontHosted, back: backHosted },
+                selectedSize: selectedSize ?? null,
+                selectedFrameColor: phoneColor,
+                artworkUrl: artworkUrl || null,
               },
             }),
           });
@@ -6631,6 +6655,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     generatedDesign?.imageUrl,
     useAopCustomizer,
     fetchPrintifyMockups,
+    isPhoneCaseProduct,
+    frameColorsArePhoneModels,
   ]);
 
   const handleFlatPlacerChange = useCallback(

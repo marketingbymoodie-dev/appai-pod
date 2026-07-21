@@ -8261,7 +8261,28 @@ ${orientationExtra}
           ? (job.designState as Record<string, unknown>)
           : {};
       const mergedDesignState = { ...prevState, ...designState };
-      await storage.updateGenerationJob(jobId, { designState: mergedDesignState } as any);
+      // Sync size / colour / artwork onto job columns so test orders and
+      // fulfillment prefer the merchant's current Apply selection.
+      const jobPatch: Record<string, unknown> = { designState: mergedDesignState };
+      if (typeof designState.selectedSize === "string" && designState.selectedSize.trim()) {
+        jobPatch.size = designState.selectedSize.trim();
+      }
+      if (typeof designState.selectedFrameColor === "string" && designState.selectedFrameColor.trim()) {
+        jobPatch.frameColor = designState.selectedFrameColor.trim();
+      }
+      const placerArt =
+        designState.flatPlacerState &&
+        typeof designState.flatPlacerState === "object" &&
+        typeof (designState.flatPlacerState as { artworkUrl?: unknown }).artworkUrl === "string"
+          ? String((designState.flatPlacerState as { artworkUrl: string }).artworkUrl).trim()
+          : "";
+      const topArt =
+        typeof designState.artworkUrl === "string" ? designState.artworkUrl.trim() : "";
+      const nextArt = placerArt || topArt;
+      if (nextArt && (nextArt.startsWith("http") || nextArt.startsWith("/"))) {
+        jobPatch.designImageUrl = nextArt;
+      }
+      await storage.updateGenerationJob(jobId, jobPatch as any);
       void captureAopCustomerFlowSnapshot({ jobId, designState: mergedDesignState });
       console.log(`[SaveState] jobId=${jobId} merged designState keys=${Object.keys(mergedDesignState).join(",")}`);
       return res.json({ saved: true });

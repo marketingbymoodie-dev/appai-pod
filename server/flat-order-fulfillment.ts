@@ -55,7 +55,11 @@ import {
   type FlatPlacement,
 } from "./flat-print-file";
 import { resolveFlatPrintFileDims, resolveFlatBakePlacementRect } from "./flat-calibration";
-import { resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
+import {
+  resolveVariantFromMap,
+  resolveVariantForSizeOnly,
+  type VariantMap,
+} from "@shared/variantMapResolve";
 import { usesToteFoldedFulfillment } from "@shared/productLayoutPolicy";
 import { buildToteFoldedPrintPngFromUrl } from "./toteFoldedPrintFile";
 import { uploadToFlatCalibrationBucket } from "./supabaseFlatCalibration";
@@ -223,6 +227,56 @@ function parseJson<T = any>(value: unknown, fallback: T): T {
   return fallback;
 }
 
+/**
+ * Prefer live placer artwork (updated on Apply) over generate-time job columns.
+ * Exported for unit tests.
+ */
+export function pickFlatOrderArtworkUrl(args: {
+  flatPlacerArtworkUrl?: string | null;
+  jobDesignImageUrl?: string | null;
+  lineArtworkUrl?: string | null;
+}): string {
+  return (
+    (args.flatPlacerArtworkUrl && String(args.flatPlacerArtworkUrl)) ||
+    (args.jobDesignImageUrl && String(args.jobDesignImageUrl)) ||
+    (args.lineArtworkUrl && String(args.lineArtworkUrl)) ||
+    ""
+  );
+}
+
+/**
+ * Prefer designState size/colour (persisted on Apply) over stale job columns.
+ * Design-product / line overrides still win for real Shopify checkouts.
+ * Exported for unit tests.
+ */
+export function pickFlatOrderSizeColor(args: {
+  designProductSizeId?: string | null;
+  designProductColorId?: string | null;
+  designStateSize?: string | null;
+  designStateColor?: string | null;
+  lineSize?: string | null;
+  lineColor?: string | null;
+  jobSize?: string | null;
+  jobColor?: string | null;
+}): { sizeId: string; colorId: string } {
+  return {
+    sizeId: String(
+      args.designProductSizeId ||
+        args.designStateSize ||
+        args.lineSize ||
+        args.jobSize ||
+        "default",
+    ),
+    colorId: String(
+      args.designProductColorId ||
+        args.designStateColor ||
+        args.lineColor ||
+        args.jobColor ||
+        "default",
+    ),
+  };
+}
+
 /** Look up a published (shadow) product by its purchasable Shopify variant id. */
 async function findPublishedProductByVariant(
   shop: string,
@@ -322,11 +376,11 @@ export async function resolveDesignForOrderLine(
     | { placements?: Partial<Record<ViewName, FlatPlacement>>; enabled?: Partial<Record<ViewName, boolean>>; artworkUrl?: string }
     | undefined;
 
-  const artworkUrl =
-    (job.designImageUrl as string | null) ||
-    line.properties["_artwork_url"] ||
-    flatPlacerState?.artworkUrl ||
-    "";
+  const artworkUrl = pickFlatOrderArtworkUrl({
+    flatPlacerArtworkUrl: flatPlacerState?.artworkUrl,
+    jobDesignImageUrl: job.designImageUrl as string | null,
+    lineArtworkUrl: line.properties["_artwork_url"],
+  });
   if (!artworkUrl) {
     return { ok: false, skip: true, reason: `no artwork url for design ${designId}` };
   }
@@ -366,8 +420,16 @@ export async function resolveDesignForOrderLine(
       offsetX: (dsX - 50) / 50,
       offsetY: (dsY - 50) / 50,
     };
-    const sizeId = String(designProductOverride?.sizeId || line.properties["Size"] || job.size || "default");
-    const colorId = String(designProductOverride?.colorId || line.properties["Color"] || job.frameColor || "default");
+    const { sizeId, colorId } = pickFlatOrderSizeColor({
+      designProductSizeId: designProductOverride?.sizeId,
+      designProductColorId: designProductOverride?.colorId,
+      designStateSize: designState?.selectedSize,
+      designStateColor: designState?.selectedFrameColor,
+      lineSize: line.properties["Size"],
+      lineColor: line.properties["Color"],
+      jobSize: job.size,
+      jobColor: job.frameColor,
+    });
 
     return {
       ok: true,
@@ -402,8 +464,16 @@ export async function resolveDesignForOrderLine(
       if (!merchant || !merchant.printifyApiToken || !merchant.printifyShopId) {
         return { ok: false, skip: false, reason: `merchant for product type ${productTypeId} missing Printify credentials` };
       }
-      const sizeId = String(designProductOverride.sizeId || line.properties["Size"] || job.size || "default");
-      const colorId = String(designProductOverride.colorId || line.properties["Color"] || job.frameColor || "default");
+      const { sizeId, colorId } = pickFlatOrderSizeColor({
+        designProductSizeId: designProductOverride.sizeId,
+        designProductColorId: designProductOverride.colorId,
+        designStateSize: designState?.selectedSize,
+        designStateColor: designState?.selectedFrameColor,
+        lineSize: line.properties["Size"],
+        lineColor: line.properties["Color"],
+        jobSize: job.size,
+        jobColor: job.frameColor,
+      });
       return {
         ok: true,
         kind: "product_reference",
@@ -446,8 +516,16 @@ export async function resolveDesignForOrderLine(
       if (!merchant || !merchant.printifyApiToken || !merchant.printifyShopId) {
         return { ok: false, skip: false, reason: `merchant for product type ${productTypeId} missing Printify credentials` };
       }
-      const sizeId = String(designProductOverride?.sizeId || line.properties["Size"] || job.size || "default");
-      const colorId = String(designProductOverride?.colorId || line.properties["Color"] || job.frameColor || "default");
+      const { sizeId, colorId } = pickFlatOrderSizeColor({
+        designProductSizeId: designProductOverride?.sizeId,
+        designProductColorId: designProductOverride?.colorId,
+        designStateSize: designState?.selectedSize,
+        designStateColor: designState?.selectedFrameColor,
+        lineSize: line.properties["Size"],
+        lineColor: line.properties["Color"],
+        jobSize: job.size,
+        jobColor: job.frameColor,
+      });
       return {
         ok: true,
         kind: "aop",
@@ -484,8 +562,16 @@ export async function resolveDesignForOrderLine(
     }
   }
 
-  const sizeId = String(designProductOverride?.sizeId || line.properties["Size"] || job.size || "default");
-  const colorId = String(designProductOverride?.colorId || line.properties["Color"] || job.frameColor || "default");
+  const { sizeId, colorId } = pickFlatOrderSizeColor({
+    designProductSizeId: designProductOverride?.sizeId,
+    designProductColorId: designProductOverride?.colorId,
+    designStateSize: designState?.selectedSize,
+    designStateColor: designState?.selectedFrameColor,
+    lineSize: line.properties["Size"],
+    lineColor: line.properties["Color"],
+    jobSize: job.size,
+    jobColor: job.frameColor,
+  });
 
   return {
     ok: true,
@@ -525,7 +611,15 @@ export function resolvePrintifyTarget(
   colorId: string,
 ): PrintifyTarget | null {
   const variantMap = parseJson<VariantMap>(productType.variantMap, {});
-  const resolved = resolveVariantFromMap(variantMap, sizeId, colorId);
+  let resolved = resolveVariantFromMap(variantMap, sizeId, colorId);
+  // Phone / edge-wrap: colour is irrelevant (or a junk Model fragment). Match harvest —
+  // any Printify variant for the model sizeId.
+  if (!resolved) {
+    const cal = parseJson<{ edgeWrap?: boolean }>(productType.flatCalibration, {});
+    if (cal?.edgeWrap) {
+      resolved = resolveVariantForSizeOnly(variantMap, sizeId);
+    }
+  }
   const variantData = resolved?.entry;
   if (!variantData || variantData.printifyVariantId == null) return null;
   const blueprintId = Number(productType.printifyBlueprintId);
@@ -1048,6 +1142,16 @@ export async function submitFlatTestOrder(args: {
   const idempotencyKey = `flat-test-order:${args.productType.id}:${designId}:${Date.now()}`;
   // Build a synthetic single-line order keyed by the design id so the standard
   // resolution path (line.properties._appai_job_id → generation_jobs) is used.
+  // Carry Size/Color from the latest designState (Apply) so bake doesn't rely
+  // only on generate-time job columns.
+  const job = await storage.getGenerationJob(designId);
+  const designState = parseJson<Record<string, any>>(job?.designState, {});
+  const { sizeId, colorId } = pickFlatOrderSizeColor({
+    designStateSize: designState?.selectedSize,
+    designStateColor: designState?.selectedFrameColor,
+    jobSize: job?.size,
+    jobColor: job?.frameColor,
+  });
   const syntheticOrder = {
     id: idempotencyKey,
     shop_domain: args.productType.shopifyShopDomain || "",
@@ -1056,7 +1160,11 @@ export async function submitFlatTestOrder(args: {
     lineId: "test-1",
     variantId: null,
     quantity: 1,
-    properties: { _appai_job_id: designId },
+    properties: {
+      _appai_job_id: designId,
+      Size: sizeId,
+      Color: colorId,
+    },
   };
 
   const result = await submitFlatOrderToPrintify({

@@ -141,6 +141,27 @@ export function resolveVariantFromMap(
   return null;
 }
 
+/**
+ * First variantMap entry for this size (any colour). Phone cases key models as
+ * size and often carry junk Model fragments as "colour" that never match.
+ */
+export function resolveVariantForSizeOnly(
+  variantMap: VariantMap | null | undefined,
+  sizeId: string | undefined | null,
+): { entry: VariantMapEntry; key: string } | null {
+  if (!variantMap) return null;
+  const size = normalizeSizeId(sizeId);
+  if (size === "default") return null;
+  for (const [key, entry] of Object.entries(variantMap)) {
+    if (entry?.printifyVariantId == null || entry.printifyVariantId === "") continue;
+    const [sz] = key.split(":");
+    if (normalizeSizeId(sz) === size) {
+      return { entry, key };
+    }
+  }
+  return null;
+}
+
 export const SHOPIFY_MAX_VARIANTS_PER_PRODUCT = 100;
 
 /** Count variantMap entries that match the merchant's selected size/color filters. */

@@ -159,6 +159,43 @@ export async function bakeFlatPrintFile(
   return { buffer, width: printW, height: printH };
 }
 
+/** Soft target before upload — stay under common 30MB project defaults even if updateBucket fails. */
+const BAKE_UPLOAD_SOFT_MAX_BYTES = 28 * 1024 * 1024;
+/** Hard fail after compression — matches raised flat-calibration bucket limit. */
+const BAKE_UPLOAD_HARD_MAX_BYTES = 100 * 1024 * 1024;
+
+/**
+ * Compress oversized bake PNGs so Supabase upload does not hit object-size limits.
+ * Exported for unit tests.
+ */
+export async function prepareBakeUploadBuffer(
+  buffer: Buffer,
+): Promise<{ buffer: Buffer; contentType: string; ext: string }> {
+  if (buffer.length <= BAKE_UPLOAD_SOFT_MAX_BYTES) {
+    return { buffer, contentType: "image/png", ext: "png" };
+  }
+  console.warn(
+    `[flat-print-file] bake PNG ${buffer.length} bytes exceeds ${BAKE_UPLOAD_SOFT_MAX_BYTES}; compressing`,
+  );
+  let out = await sharp(buffer).png({ compressionLevel: 9 }).toBuffer();
+  if (out.length <= BAKE_UPLOAD_SOFT_MAX_BYTES) {
+    return { buffer: out, contentType: "image/png", ext: "png" };
+  }
+  out = await sharp(buffer).jpeg({ quality: 92, mozjpeg: true }).toBuffer();
+  if (out.length <= BAKE_UPLOAD_SOFT_MAX_BYTES) {
+    console.warn(`[flat-print-file] compressed bake to JPEG ${out.length} bytes`);
+    return { buffer: out, contentType: "image/jpeg", ext: "jpg" };
+  }
+  out = await sharp(buffer).jpeg({ quality: 80, mozjpeg: true }).toBuffer();
+  if (out.length > BAKE_UPLOAD_HARD_MAX_BYTES) {
+    throw new Error(
+      `Baked print file still too large after compression (${Math.round(out.length / (1024 * 1024))}MB). Try a smaller print size.`,
+    );
+  }
+  console.warn(`[flat-print-file] compressed bake to JPEG q80 ${out.length} bytes`);
+  return { buffer: out, contentType: "image/jpeg", ext: "jpg" };
+}
+
 /**
  * Persist a baked print file to the Supabase flat-calibration bucket for
  * audit / reprint. Best-effort: returns null when Supabase is not configured.
@@ -171,9 +208,10 @@ export async function persistBakedPrintFile(
 ): Promise<string | null> {
   if (!isSupabaseFlatCalibrationConfigured()) return null;
   await ensureFlatCalibrationBucket();
+  const prepared = await prepareBakeUploadBuffer(buffer);
   const safeDesign = String(designId).replace(/[^a-z0-9]+/gi, "-").toLowerCase();
-  const path = `print-files/${productTypeId}/${safeDesign}-${view}.png`;
-  return uploadToFlatCalibrationBucket(path, buffer, "image/png");
+  const path = `print-files/${productTypeId}/${safeDesign}-${view}.${prepared.ext}`;
+  return uploadToFlatCalibrationBucket(path, prepared.buffer, prepared.contentType);
 }
 
 /**

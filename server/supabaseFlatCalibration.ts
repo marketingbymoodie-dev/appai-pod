@@ -54,14 +54,29 @@ export function isSupabaseFlatCalibrationConfigured(): boolean {
  * Ensure the bucket exists with public-read access. Idempotent — safe to call
  * before every harvest run.
  */
+/** Large poster bake PNGs can exceed 30MB; keep headroom under Supabase project caps. */
+const FLAT_CALIBRATION_FILE_SIZE_LIMIT = "100MB";
+
 export async function ensureFlatCalibrationBucket(): Promise<void> {
   const c = client();
   if (!c) throw new Error("Supabase is not configured (missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY)");
   const { data: existing } = await c.storage.getBucket(FLAT_CALIBRATION_BUCKET);
-  if (existing) return;
+  if (existing) {
+    // Best-effort raise limit on buckets created with the old 30MB cap.
+    const { error } = await c.storage.updateBucket(FLAT_CALIBRATION_BUCKET, {
+      public: true,
+      fileSizeLimit: FLAT_CALIBRATION_FILE_SIZE_LIMIT,
+    });
+    if (error) {
+      console.warn(
+        `[flat-calibration] updateBucket fileSizeLimit=${FLAT_CALIBRATION_FILE_SIZE_LIMIT} failed: ${error.message}`,
+      );
+    }
+    return;
+  }
   const { error } = await c.storage.createBucket(FLAT_CALIBRATION_BUCKET, {
     public: true,
-    fileSizeLimit: "30MB",
+    fileSizeLimit: FLAT_CALIBRATION_FILE_SIZE_LIMIT,
   });
   if (error) throw new Error(`createBucket failed: ${error.message}`);
 }
