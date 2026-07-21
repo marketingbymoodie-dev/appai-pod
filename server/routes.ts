@@ -8260,7 +8260,22 @@ ${orientationExtra}
         job.designState && typeof job.designState === "object" && !Array.isArray(job.designState)
           ? (job.designState as Record<string, unknown>)
           : {};
-      const mergedDesignState = { ...prevState, ...designState };
+      const mergedDesignState: Record<string, unknown> = { ...prevState, ...designState };
+      // Deep-merge placer state so a partial patch (e.g. artworkUrl-only) cannot
+      // wipe placements / enabled flags from a prior Apply.
+      if (
+        designState.flatPlacerState &&
+        typeof designState.flatPlacerState === "object" &&
+        !Array.isArray(designState.flatPlacerState) &&
+        prevState.flatPlacerState &&
+        typeof prevState.flatPlacerState === "object" &&
+        !Array.isArray(prevState.flatPlacerState)
+      ) {
+        mergedDesignState.flatPlacerState = {
+          ...(prevState.flatPlacerState as Record<string, unknown>),
+          ...(designState.flatPlacerState as Record<string, unknown>),
+        };
+      }
       // Sync size / colour / artwork onto job columns so test orders and
       // fulfillment prefer the merchant's current Apply selection.
       const jobPatch: Record<string, unknown> = { designState: mergedDesignState };

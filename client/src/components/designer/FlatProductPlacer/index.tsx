@@ -89,8 +89,11 @@ export type FlatProductPlacerApplyResult = {
 export type FlatApplyStatus = "idle" | "saving" | "saved" | "error";
 
 export type FlatProductPlacerHandle = {
-  /** Upload + persist when placement or colour changed since last apply. */
-  applyIfNeeded: () => Promise<void>;
+  /**
+   * Upload + persist. Pass `{ force: true }` to re-save after size/colour changes.
+   * Returns false when skipped (assets still loading / nothing to do).
+   */
+  applyIfNeeded: (opts?: { force?: boolean }) => Promise<boolean>;
   hasPendingChanges: () => boolean;
 };
 
@@ -477,9 +480,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     return outputSignature(state) !== lastAppliedSignatureRef.current;
   }, [state, artworkImg, colorId]);
 
-  const applyIfNeeded = useCallback(async () => {
-    if (!onApply || !state || !artworkImg || assetsLoading) return;
-    if (!hasPendingChanges()) return;
+  const applyIfNeeded = useCallback(async (opts?: { force?: boolean }): Promise<boolean> => {
+    if (!onApply || !state || !artworkImg || assetsLoading) return false;
+    if (!opts?.force && !hasPendingChanges()) return false;
 
     setApplyStatus("saving");
     try {
@@ -489,6 +492,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       lastAppliedSignatureRef.current = outputSignature(state);
       lastAppliedColorRef.current = colorId;
       setApplyStatus("saved");
+      return true;
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error("[FlatProductPlacer] apply error:", e);
@@ -725,10 +729,13 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       <div className="relative flex-1 overflow-hidden rounded-lg border border-border bg-card">
         <div
           className={
-            // Phone cases are tall — square crop (lg:aspect-square) clips the bottom.
+            // Phone cases are tall — square crop clips the bottom.
+            // Framed decor (esp. landscape 36×24) must not use lg:aspect-square either.
             edgeWrapMode
               ? "relative flex max-h-[85vh] min-h-[360px] items-center justify-center bg-zinc-100 p-2 lg:max-h-[90vh] lg:p-3"
-              : "relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 lg:max-h-none lg:aspect-square lg:p-4"
+              : decorMode
+                ? "relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 lg:max-h-[85vh] lg:p-4"
+                : "relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 lg:max-h-none lg:aspect-square lg:p-4"
           }
           onClick={() => {
             if (canvasDragRef.current) {
@@ -745,7 +752,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               className={
                 edgeWrapMode
                   ? "block max-h-[80vh] max-w-full h-auto w-auto rounded lg:max-h-[88vh]"
-                  : "block max-h-[50vh] max-w-full h-auto w-auto rounded lg:max-h-[78vh]"
+                  : decorMode
+                    ? "block max-h-[50vh] max-w-full h-auto w-auto rounded lg:max-h-[82vh]"
+                    : "block max-h-[50vh] max-w-full h-auto w-auto rounded lg:max-h-[78vh]"
               }
               data-testid="flat-placer-canvas"
             />

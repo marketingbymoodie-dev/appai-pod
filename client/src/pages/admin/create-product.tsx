@@ -271,13 +271,11 @@ export default function AdminCreateProduct() {
             <Select
               value={selectedProductTypeId != null ? String(selectedProductTypeId) : undefined}
               onValueChange={(v) => {
-                // Switching products remounts the customizer — the previous design's
-                // job id no longer describes what's on screen.
+                // Switching products remounts the customizer — never carry artwork
+                // across products (wrong aspect ratio / wrong bake credentials).
                 testerStatusRef.current = { jobId: null, aopPanels: "none" };
                 setTesterHasDesign(false);
                 setTesterPanelStatus("none");
-                // Drop session restore keys so landscape art from HFP doesn't reload
-                // into VFP (keys used to omit productTypeId).
                 try {
                   const toRemove: string[] = [];
                   for (let i = 0; i < sessionStorage.length; i++) {
@@ -305,6 +303,7 @@ export default function AdminCreateProduct() {
           )}
           <p className="text-xs text-muted-foreground">
             This renders the exact same designer your customers use — it always stays in sync with the live customizer.
+            Switching products clears the current artwork so aspect ratios stay correct.
           </p>
         </div>
 
