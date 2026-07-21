@@ -39,9 +39,11 @@ export default function AdminCreateProduct() {
   const testerStatusRef = useRef<TesterDesignStatus>({ jobId: null, aopPanels: "none" });
   const saveDesignRef = useRef<(() => Promise<void>) | null>(null);
   const [testerHasDesign, setTesterHasDesign] = useState(false);
+  const [testerPanelStatus, setTesterPanelStatus] = useState<TesterDesignStatus["aopPanels"]>("none");
   const handleTesterDesignStatus = useCallback((status: TesterDesignStatus) => {
     testerStatusRef.current = status;
     setTesterHasDesign(!!status.jobId);
+    setTesterPanelStatus(status.aopPanels);
   }, []);
 
   const {
@@ -93,15 +95,14 @@ export default function AdminCreateProduct() {
       }
       if (testerStatusRef.current.aopPanels === "saving") {
         throw new Error(
-          "Print panels are still uploading — wait for Design saved, then send the test order again.",
+          "Design is still saving — wait a moment, then send the test order again.",
         );
       }
-      if (
-        testerStatusRef.current.jobId &&
-        testerStatusRef.current.aopPanels !== "saved"
-      ) {
+      // AOP products report aopPanels saved/error after panel upload. Flat/phone
+      // products stay at "none" (no AOP panels) — that must not block test orders.
+      if (testerStatusRef.current.aopPanels === "error") {
         throw new Error(
-          "Print panels are not saved yet — wait for Design saved after your last edit, then try again.",
+          "Last design save failed — adjust placement once more, wait for Design saved, then try again.",
         );
       }
       const jobId = testerStatusRef.current.jobId;
@@ -204,16 +205,32 @@ export default function AdminCreateProduct() {
               ) : null}
               <Button
                 onClick={() => testOrderMutation.mutate(selectedProductTypeId)}
-                disabled={testOrderMutation.isPending}
+                disabled={
+                  testOrderMutation.isPending || testerPanelStatus === "saving"
+                }
                 data-testid="button-send-test-order"
               >
-                {testOrderMutation.isPending ? (
+                {testOrderMutation.isPending || testerPanelStatus === "saving" ? (
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                 ) : (
                   <FlaskConical className="h-4 w-4 mr-2" />
                 )}
-                {testOrderMutation.isPending ? "Sending Test Order…" : "Send a Test Order to Printify"}
+                {testOrderMutation.isPending
+                  ? "Sending Test Order…"
+                  : testerPanelStatus === "saving"
+                    ? "Design saving…"
+                    : "Send a Test Order to Printify"}
               </Button>
+              {testerPanelStatus === "saving" && (
+                <p className="text-xs text-muted-foreground w-full" data-testid="text-design-saving">
+                  Saving design for Printify…
+                </p>
+              )}
+              {testerPanelStatus === "saved" && testerHasDesign && (
+                <p className="text-xs text-muted-foreground w-full" data-testid="text-design-saved">
+                  Design saved — ready for test order.
+                </p>
+              )}
             </div>
           )}
         </div>

@@ -727,7 +727,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           className={
             // Phone cases are tall — square crop (lg:aspect-square) clips the bottom.
             edgeWrapMode
-              ? "relative flex max-h-[75vh] min-h-[320px] items-center justify-center bg-zinc-100 p-3 lg:max-h-[85vh] lg:p-4"
+              ? "relative flex max-h-[85vh] min-h-[360px] items-center justify-center bg-zinc-100 p-2 lg:max-h-[90vh] lg:p-3"
               : "relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 lg:max-h-none lg:aspect-square lg:p-4"
           }
           onClick={() => {
@@ -744,7 +744,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               ref={canvasRef}
               className={
                 edgeWrapMode
-                  ? "block max-h-[70vh] max-w-full h-auto w-auto rounded lg:max-h-[82vh]"
+                  ? "block max-h-[80vh] max-w-full h-auto w-auto rounded lg:max-h-[88vh]"
                   : "block max-h-[50vh] max-w-full h-auto w-auto rounded lg:max-h-[78vh]"
               }
               data-testid="flat-placer-canvas"

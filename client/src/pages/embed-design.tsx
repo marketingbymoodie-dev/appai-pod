@@ -5009,8 +5009,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       // Store jobId for mockup saving after fetchPrintifyMockups completes
       if (data.jobId) savedJobIdRef.current = data.jobId;
       savedJobShopRef.current = data.jobShop || null;
-      // New design → previous panel captures no longer describe what's on screen.
-      emitTesterDesignStatus({ jobId: data.jobId || null, aopPanels: 'none' });
+      // AOP needs panel upload before test order. Flat / Printify products have no
+      // AOP panels — mark saved immediately so Generator Tester test orders work.
+      emitTesterDesignStatus({
+        jobId: data.jobId || null,
+        aopPanels: useAopCustomizer ? "none" : "saved",
+      });
       lastFlatGalleryMockupKeyRef.current = "";
       // Reset pre-created shadow variant for this new design
       setPreShadowVariantId(null);
@@ -6492,58 +6496,142 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       return;
     }
 
+    const panelSaveShop = shopDomain || savedJobShopRef.current || adminTesterShopRef.current;
+    const shouldPersist =
+      (isStorefront || isAdminTester) && !!savedJobIdRef.current && !!panelSaveShop;
+    if (shouldPersist) {
+      emitTesterDesignStatus({
+        jobId: savedJobIdRef.current,
+        aopPanels: "saving",
+      });
+    }
+
     try {
       const [frontHosted, backHosted] = await Promise.all([
         ensureHostedUrl(frontDataUrl),
         backDataUrl ? ensureHostedUrl(backDataUrl) : Promise.resolve<string | null>(null),
       ]);
 
-      const images: { url: string; label: string }[] = [
+      const frontImages: { url: string; label: string }[] = [
         { url: frontHosted, label: "front" },
       ];
-      if (backHosted) images.push({ url: backHosted, label: "back" });
-      const urls = images.map((i) => i.url);
+      if (backHosted) frontImages.push({ url: backHosted, label: "back" });
+      flatFrontMockupsRef.current = frontImages;
 
-      setPrintifyMockupImages(images);
-      setPrintifyMockups(urls);
-      setSelectedMockupIndex(0);
+      // Keep any previously merged lifestyle/context shots (Horizontal-style gallery).
+      setPrintifyMockupImages((prev) => {
+        const seen = new Set(frontImages.map((i) => mockupImageUrlKey(i.url)));
+        const extras = prev.filter(
+          (img) =>
+            isPrintifyContextMockupLabel(img.label) ||
+            (!/^(front|back|mockup 1|mockup 2)$/i.test(img.label || "") &&
+              !seen.has(mockupImageUrlKey(img.url))),
+        );
+        return [...frontImages, ...extras].slice(0, 4);
+      });
+      setPrintifyMockups((prev) => {
+        const next = frontImages.map((i) => i.url);
+        const seen = new Set(next.map(mockupImageUrlKey));
+        for (const url of prev) {
+          const key = mockupImageUrlKey(url);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          next.push(url);
+          if (next.length >= 4) break;
+        }
+        return next;
+      });
+      setSelectedMockupIndex((prev) => (prev === 0 ? 1 : prev));
       setMockupFailed(false);
       setMockupError(null);
       setMockupsStale(false);
-      currentMockupColorRef.current = flatBlankColorId;
+      // Match the gallery raster cache key shape (defined later in this component).
+      currentMockupColorRef.current = `${flatBlankColorId}::${selectedSize ?? ""}::${flatFabricWeave ? "weave" : "plain"}`;
 
-      if (isStorefront && savedJobIdRef.current && shopDomain) {
+      if (shouldPersist && savedJobIdRef.current && panelSaveShop) {
         const jobId = savedJobIdRef.current;
-        await safeFetch(`${API_BASE}/api/storefront/save-state`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            jobId,
-            shop: shopDomain,
-            designState: {
-              flatPlacerState: result.state,
-              flatMockups: { front: frontHosted, back: backHosted },
-            },
-          }),
-        }).catch((e) => {
-          console.error("[FlatApply] Failed to persist designState:", e);
-        });
+        try {
+          await safeFetch(`${API_BASE}/api/storefront/save-state`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              jobId,
+              shop: panelSaveShop,
+              designState: {
+                flatPlacerState: result.state,
+                flatMockups: { front: frontHosted, back: backHosted },
+              },
+            }),
+          });
 
-        const mockupUrls = [frontHosted, backHosted].filter((u): u is string => !!u);
-        if (mockupUrls.length > 0) {
-          await persistFlatMockupsForGallery(
-            mockupUrls,
-            `${flatBlankColorId}::${selectedSize ?? ""}::apply`,
-          );
+          const mockupUrls = [frontHosted, backHosted].filter((u): u is string => !!u);
+          if (mockupUrls.length > 0) {
+            await persistFlatMockupsForGallery(
+              mockupUrls,
+              `${flatBlankColorId}::${selectedSize ?? ""}::apply`,
+            );
+          }
+          emitTesterDesignStatus({ jobId, aopPanels: "saved" });
+        } catch (e) {
+          console.error("[FlatApply] Failed to persist designState:", e);
+          emitTesterDesignStatus({ aopPanels: "error" });
         }
+      } else if (isAdminTester && savedJobIdRef.current) {
+        // Placement ready even if shop persist is unavailable — allow test order bake from job+state.
+        emitTesterDesignStatus({
+          jobId: savedJobIdRef.current,
+          aopPanels: "saved",
+        });
+      }
+
+      // Refresh lifestyle/context after apply (same as size/colour raster path).
+      if (
+        flatDecorMode &&
+        productTypeConfig?.hasPrintifyMockups &&
+        selectedSize &&
+        generatedDesign?.imageUrl &&
+        !useAopCustomizer
+      ) {
+        void fetchPrintifyMockups(
+          toAbsoluteImageUrl(generatedDesign.imageUrl),
+          productTypeConfig.id,
+          selectedSize,
+          selectedFrameColor || "default",
+          100,
+          50,
+          50,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { mergeContextOnly: true },
+        );
       }
     } catch (err: any) {
       console.error("[FlatApply] Upload failed:", err);
       setMockupError(err?.message || "Failed to apply design");
       setMockupFailed(true);
+      if (shouldPersist) emitTesterDesignStatus({ aopPanels: "error" });
       throw err;
     }
-  }, [isStorefront, shopDomain, selectedFrameColor, flatBlankColorId, selectedSize, persistFlatMockupsForGallery]);
+  }, [
+    isStorefront,
+    isAdminTester,
+    shopDomain,
+    selectedFrameColor,
+    flatBlankColorId,
+    flatFabricWeave,
+    selectedSize,
+    persistFlatMockupsForGallery,
+    emitTesterDesignStatus,
+    flatDecorMode,
+    productTypeConfig?.hasPrintifyMockups,
+    productTypeConfig?.id,
+    generatedDesign?.imageUrl,
+    useAopCustomizer,
+    fetchPrintifyMockups,
+  ]);
 
   const handleFlatPlacerChange = useCallback(
     (s: FlatProductPlacerState) => {
@@ -7520,11 +7608,43 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           artworkUrl,
         };
         const views = flatViewsForColor(manifest, flatBlankColorId);
+        const requestContextMerge = () => {
+          if (
+            !flatDecorMode ||
+            !productTypeConfig.hasPrintifyMockups ||
+            !selectedSize ||
+            useAopCustomizer
+          ) {
+            return;
+          }
+          void fetchPrintifyMockups(
+            artworkUrl,
+            productTypeConfig.id,
+            selectedSize,
+            selectedFrameColor || "default",
+            100,
+            50,
+            50,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            { mergeContextOnly: true },
+          );
+        };
         if (
           flatMockupBlankKey === currentMockupColorRef.current &&
           flatFrontMockupsRef.current.length >= views.length
         ) {
           setFlatMockupRefreshing(false);
+          // Front already cached — still pull lifestyle/context if the gallery is front-only.
+          const hasContext = printifyMockupImages.some((img) =>
+            isPrintifyContextMockupLabel(img.label),
+          );
+          if (!hasContext && printifyMockupImages.length <= views.length) {
+            requestContextMerge();
+          }
           return;
         }
         if (flatDecorMode) setFlatMockupRefreshing(true);
@@ -7580,28 +7700,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         );
 
         // Horizontal Printify path includes lifestyle/context; merge those onto flat front.
-        if (
-          flatDecorMode &&
-          productTypeConfig.hasPrintifyMockups &&
-          selectedSize &&
-          !useAopCustomizer
-        ) {
-          void fetchPrintifyMockups(
-            artworkUrl,
-            productTypeConfig.id,
-            selectedSize,
-            selectedFrameColor || "default",
-            100,
-            50,
-            50,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            { mergeContextOnly: true },
-          );
-        }
+        requestContextMerge();
       })();
     }, 200);
 
@@ -9118,86 +9217,81 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 </div>
               </div>
 
-              {/* Art Style + Size side-by-side on desktop, stacked on mobile */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {/* Style Selection */}
+              {/* Orientation on its own row so Art Style | Size|Model share one baseline */}
+              {(showSizeDrivenOrientationPills || showSquareOrientationPillOnly) && (
+                <div className="space-y-2">
+                  <Label>Orientation</Label>
+                  <div className="flex flex-wrap gap-2">
+                    {(
+                      [
+                        { id: "horizontal" as const, name: "Horizontal" },
+                        { id: "vertical" as const, name: "Vertical" },
+                        { id: "square" as const, name: "Square" },
+                      ] as const
+                    )
+                      .filter((choice) => {
+                        if (!availableCanvasOrientations.includes(choice.id)) return false;
+                        if (showSquareOrientationPillOnly) return choice.id === "square";
+                        return true;
+                      })
+                      .map((choice) => {
+                        const isSelected = sizeCanvasOrientation === choice.id;
+                        return (
+                          <button
+                            key={choice.id}
+                            type="button"
+                            onClick={() => applyCanvasOrientation(choice.id)}
+                            data-testid={`button-size-orientation-${choice.id}`}
+                            style={
+                              isSelected
+                                ? {
+                                    backgroundColor: "#111827",
+                                    color: "#ffffff",
+                                    border: "2px solid #111827",
+                                    borderRadius: "9999px",
+                                    padding: "5px 14px",
+                                    fontSize: "12px",
+                                    fontWeight: 600,
+                                    cursor: "pointer",
+                                    outline: "none",
+                                  }
+                                : {
+                                    backgroundColor: "transparent",
+                                    color: "#374151",
+                                    border: "1px solid #9ca3af",
+                                    borderRadius: "9999px",
+                                    padding: "5px 14px",
+                                    fontSize: "12px",
+                                    fontWeight: 500,
+                                    cursor: "pointer",
+                                    outline: "none",
+                                  }
+                            }
+                          >
+                            {choice.name}
+                          </button>
+                        );
+                      })}
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
                 {showPresetsParam && filteredStylePresets.length > 0 && (
-                  <div className="space-y-1" data-guide-box={guideActiveBox === 1 ? "active" : undefined}>
+                  <div data-guide-box={guideActiveBox === 1 ? "active" : undefined}>
                     <StyleSelector
                       stylePresets={filteredStylePresets}
                       selectedStyle={selectedPreset}
                       onStyleChange={(id) => { setSelectedPreset(id); setSelectedStyleOption(""); }}
                     />
                     {selectedPreset === "" && (
-                      <p className="text-xs text-muted-foreground">Please select an art style before generating</p>
+                      <p className="text-xs text-muted-foreground mt-1">Please select an art style before generating</p>
                     )}
                   </div>
                 )}
 
-                {/* Size Selector */}
                 {printSizes.length > 0 && (
-                  <div className="space-y-1" data-guide-box={guideActiveBox === 2 ? "active" : undefined}>
-                    {(showSizeDrivenOrientationPills || showSquareOrientationPillOnly) && (
-                      <div className="space-y-1.5 mb-2">
-                        <Label>Orientation</Label>
-                        <div className="flex flex-wrap gap-2">
-                          {(
-                            [
-                              { id: "horizontal" as const, name: "Horizontal" },
-                              { id: "vertical" as const, name: "Vertical" },
-                              { id: "square" as const, name: "Square" },
-                            ] as const
-                          )
-                            .filter((choice) => {
-                              if (!availableCanvasOrientations.includes(choice.id)) {
-                                return false;
-                              }
-                              if (showSquareOrientationPillOnly) {
-                                return choice.id === "square";
-                              }
-                              return true;
-                            })
-                            .map((choice) => {
-                            const isSelected = sizeCanvasOrientation === choice.id;
-                            return (
-                              <button
-                                key={choice.id}
-                                type="button"
-                                onClick={() => applyCanvasOrientation(choice.id)}
-                                data-testid={`button-size-orientation-${choice.id}`}
-                                style={
-                                  isSelected
-                                    ? {
-                                        backgroundColor: "#111827",
-                                        color: "#ffffff",
-                                        border: "2px solid #111827",
-                                        borderRadius: "9999px",
-                                        padding: "5px 14px",
-                                        fontSize: "12px",
-                                        fontWeight: 600,
-                                        cursor: "pointer",
-                                        outline: "none",
-                                      }
-                                    : {
-                                        backgroundColor: "transparent",
-                                        color: "#374151",
-                                        border: "1px solid #9ca3af",
-                                        borderRadius: "9999px",
-                                        padding: "5px 14px",
-                                        fontSize: "12px",
-                                        fontWeight: 500,
-                                        cursor: "pointer",
-                                        outline: "none",
-                                      }
-                                }
-                              >
-                                {choice.name}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
+                  <div data-guide-box={guideActiveBox === 2 ? "active" : undefined}>
                     <SizeSelector
                       sizes={orientationFilteredSizes}
                       selectedSize={selectedSize}
@@ -9236,7 +9330,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         }
                         const flatOnTheFly = usesFlatOnTheFlyPreview;
                         if (!flatOnTheFly) {
-                        setTransform({ scale: defaultZoom, x: 50, y: 50 });
+                          setTransform({ scale: defaultZoom, x: 50, y: 50 });
                         }
                       }}
                       prices={buildPriceMap()}
@@ -9249,77 +9343,70 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   </div>
                 )}
 
-                {(showFrameColorSelector || supportsPrintPlacementSelection) && (
-                  <div className={showPresetsParam && filteredStylePresets.length > 0 && printSizes.length > 0 ? "sm:col-span-2" : ""}>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {showFrameColorSelector && (
-                        <FrameColorSelector
-                          frameColors={frameColorObjects}
-                          selectedFrameColor={selectedFrameColor}
-                          onFrameColorChange={setSelectedFrameColor}
-                          colorLabel={productTypeConfig?.colorLabel || "Color"}
-                          variantMap={productTypeConfig?.variantMap}
-                          selectedSize={selectedSize}
-                        />
-                      )}
-                      {supportsPrintPlacementSelection && (
-                        <div className="space-y-2">
-                          <Label htmlFor="print-placement-select" className="uppercase">
-                            Print Side
-                          </Label>
-                          <Select
-                            value={printPlacement}
-                            onValueChange={(value) => {
-                              const nextPlacement = value as "front" | "back" | "both";
-                              setPrintPlacement(nextPlacement);
-                              if (!generatedDesign?.imageUrl || !productTypeConfig || !selectedSize || useAopCustomizer) {
-                                return;
-                              }
-                              const flatOnTheFly = usesFlatOnTheFlyPreview;
-                              if (flatOnTheFly) {
-                                setFlatPlacerState((prev) => ({
-                                  view: prev?.view ?? "front",
-                                  placements: prev?.placements ?? {
-                                    front: { scale: 1, offsetX: 0, offsetY: 0 },
-                                    back: { scale: 1, offsetX: 0, offsetY: 0 },
-                                  },
-                                  artworkUrl: prev?.artworkUrl ?? (generatedDesign?.imageUrl ? toAbsoluteImageUrl(generatedDesign.imageUrl) : null),
-                                  enabled: {
-                                    front: nextPlacement === "front" || nextPlacement === "both",
-                                    back: nextPlacement === "back" || nextPlacement === "both",
-                                  },
-                                }));
-                                currentMockupColorRef.current = "";
-                                lastFlatGalleryMockupKeyRef.current = "";
-                                return;
-                              }
-                                fetchPrintifyMockups(
-                                  toAbsoluteImageUrl(generatedDesign.imageUrl),
-                                  productTypeConfig.id,
-                                  selectedSize,
-                                  selectedFrameColor || "default",
-                                  transform.scale,
-                                  transform.x,
-                                  transform.y,
-                                  undefined,
-                                  undefined,
-                                  undefined,
-                                  nextPlacement,
-                                );
-                            }}
-                          >
-                            <SelectTrigger id="print-placement-select" className="h-11">
-                              <SelectValue placeholder="Select print side" />
-                            </SelectTrigger>
-                            <SelectContent position="popper">
-                              <SelectItem value="front">Print on Front Only</SelectItem>
-                              <SelectItem value="back">Print on Back Only</SelectItem>
-                              <SelectItem value="both">Print on Both Sides</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      )}
-                    </div>
+                {showFrameColorSelector && (
+                  <FrameColorSelector
+                    frameColors={frameColorObjects}
+                    selectedFrameColor={selectedFrameColor}
+                    onFrameColorChange={setSelectedFrameColor}
+                    colorLabel={productTypeConfig?.colorLabel || "Color"}
+                    variantMap={productTypeConfig?.variantMap}
+                    selectedSize={selectedSize}
+                  />
+                )}
+
+                {supportsPrintPlacementSelection && (
+                  <div className="space-y-2">
+                    <Label htmlFor="print-placement-select">Print Side</Label>
+                    <Select
+                      value={printPlacement}
+                      onValueChange={(value) => {
+                        const nextPlacement = value as "front" | "back" | "both";
+                        setPrintPlacement(nextPlacement);
+                        if (!generatedDesign?.imageUrl || !productTypeConfig || !selectedSize || useAopCustomizer) {
+                          return;
+                        }
+                        const flatOnTheFly = usesFlatOnTheFlyPreview;
+                        if (flatOnTheFly) {
+                          setFlatPlacerState((prev) => ({
+                            view: prev?.view ?? "front",
+                            placements: prev?.placements ?? {
+                              front: { scale: 1, offsetX: 0, offsetY: 0 },
+                              back: { scale: 1, offsetX: 0, offsetY: 0 },
+                            },
+                            artworkUrl: prev?.artworkUrl ?? (generatedDesign?.imageUrl ? toAbsoluteImageUrl(generatedDesign.imageUrl) : null),
+                            enabled: {
+                              front: nextPlacement === "front" || nextPlacement === "both",
+                              back: nextPlacement === "back" || nextPlacement === "both",
+                            },
+                          }));
+                          currentMockupColorRef.current = "";
+                          lastFlatGalleryMockupKeyRef.current = "";
+                          return;
+                        }
+                        fetchPrintifyMockups(
+                          toAbsoluteImageUrl(generatedDesign.imageUrl),
+                          productTypeConfig.id,
+                          selectedSize,
+                          selectedFrameColor || "default",
+                          transform.scale,
+                          transform.x,
+                          transform.y,
+                          undefined,
+                          undefined,
+                          undefined,
+                          nextPlacement,
+                        );
+                      }}
+                    >
+                      <SelectTrigger id="print-placement-select" className="h-11">
+                        <SelectValue placeholder="Select print side" />
+                      </SelectTrigger>
+                      <SelectContent position="popper">
+                        <SelectItem value="front">Print on Front Only</SelectItem>
+                        <SelectItem value="back">Print on Back Only</SelectItem>
+                        <SelectItem value="both">Print on Both Sides</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </div>
                 )}
               </div>

@@ -1454,8 +1454,9 @@ function buildBlankHardwarePunchMask(
   }
   pmCtx.putImageData(punchData, 0, 0);
 
-  // Thin outer rim — case bevel over artwork (rounded, follows mask silhouette).
-  const outerDraw = scaleRectAroundCenter(maskDraw, 1.012);
+  // Thin outer rim — case bevel over artwork. Keep tiny so corners don't look like
+  // missing art where plastic reflections should read instead.
+  const outerDraw = scaleRectAroundCenter(maskDraw, 1.003);
   pmCtx.globalCompositeOperation = "source-over";
   pmCtx.fillStyle = "#ffffff";
   drawEdgeWrapMaskAt(pmCtx, mask, outerDraw, view, maskAligned, crop, drawAssetScaled);

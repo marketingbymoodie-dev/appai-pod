@@ -50,7 +50,7 @@ export function FrameColorSelector({
 
   return (
     <div className="space-y-2">
-      {showLabel && <Label className="uppercase">{colorLabel}</Label>}
+      {showLabel && <Label>{colorLabel}</Label>}
       <Select value={selectedFrameColor} onValueChange={onFrameColorChange}>
         <SelectTrigger data-testid="select-frame-color" className="h-11">
           <SelectValue placeholder={`Select ${colorLabel.toLowerCase()}`}>
