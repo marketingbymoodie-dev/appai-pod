@@ -177,6 +177,43 @@ export function sizeIdLooksLandscape(sizeId: string | null | undefined): boolean
   return w > 0 && h > 0 && w > h;
 }
 
+/**
+ * Swap WxH in a decor size id so landscape sizes can reuse a portrait harvest
+ * (and vice versa): `24x18` → `18x24`, `24x18:black` → `18x24:black`.
+ */
+export function swapDecorSizeDimensionId(sizeId: string | null | undefined): string | null {
+  if (!sizeId) return null;
+  const raw = String(sizeId).trim();
+  const dim = extractDimensionalKey(raw);
+  if (!dim) return null;
+  const [w, h] = dim.split("x").map(Number);
+  if (!(w > 0 && h > 0) || w === h) return null;
+  const swapped = `${h}x${w}`;
+  const colon = raw.indexOf(":");
+  const suffix = colon >= 0 ? raw.slice(colon) : "";
+  return `${swapped}${suffix}`;
+}
+
+/**
+ * Framed posters / pillows / decorPerSize — shared HFP+VFP gate for flat placer
+ * and lifestyle (name match covers mis-typed designerType on Horizontal imports).
+ */
+export function productLooksLikeFramedDecor(opts: {
+  designerType?: string | null;
+  name?: string | null;
+  decorPerSize?: boolean | null;
+}): boolean {
+  if (opts.decorPerSize) return true;
+  const dt = String(opts.designerType || "").toLowerCase();
+  if (dt === "framed-print" || dt === "pillow") return true;
+  const n = String(opts.name || "").toLowerCase();
+  if (!n) return false;
+  if (/\b(hoodie|sweatshirt|apparel|t-?shirt|tee|mug|tumbler|legging|phone)\b/.test(n)) {
+    return false;
+  }
+  return /\b(framed|frame|poster|canvas print)\b/.test(n);
+}
+
 export type CanvasOrientation = "horizontal" | "vertical" | "square";
 
 /** Classify a w:h aspect string into horizontal / vertical / square. */

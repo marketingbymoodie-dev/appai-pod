@@ -12,6 +12,8 @@ import {
   sizesHaveMixedCanvasOrientation,
   looksLikePhoneModelName,
   sizeIdLooksLandscape,
+  swapDecorSizeDimensionId,
+  productLooksLikeFramedDecor,
   sizesLookLikePhoneModels,
   sortDimensionalSizesAscending,
   styleChoicesIncludeCanvasOrientation,
@@ -31,6 +33,29 @@ describe("productVariantOptions", () => {
     expect(sizeIdLooksLandscape('20" x 16"')).toBe(true);
     expect(sizeIdLooksLandscape("16x20")).toBe(false);
     expect(sizeIdLooksLandscape("m")).toBe(false);
+  });
+
+  it("swapDecorSizeDimensionId flips WxH and keeps colour suffix", () => {
+    expect(swapDecorSizeDimensionId("24x18")).toBe("18x24");
+    expect(swapDecorSizeDimensionId("24x18:black")).toBe("18x24:black");
+    expect(swapDecorSizeDimensionId("16x16")).toBeNull();
+    expect(swapDecorSizeDimensionId("m")).toBeNull();
+  });
+
+  it("productLooksLikeFramedDecor matches HFP/VFP names and designerType", () => {
+    expect(
+      productLooksLikeFramedDecor({ designerType: "framed-print", name: "Anything" }),
+    ).toBe(true);
+    expect(
+      productLooksLikeFramedDecor({
+        designerType: "generic",
+        name: "Horizontal Framed Poster",
+      }),
+    ).toBe(true);
+    expect(
+      productLooksLikeFramedDecor({ designerType: "generic", name: "Zip Hoodie" }),
+    ).toBe(false);
+    expect(productLooksLikeFramedDecor({ decorPerSize: true })).toBe(true);
   });
 
   it("detects phone model size lists", () => {

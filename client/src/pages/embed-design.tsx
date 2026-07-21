@@ -63,6 +63,7 @@ import {
   listCanvasOrientationsInSizes,
   parseCanvasOrientationFromLabel,
   pickSizeForCanvasOrientation,
+  productLooksLikeFramedDecor,
   looksLikePhoneModelName,
   resolveFrameColorForSize,
   resolveSizeAspectRatio,
@@ -1554,9 +1555,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     const framedOrDecor = !!(
       cal &&
       !cal.edgeWrap &&
-      (cal.decorPerSize ||
-        productTypeConfig?.designerType === "framed-print" ||
-        productTypeConfig?.designerType === "pillow")
+      productLooksLikeFramedDecor({
+        designerType: productTypeConfig?.designerType,
+        name: productTypeConfig?.name,
+        decorPerSize: cal.decorPerSize,
+      })
     );
     if (framedOrDecor) return true;
     if (mode === "printify") return false;
@@ -1566,6 +1569,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     productTypeConfig?.onTheFlyTier,
     productTypeConfig?.flatCalibration,
     productTypeConfig?.designerType,
+    productTypeConfig?.name,
   ]);
 
   // When OPTION duplicates SIZE (tapestry orientations), keep frameColor aligned for variantMap.
@@ -2135,9 +2139,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     productTypeConfig?.flatCalibration &&
     !flatEdgeWrapMode &&
     !isApparel &&
-    (productTypeConfig.flatCalibration.decorPerSize ||
-      productTypeConfig.designerType === "framed-print" ||
-      productTypeConfig.designerType === "pillow")
+    productLooksLikeFramedDecor({
+      designerType: productTypeConfig.designerType,
+      name: productTypeConfig.name,
+      decorPerSize: productTypeConfig.flatCalibration.decorPerSize,
+    })
   );
   const flatFabricWeave = resolveFabricWeaveTexture({
     fabricWeaveTexture: productTypeConfig?.fabricWeaveTexture,

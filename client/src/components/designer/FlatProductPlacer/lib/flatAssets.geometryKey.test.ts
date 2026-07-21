@@ -62,4 +62,11 @@ describe("findGeometryBlankKey / decorPerSize size-only lookup", () => {
     expect(calib?.maskUrl).toBe("https://example.com/20x30-mask.png");
     expect(calib?.printFileDims).toEqual({ width: 4800, height: 7200 });
   });
+
+  it("falls back to dimension-swapped size for landscape HFP keys", () => {
+    const m = posterManifest();
+    // 30x20 is landscape twin of harvested 20x30
+    expect(findGeometryBlankKey(m, "30x20")).toBe("20x30:black");
+    expect(findGeometryBlankKey(m, "30x20:black")).toBe("20x30:black");
+  });
 });

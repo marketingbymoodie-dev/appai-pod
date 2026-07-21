@@ -1,4 +1,5 @@
 import { API_BASE } from "@/lib/urlBase";
+import { swapDecorSizeDimensionId } from "@shared/productVariantOptions";
 import type { FlatCalibrationManifest, FlatViewCalibration } from "@/pages/embed-design";
 import type { CalibratorLayerAdjust, FlatRenderInput } from "./flatRender";
 
@@ -63,6 +64,7 @@ function findBlankKey(manifest: FlatCalibrationManifest, id: string): string | n
 export function findGeometryBlankKey(
   manifest: FlatCalibrationManifest,
   id: string,
+  opts?: { allowDimensionSwap?: boolean },
 ): string | null {
   if (!id) return null;
   const geo = (manifest as FlatCalibrationManifestWithGeometry).geometryByBlank || {};
@@ -88,6 +90,14 @@ export function findGeometryBlankKey(
     if (!flatBlankHasViews(manifest.blanks?.[k])) continue;
     const kn = normalizeFlatColorKey(k);
     if (kn === norm || kn.startsWith(`${norm}-`)) return k;
+  }
+
+  // Landscape HFP size with only portrait harvest (24x18 → try 18x24:*).
+  if (opts?.allowDimensionSwap !== false) {
+    const swapped = swapDecorSizeDimensionId(id);
+    if (swapped && swapped !== id) {
+      return findGeometryBlankKey(manifest, swapped, { allowDimensionSwap: false });
+    }
   }
   return null;
 }

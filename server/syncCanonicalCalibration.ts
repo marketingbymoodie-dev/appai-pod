@@ -1,6 +1,7 @@
 /**
  * Copy platform canonical flat calibration onto a merchant product type when missing.
  */
+import { productLooksLikeFramedDecor } from "@shared/productVariantOptions";
 import {
   isUsableFlatCalibrationManifest,
   merchantManifestFromCanonical,
@@ -108,12 +109,28 @@ export async function prepareProductTypeForDesigner(
     isAllOverPrint?: boolean | null;
     panelMappingTemplate?: string | null;
     flatCalibrationStatus?: string | null;
+    designerType?: string | null;
   } | null | undefined,
   options?: { allowUnpublishedHarvest?: boolean },
 ): Promise<typeof productType> {
   if (!productType) return productType;
   const flatSync = await syncProductTypeFromCanonicalCalibration(productType, options);
   let current = flatSync.productType ?? productType;
+
+  // HFP imports sometimes land as designerType=generic — heal so placer/lifestyle match VFP.
+  const dt = String((current as { designerType?: string | null }).designerType || "").toLowerCase();
+  if (
+    (!dt || dt === "generic") &&
+    productLooksLikeFramedDecor({
+      designerType: dt,
+      name: current.name,
+    })
+  ) {
+    await storage.updateProductType(current.id, { designerType: "framed-print" });
+    const healed = await storage.getProductType(current.id);
+    if (healed) current = healed;
+  }
+
   const aopSync = await syncProductTypeFromPlatformCatalogAop(current);
   return aopSync.productType ?? current;
 }

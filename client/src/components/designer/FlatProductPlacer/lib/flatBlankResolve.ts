@@ -1,4 +1,5 @@
 import type { FlatCalibrationManifest } from "@/pages/embed-design";
+import { swapDecorSizeDimensionId } from "@shared/productVariantOptions";
 
 function normalizeFlatColorKey(id: string): string {
   return id.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
@@ -114,8 +115,20 @@ export function resolveFlatBlankColorId(
 
   if (!apparelColorOnly && opts.sizeId && opts.frameColorId) {
     candidates.push(`${opts.sizeId}:${opts.frameColorId}`, `${opts.frameColorId}:${opts.sizeId}`);
+    // HFP landscape sizes often need the swapped portrait harvest key (18x24 for 24x18).
+    const swappedSize = swapDecorSizeDimensionId(opts.sizeId);
+    if (swappedSize) {
+      candidates.push(
+        `${swappedSize}:${opts.frameColorId}`,
+        `${opts.frameColorId}:${swappedSize}`,
+      );
+    }
   }
-  if (!apparelColorOnly && opts.sizeId) candidates.push(opts.sizeId);
+  if (!apparelColorOnly && opts.sizeId) {
+    candidates.push(opts.sizeId);
+    const swappedSize = swapDecorSizeDimensionId(opts.sizeId);
+    if (swappedSize) candidates.push(swappedSize);
+  }
   if (opts.frameColorId) candidates.push(opts.frameColorId);
 
   for (const id of candidates) {
