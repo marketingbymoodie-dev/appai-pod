@@ -790,7 +790,8 @@ export function resolveFlatBlankColorId(
     for (const k of Object.keys(manifest.blanks || {})) {
       if (!blankKeyMatchesManifest(manifest, k)) continue;
       const kn = normalizeBlankKey(k);
-      if (kn === colorNorm || kn.endsWith(`:${colorNorm}`)) return k;
+      // normalizeBlankKey turns `16x20:white` into `16x20-white` — match `-color` suffix.
+      if (kn === colorNorm || kn.endsWith(`-${colorNorm}`)) return k;
     }
   }
 

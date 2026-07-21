@@ -174,10 +174,13 @@ export function resolveFlatBlank(
   const hit = colorId ? findBlankKey(manifest, colorId) : null;
   if (hit && flatBlankHasViews(blanks[hit])) return blanks[hit];
   if (colorId) {
-    if (!manifestHasMultipleColorBlanks(manifest)) {
-      const fallbackKey = firstUsableBlankKey(manifest);
-      if (fallbackKey && flatBlankHasViews(blanks[fallbackKey])) return blanks[fallbackKey];
+    // decorPerSize / multi-colour: never silently swap in another frame colour's blank
+    // (that is what made White selection keep showing a Black frame).
+    if (manifest.decorPerSize || manifestHasMultipleColorBlanks(manifest)) {
+      return {};
     }
+    const fallbackKey = firstUsableBlankKey(manifest);
+    if (fallbackKey && flatBlankHasViews(blanks[fallbackKey])) return blanks[fallbackKey];
     return {};
   }
   for (const k of Object.keys(blanks)) {

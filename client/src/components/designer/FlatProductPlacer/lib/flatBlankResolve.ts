@@ -38,11 +38,47 @@ export function manifestHasMultipleColorBlanks(manifest: FlatCalibrationManifest
   return true;
 }
 
-/** True when every blank key is `{apparelSize}:{color}` (legacy mis-harvested sweaters). */
-function blanksLookLikeApparelSizeColor(manifest: FlatCalibrationManifest): boolean {
+const APPAREL_SIZE_SEGMENTS = new Set([
+  "xxs",
+  "xs",
+  "s",
+  "m",
+  "l",
+  "xl",
+  "2xl",
+  "3xl",
+  "4xl",
+  "5xl",
+  "xxl",
+  "xxxl",
+]);
+
+/** Left side of `size:color` looks like apparel (S/M/L), not decor inches (16x20). */
+function isApparelSizeSegment(seg: string): boolean {
+  const raw = seg.toLowerCase().trim();
+  if (!raw) return false;
+  // Dimensional inch tokens: 16x20, 11x8, 16''×20'', etc.
+  if (/\d+\s*[x×]\s*\d+/i.test(raw)) return false;
+  const compact = raw.replace(/[^a-z0-9]/g, "");
+  return APPAREL_SIZE_SEGMENTS.has(compact);
+}
+
+/**
+ * True when every blank key is `{apparelSize}:{color}` (legacy mis-harvested sweaters).
+ * Must NOT treat framed-poster `16x20:white` keys as apparel — that skips size:color
+ * candidates and breaks frame-colour swaps.
+ */
+export function blanksLookLikeApparelSizeColor(manifest: FlatCalibrationManifest): boolean {
   const keys = Object.keys(manifest.blanks || {}).filter((k) => blankKeyMatches(manifest, k));
   if (keys.length === 0) return false;
-  return keys.every((k) => /^[a-z0-9]+:[a-z0-9_]+$/i.test(k));
+  return keys.every((k) => {
+    const colon = k.indexOf(":");
+    if (colon <= 0 || colon !== k.lastIndexOf(":")) return false;
+    const sizeSeg = k.slice(0, colon);
+    const colorSeg = k.slice(colon + 1);
+    if (!colorSeg || !/^[a-z0-9_]+$/i.test(colorSeg)) return false;
+    return isApparelSizeSegment(sizeSeg);
+  });
 }
 
 /** Match harvested blank keys by frame colour when size×colour keys omit the current size. */

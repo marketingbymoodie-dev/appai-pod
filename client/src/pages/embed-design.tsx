@@ -2349,11 +2349,29 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       return null;
     }
     const manifest = productTypeConfig?.flatCalibration;
+    // Framed posters harvest `size:color` blanks — never pin a static catalog photo
+    // over the frame-colour blank (that kept White selection showing a Black frame).
+    if (manifest?.decorPerSize) {
+      const sizeNorm = normalizeFlatColorKey(selectedSize);
+      const hasSizeColorBlank = Object.keys(manifest.blanks || {}).some((k) => {
+        if (k === "default" || !k.includes(":")) return false;
+        const sizePart = k.slice(0, k.indexOf(":"));
+        return (
+          sizePart === selectedSize || normalizeFlatColorKey(sizePart) === sizeNorm
+        );
+      });
+      if (hasSizeColorBlank) return null;
+    }
     if (manifest?.blanks) {
       const sizeNorm = normalizeFlatColorKey(selectedSize);
       const hasOrientationBlank = Object.keys(manifest.blanks).some((k) => {
         if (k === "default") return false;
-        return k === selectedSize || normalizeFlatColorKey(k) === sizeNorm;
+        if (k === selectedSize || normalizeFlatColorKey(k) === sizeNorm) return true;
+        if (!k.includes(":")) return false;
+        const sizePart = k.slice(0, k.indexOf(":"));
+        return (
+          sizePart === selectedSize || normalizeFlatColorKey(sizePart) === sizeNorm
+        );
       });
       if (hasOrientationBlank) return null;
     }
@@ -3950,14 +3968,25 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           const contextImgs = absImages.filter((img: { label: string }) =>
             isPrintifyContextMockupLabel(img.label),
           );
-          const extras =
+          let extras =
             contextImgs.length > 0
               ? contextImgs.slice(0, 2)
               : absImages
                   .filter((img: { label: string }) => !/^(front|mockup 1)$/i.test(img.label || ""))
                   .slice(0, 2);
+          // Printify often labels every camera "front" — still take distinct extra URLs.
+          if (extras.length === 0 && absImages.length > 1) {
+            const frontKey = mockupImageUrlKey(absImages[0]?.url || "");
+            extras = absImages
+              .slice(1)
+              .filter((img: { url: string }) => mockupImageUrlKey(img.url) !== frontKey)
+              .slice(0, 2);
+          }
           if (extras.length === 0) {
-            console.log('[Mockups] Context merge: no lifestyle/context views from Printify');
+            console.log(
+              '[Mockups] Context merge: no lifestyle/context views from Printify',
+              absImages.map((i: { label: string }) => i.label),
+            );
             return;
           }
           const fronts =
@@ -7492,7 +7521,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               decorMode: flatDecorMode,
               fabricWeave: flatFabricWeave,
               landscapeOrientation: flatLandscapeOrientation,
-              blankUrlOverride: orientationBlankOverride,
+              blankUrlOverride: flatDecorMode ? null : orientationBlankOverride,
             },
           );
           if (cancelled || !dataUrl) continue;
@@ -7509,6 +7538,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         if (cancelled) return;
         if (images.length === 0) {
           console.warn('[Mockups] Flat mockup raster failed for', flatBlankColorId);
+          // Do not keep showing the previous colour/size mockup after a failed swap.
+          flatFrontMockupsRef.current = [];
+          setPrintifyMockupImages([]);
+          setPrintifyMockups([]);
           setFlatRenderFailed(true);
           setMockupsStale(true);
           setFlatMockupRefreshing(false);
@@ -9733,7 +9766,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     decorMode={flatDecorMode}
                     fabricWeave={flatFabricWeave}
                     landscapeOrientation={flatLandscapeOrientation}
-                    blankUrlOverride={orientationBlankOverride}
+                    // Never pin catalog orientation photos over decorPerSize frame-colour blanks.
+                    blankUrlOverride={flatDecorMode ? null : orientationBlankOverride}
                     skipInitialAutoApply={!!flatPlacerState}
                   />
                 </div>
