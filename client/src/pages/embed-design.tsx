@@ -1545,14 +1545,27 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         productTypeConfig?.onTheFlyTier === "mesh") &&
       productTypeConfig?.flatCalibration
     );
+    if (!hasFlatAssets) return false;
     const mode = productTypeConfig?.effectiveStorefrontMockupMode;
-    if (mode === "printify" || mode === "aop") return false;
-    if (mode === "flat") return hasFlatAssets;
-    return hasFlatAssets;
+    if (mode === "aop") return false;
+    // HFP/VFP/pillows with calibration: always use VFP-style placer + local mockups
+    // even when storefrontMockupMode was set to "printify" (that left HFP on Zoom-only).
+    const cal = productTypeConfig?.flatCalibration;
+    const framedOrDecor = !!(
+      cal &&
+      !cal.edgeWrap &&
+      (cal.decorPerSize ||
+        productTypeConfig?.designerType === "framed-print" ||
+        productTypeConfig?.designerType === "pillow")
+    );
+    if (framedOrDecor) return true;
+    if (mode === "printify") return false;
+    return true;
   }, [
     productTypeConfig?.effectiveStorefrontMockupMode,
     productTypeConfig?.onTheFlyTier,
     productTypeConfig?.flatCalibration,
+    productTypeConfig?.designerType,
   ]);
 
   // When OPTION duplicates SIZE (tapestry orientations), keep frameColor aligned for variantMap.
@@ -5089,9 +5102,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       // Store jobId for mockup saving after fetchPrintifyMockups completes
       if (data.jobId) savedJobIdRef.current = data.jobId;
       savedJobShopRef.current = data.jobShop || null;
-      // New artwork — drop prior flat placement / fronts so Apply isn't skipped and
-      // context merge doesn't reuse stale fronts from the previous design.
-      setFlatPlacerState(null);
+      // New artwork — seed framed default scale into placer (110% → 1.1) so bake
+      // matches what the gallery used to show as Zoom; clear stale fronts.
       flatFrontMockupsRef.current = [];
       lastTesterFlatAutoFlushJobRef.current = null;
       testerVariantSyncSkipRef.current = true;
@@ -5100,6 +5112,22 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       setMockupsStale(false);
       // Generate sets transform — don't treat that as a merchant zoom edit.
       suppressMockupStaleRef.current = true;
+      if (usesFlatOnTheFlyPreview) {
+        const seedScale = Math.max(0.05, Math.min(2.5, zoomDefault / 100));
+        const artworkAbs = toAbsoluteImageUrl(imageUrl);
+        setFlatPlacerState({
+          view: "front",
+          placements: {
+            front: { scale: seedScale, offsetX: 0, offsetY: 0 },
+            back: { scale: seedScale, offsetX: 0, offsetY: 0 },
+          },
+          enabled: { front: true, back: false },
+          linkSides: true,
+          artworkUrl: artworkAbs,
+        });
+      } else {
+        setFlatPlacerState(null);
+      }
       // AOP needs panel upload; flat/mesh auto-Applies in tester (status → saved).
       // Other Printify products can mark saved immediately after generate.
       emitTesterDesignStatus({
@@ -5587,7 +5615,24 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         if (arW && arH && arW > arH) zoomDefault = 110;
       }
       setTransform({ scale: zoomDefault, x: 50, y: 50 });
-      
+      flatFrontMockupsRef.current = [];
+      if (usesFlatOnTheFlyPreview) {
+        const seedScale = Math.max(0.05, Math.min(2.5, zoomDefault / 100));
+        const artworkAbs = toAbsoluteImageUrl(importedImageUrl);
+        setFlatPlacerState({
+          view: "front",
+          placements: {
+            front: { scale: seedScale, offsetX: 0, offsetY: 0 },
+            back: { scale: seedScale, offsetX: 0, offsetY: 0 },
+          },
+          enabled: { front: true, back: false },
+          linkSides: true,
+          artworkUrl: artworkAbs,
+        });
+      } else {
+        setFlatPlacerState(null);
+      }
+
       // Persist design state to sessionStorage so refresh doesn't lose it.
       if (!isAdminTester) {
         try {

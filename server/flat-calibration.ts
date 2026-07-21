@@ -24,6 +24,7 @@ import {
   extractDimensionalKey,
   frameColorsRedundantWithSizes,
   looksLikePhoneModelName,
+  sizeIdLooksLandscape,
 } from "@shared/productVariantOptions";
 export { looksLikePhoneModelName };
 import { normalizePrintifyColorKey, slugPrintifyColorId } from "@shared/printifyColorSlug";
@@ -824,45 +825,39 @@ export function resolveFlatBlankColorId(
 export function resolveFlatPrintFileDims(
   manifest: FlatCalibrationManifest,
   view: ViewName,
-  opts: { sizeId?: string; frameColorId?: string },
+  opts: { sizeId?: string; frameColorId?: string; landscapeOrientation?: boolean },
 ): { width: number; height: number } | null {
   const blankKey = resolveFlatBlankColorId(manifest, opts);
   const override = manifest.geometryByBlank?.[blankKey]?.[view]?.printFileDims;
   const base = manifest.views[view]?.printFileDims;
   const dims = override ?? base;
   if (!dims?.width || !dims.height) return null;
-  return { width: dims.width, height: dims.height };
+  let width = dims.width;
+  let height = dims.height;
+  // HFP: harvest may store portrait printFileDims; client orients for landscape sizes.
+  // Bake must match so cover-fit does not letterbox.
+  const wantLandscape =
+    opts.landscapeOrientation === true ||
+    (opts.landscapeOrientation !== false && sizeIdLooksLandscape(opts.sizeId));
+  if (wantLandscape && width < height) {
+    return { width: height, height: width };
+  }
+  return { width, height };
 }
 
-/** Placement anchor for print-file bake — matches client preview semantics. */
+/**
+ * Placement anchor for print-file bake.
+ * Framed decor: full print canvas (Printify submits bake at scale=1 full-bleed).
+ * Do NOT inset mockup-space visibleRect into printFileDims — that letterboxed art.
+ */
 export function resolveFlatBakePlacementRect(
   manifest: FlatCalibrationManifest,
   view: ViewName,
-  opts: { sizeId?: string; frameColorId?: string },
+  opts: { sizeId?: string; frameColorId?: string; landscapeOrientation?: boolean },
 ): Rect | null {
   const dims = resolveFlatPrintFileDims(manifest, view, opts);
   if (!dims) return null;
   const { width: printW, height: printH } = dims;
-
-  if (manifest.edgeWrap) {
-    return { x: 0, y: 0, width: printW, height: printH };
-  }
-
-  if (manifest.decorPerSize) {
-    const blankKey = resolveFlatBlankColorId(manifest, opts);
-    const base = manifest.views[view];
-    const override = manifest.geometryByBlank?.[blankKey]?.[view];
-    const nr = override?.visibleRectNormalized ?? base?.visibleRectNormalized;
-    if (nr) {
-      return {
-        x: nr.x * printW,
-        y: nr.y * printH,
-        width: nr.width * printW,
-        height: nr.height * printH,
-      };
-    }
-  }
-
   return { x: 0, y: 0, width: printW, height: printH };
 }
 

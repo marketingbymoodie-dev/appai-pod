@@ -11,6 +11,7 @@ import {
   resolveSizeAspectRatio,
   sizesHaveMixedCanvasOrientation,
   looksLikePhoneModelName,
+  sizeIdLooksLandscape,
   sizesLookLikePhoneModels,
   sortDimensionalSizesAscending,
   styleChoicesIncludeCanvasOrientation,
@@ -23,6 +24,13 @@ describe("productVariantOptions", () => {
     expect(extractDimensionalKey("26''_×_36''")).toBe("26x36");
     expect(extractDimensionalKey("36''_×_26''")).toBe("36x26");
     expect(extractDimensionalKey("104''_x_88\"")).toBe("104x88");
+  });
+
+  it("sizeIdLooksLandscape detects WxH orientation", () => {
+    expect(sizeIdLooksLandscape("36x24")).toBe(true);
+    expect(sizeIdLooksLandscape('20" x 16"')).toBe(true);
+    expect(sizeIdLooksLandscape("16x20")).toBe(false);
+    expect(sizeIdLooksLandscape("m")).toBe(false);
   });
 
   it("detects phone model size lists", () => {

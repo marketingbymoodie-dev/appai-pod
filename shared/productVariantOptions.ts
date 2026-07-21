@@ -168,6 +168,15 @@ export function isLandscapeSizeAspect(aspect: string): boolean {
   return w > 0 && h > 0 && w > h;
 }
 
+/** True when a size id/name like `36x24` / `20" x 16"` is landscape. */
+export function sizeIdLooksLandscape(sizeId: string | null | undefined): boolean {
+  if (!sizeId) return false;
+  const dim = extractDimensionalKey(sizeId);
+  if (!dim) return false;
+  const [w, h] = dim.split("x").map(Number);
+  return w > 0 && h > 0 && w > h;
+}
+
 export type CanvasOrientation = "horizontal" | "vertical" | "square";
 
 /** Classify a w:h aspect string into horizontal / vertical / square. */
