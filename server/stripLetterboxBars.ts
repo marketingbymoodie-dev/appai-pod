@@ -69,9 +69,13 @@ function rowStats(
   return { meanLuma, variance: sumSq / n - meanLuma * meanLuma };
 }
 
-/** Uniform light column/row — cream letterbox, not busy artwork. */
+/**
+ * Uniform light column/row — cream / off-white letterbox, not busy artwork.
+ * Thresholds are intentionally loose: Vintage Poster often paints soft paper
+ * margins with mild grain (higher variance) or slightly grey-cream luma.
+ */
 function isLetterboxBand(meanLuma: number, variance: number): boolean {
-  return meanLuma >= 175 && variance <= 220;
+  return meanLuma >= 155 && variance <= 520;
 }
 
 /**
@@ -83,7 +87,8 @@ export async function stripLetterboxBars(
   opts?: { minBarFraction?: number; maxBarFraction?: number },
 ): Promise<LetterboxStripResult> {
   const minBarFraction = opts?.minBarFraction ?? 0.04;
-  const maxBarFraction = opts?.maxBarFraction ?? 0.35;
+  // Vintage posters often leave ~20% each side (40% total) inside a landscape canvas.
+  const maxBarFraction = opts?.maxBarFraction ?? 0.48;
 
   const { data, info } = await sharp(input)
     .removeAlpha()

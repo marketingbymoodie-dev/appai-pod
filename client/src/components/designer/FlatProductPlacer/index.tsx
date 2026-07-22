@@ -963,7 +963,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>
               Artwork doesn&apos;t fully cover the mat opening — scale up or
-              reposition so the design fills the dashed outline.
+              reposition the design to fill to the dashed outline if you want
+              full coverage.
             </span>
           </div>
         )}

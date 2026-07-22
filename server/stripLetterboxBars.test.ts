@@ -61,4 +61,33 @@ describe("stripLetterboxBars", () => {
     const result = await stripLetterboxBars(full);
     expect(result.changed).toBe(false);
   });
+
+  it("strips wide soft off-white side bars (vintage landscape bias)", async () => {
+    // 40% total side bars with mild grain — previously above maxBarFraction / variance.
+    const w = 400;
+    const h = 240;
+    const bar = 80;
+    const raw = Buffer.alloc(w * h * 3);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 3;
+        if (x < bar || x >= w - bar) {
+          const n = ((x * 17 + y * 31) % 7) - 3;
+          raw[i] = 210 + n;
+          raw[i + 1] = 205 + n;
+          raw[i + 2] = 195 + n;
+        } else {
+          raw[i] = 30;
+          raw[i + 1] = 70;
+          raw[i + 2] = 140;
+        }
+      }
+    }
+    const input = await sharp(raw, { raw: { width: w, height: h, channels: 3 } })
+      .png()
+      .toBuffer();
+    const result = await stripLetterboxBars(input);
+    expect(result.changed).toBe(true);
+    expect(result.left + result.right).toBeGreaterThanOrEqual(140);
+  });
 });
