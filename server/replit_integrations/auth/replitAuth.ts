@@ -1,5 +1,6 @@
 import type { Express, RequestHandler } from "express";
 import * as jwt from "jsonwebtoken";
+import { shopDomainFromSessionClaim } from "../../shopDomain";
 
 /**
  * Shopify-native auth (NO Replit OIDC)
@@ -78,16 +79,6 @@ function getBearerToken(req: any): string | null {
   return parts[1] || null;
 }
 
-function parseShopFromDest(dest?: string): { shopDomain?: string; shopOrigin?: string } {
-  if (!dest) return {};
-  try {
-    const u = new URL(dest);
-    return { shopDomain: u.hostname, shopOrigin: u.origin };
-  } catch {
-    return {};
-  }
-}
-
 /**
  * Core verifier used by middleware
  */
@@ -121,8 +112,9 @@ const verifyShopifySessionToken: RequestHandler = (req, res, next) => {
     return res.status(401).json({ message: "Unauthorized: invalid audience" });
   }
 
-  // Attach shop info for later handlers
-  const { shopDomain, shopOrigin } = parseShopFromDest(payload.dest);
+  // Attach shop info for later handlers.
+  // `dest` may be bare `shop.myshopify.com` (no scheme) — fall back to `iss`.
+  const { shopDomain, shopOrigin } = shopDomainFromSessionClaim(payload.dest, payload.iss);
   req.shopDomain = shopDomain;
   req.shopOrigin = shopOrigin;
   req.shopifySession = payload;
