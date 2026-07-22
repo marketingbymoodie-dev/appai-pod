@@ -128,6 +128,11 @@ export type FlatProductPlacerProps = {
   /** Fallback blank photo when manifest lacks per-orientation blanks (tapestry). */
   blankUrlOverride?: string | null;
   /**
+   * Selected size aspect (`3:4`, `4:3`, …). Required when `blankUrlOverride` is a
+   * square catalog size blank so the dashed guide matches that size (wall decals).
+   */
+  catalogSizeAspectRatio?: string | null;
+  /**
    * On-demand lifestyle/context action under "Placement ready".
    * `active` = shimmer + clickable; inactive = dimmed, no shimmer.
    */
@@ -245,15 +250,21 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       fabricWeave = false,
       landscapeOrientation = false,
       blankUrlOverride = null,
+      catalogSizeAspectRatio = null,
       lifestyleAction = null,
       canvasOverrideUrl = null,
     },
     ref,
   ) {
   const geometryKey = placementGeometryKey ?? colorId;
+  const refitCatalogSizeGuide = !!blankUrlOverride && !!catalogSizeAspectRatio;
   const calibOpts = useMemo(
-    () => ({ landscapeOrientation }),
-    [landscapeOrientation],
+    () => ({
+      landscapeOrientation,
+      sizeAspectRatio: catalogSizeAspectRatio,
+      refitCatalogSizeGuide,
+    }),
+    [landscapeOrientation, catalogSizeAspectRatio, refitCatalogSizeGuide],
   );
   const blank = useMemo(() => resolveFlatBlank(manifest, colorId), [manifest, colorId]);
 
@@ -292,7 +303,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         if (!calib || !blankUrl) continue;
         const [b, m, s] = await Promise.all([
           loadFlatImage(blankUrl),
-          calib.maskUrl ? loadFlatImage(calib.maskUrl) : Promise.resolve(null),
+          !refitCatalogSizeGuide && calib.maskUrl
+            ? loadFlatImage(calib.maskUrl)
+            : Promise.resolve(null),
           calib.shadingUrl &&
           (edgeWrapMode ||
             calib.shadingMode === "map" ||
@@ -300,7 +313,10 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             ? loadFlatImage(calib.shadingUrl)
             : Promise.resolve(null),
         ]);
-        if (flatCalibrationSwappedToLandscape(manifest, colorId, v, landscapeOrientation)) {
+        if (
+          !refitCatalogSizeGuide &&
+          flatCalibrationSwappedToLandscape(manifest, colorId, v, landscapeOrientation)
+        ) {
           const oriented = await orientFlatHarvestPixelsForLandscape(m, s);
           next[v] = { blank: b, mask: oriented.mask, shading: oriented.shading };
         } else {

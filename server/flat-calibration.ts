@@ -21,6 +21,10 @@
 import sharp from "sharp";
 import { normalizeApparelSizeId, resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
 import {
+  isCatalogSizeBlankBlueprint,
+  printFileDimsForAspectRatio,
+} from "@shared/catalogSizeBlanks";
+import {
   extractDimensionalKey,
   frameColorsRedundantWithSizes,
   looksLikePhoneModelName,
@@ -827,6 +831,20 @@ export function resolveFlatPrintFileDims(
   view: ViewName,
   opts: { sizeId?: string; frameColorId?: string; landscapeOrientation?: boolean },
 ): { width: number; height: number } | null {
+  // Wall decals / comforterters: harvest often stores one shared 2:3 printFileDims.
+  // Axis-swapping that for landscape yields 3:2 — wrong for 24×18 (4:3). Prefer
+  // the selected size's inch aspect so bake matches the storefront guide.
+  if (isCatalogSizeBlankBlueprint(manifest.blueprintId) && opts.sizeId) {
+    const dim = extractDimensionalKey(opts.sizeId);
+    if (dim) {
+      const [w, h] = dim.split("x").map(Number);
+      if (w > 0 && h > 0) {
+        const fromSize = printFileDimsForAspectRatio(`${w}:${h}`);
+        if (fromSize) return fromSize;
+      }
+    }
+  }
+
   const blankKey = resolveFlatBlankColorId(manifest, opts);
   const override = manifest.geometryByBlank?.[blankKey]?.[view]?.printFileDims;
   const base = manifest.views[view]?.printFileDims;

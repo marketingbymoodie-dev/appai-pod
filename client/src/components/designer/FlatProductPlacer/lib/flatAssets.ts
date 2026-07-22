@@ -1,4 +1,8 @@
 import { API_BASE } from "@/lib/urlBase";
+import {
+  printFileDimsForAspectRatio,
+  visibleRectForCatalogSizeAspect,
+} from "@shared/catalogSizeBlanks";
 import { swapDecorSizeDimensionId } from "@shared/productVariantOptions";
 import type { FlatCalibrationManifest, FlatViewCalibration } from "@/pages/embed-design";
 import type { CalibratorLayerAdjust, FlatRenderInput } from "./flatRender";
@@ -176,12 +180,20 @@ export function resolveCalibratorLayerAdjust(
 /**
  * Merge shared view calibration with optional per-blank-key overrides.
  * Falls back to shared `manifest.views[view]` when no override exists.
+ *
+ * `refitCatalogSizeGuide` + `sizeAspectRatio`: when the blank is a square
+ * catalog size PNG (wall decals) but harvest only stored one shared 2:3 guide,
+ * synthesize the dashed print rect for the selected size AR (3:4 / 4:3 / …).
  */
 export function resolveFlatViewCalibration(
   manifest: FlatCalibrationManifest,
   colorId: string,
   view: FlatViewName,
-  opts?: { landscapeOrientation?: boolean },
+  opts?: {
+    landscapeOrientation?: boolean;
+    sizeAspectRatio?: string | null;
+    refitCatalogSizeGuide?: boolean;
+  },
 ): FlatViewCalibration | undefined {
   const base = manifest.views[view];
   if (!base) return undefined;
@@ -213,6 +225,28 @@ export function resolveFlatViewCalibration(
       coverage: base.coverage,
     };
   }
+
+  // Square catalog blanks (wall decals): harvest often only stored one shared
+  // 2:3 guide. When the blank PNG is size-specific, rebuild the dashed rect
+  // from the selected size AR so 18×24 / 24×18 aren't stuck on 2:3 / 3:2.
+  if (opts?.refitCatalogSizeGuide && opts.sizeAspectRatio) {
+    const rect = visibleRectForCatalogSizeAspect(opts.sizeAspectRatio);
+    const dims = printFileDimsForAspectRatio(opts.sizeAspectRatio);
+    if (rect) {
+      return {
+        ...merged,
+        visibleRectNormalized: rect,
+        printBoundsNormalized: rect,
+        ...(dims ? { printFileDims: dims } : {}),
+        mockupDims:
+          merged.mockupDims?.width &&
+          merged.mockupDims.width === merged.mockupDims.height
+            ? merged.mockupDims
+            : { width: 1024, height: 1024 },
+      };
+    }
+  }
+
   if (!opts?.landscapeOrientation) return merged;
   const pf = merged.printFileDims;
   if (!pf?.width || !pf?.height || pf.width >= pf.height) return merged;
@@ -360,14 +394,23 @@ export async function loadFlatViewAssets(
   manifest: FlatCalibrationManifest,
   colorId: string,
   view: FlatViewName,
-  opts?: { landscapeOrientation?: boolean; blankUrlOverride?: string | null },
+  opts?: {
+    landscapeOrientation?: boolean;
+    blankUrlOverride?: string | null;
+    sizeAspectRatio?: string | null;
+    refitCatalogSizeGuide?: boolean;
+  },
 ): Promise<FlatLoadedViewAssets | null> {
   const blank = resolveFlatBlank(manifest, colorId);
   const blankUrl =
     view === "front" && opts?.blankUrlOverride ? opts.blankUrlOverride : blank[view];
   const landscapeOrientation = !!opts?.landscapeOrientation;
+  const refitCatalogSizeGuide =
+    opts?.refitCatalogSizeGuide === true || !!opts?.blankUrlOverride;
   const calib = resolveFlatViewCalibration(manifest, colorId, view, {
     landscapeOrientation,
+    sizeAspectRatio: opts?.sizeAspectRatio,
+    refitCatalogSizeGuide,
   });
   if (!blankUrl || !calib) return null;
 
@@ -379,11 +422,19 @@ export async function loadFlatViewAssets(
 
   const [b, m, s] = await Promise.all([
     loadFlatImage(blankUrl),
-    calib.maskUrl ? loadFlatImage(calib.maskUrl) : Promise.resolve(null),
+    // Shared harvest masks are 2:3-shaped — drop them when the guide was
+    // rebuilt for the catalog size AR or they clip the wrong silhouette.
+    !refitCatalogSizeGuide && calib.maskUrl
+      ? loadFlatImage(calib.maskUrl)
+      : Promise.resolve(null),
     shouldLoadShading ? loadFlatImage(calib.shadingUrl!) : Promise.resolve(null),
   ]);
   if (!b) return null;
-  if (flatCalibrationSwappedToLandscape(manifest, colorId, view, landscapeOrientation)) {
+  // Catalog-blank refit already has the correct AR — don't rotate harvest masks.
+  if (
+    !refitCatalogSizeGuide &&
+    flatCalibrationSwappedToLandscape(manifest, colorId, view, landscapeOrientation)
+  ) {
     const oriented = await orientFlatHarvestPixelsForLandscape(m, s);
     return { blank: b, mask: oriented.mask, shading: oriented.shading };
   }

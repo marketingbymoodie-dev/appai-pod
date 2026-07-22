@@ -70,3 +70,56 @@ describe("findGeometryBlankKey / decorPerSize size-only lookup", () => {
     expect(findGeometryBlankKey(m, "30x20:black")).toBe("20x30:black");
   });
 });
+
+describe("resolveFlatViewCalibration catalog size blank refit", () => {
+  function wallDecalManifest(): FlatCalibrationManifest {
+    return {
+      productTypeId: 759,
+      name: "Wall Decals",
+      blueprintId: 759,
+      providerId: 1,
+      tier: "flat",
+      views: {
+        front: {
+          maskUrl: "https://example.com/shared-2x3-mask.png",
+          // Shared harvest from 12×18 (2:3) — the wall-decal failure mode.
+          printFileDims: { width: 2400, height: 3600 },
+          mockupDims: { width: 1024, height: 1024 },
+          visibleRectNormalized: { x: 0.25, y: 0.127, width: 0.5, height: 0.746 },
+        } as any,
+      },
+      blanks: {
+        default: { front: "https://example.com/harvest-default.png" },
+      },
+      representativeGeometry: true,
+      decorPerSize: false,
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
+  it("refits 18×24 guide to 3:4 instead of shared 2:3", () => {
+    const m = wallDecalManifest();
+    const calib = resolveFlatViewCalibration(m, "default", "front", {
+      sizeAspectRatio: "3:4",
+      refitCatalogSizeGuide: true,
+    });
+    expect(calib?.visibleRectNormalized).toBeTruthy();
+    const r = calib!.visibleRectNormalized!;
+    expect(r.width / r.height).toBeCloseTo(0.75, 2);
+    expect(r.height).toBeCloseTo(0.75, 2);
+    expect(r.width / r.height).not.toBeCloseTo(2 / 3, 2);
+  });
+
+  it("refits 24×18 to 4:3 (not landscape-swapped 3:2)", () => {
+    const m = wallDecalManifest();
+    const calib = resolveFlatViewCalibration(m, "default", "front", {
+      landscapeOrientation: true,
+      sizeAspectRatio: "4:3",
+      refitCatalogSizeGuide: true,
+    });
+    const r = calib!.visibleRectNormalized!;
+    expect(r.width / r.height).toBeCloseTo(4 / 3, 2);
+    expect(r.width).toBeCloseTo(0.75, 2);
+    expect(r.width / r.height).not.toBeCloseTo(1.5, 2);
+  });
+});

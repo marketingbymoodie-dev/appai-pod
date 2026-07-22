@@ -76,6 +76,65 @@ export type BaseMockupImagesLike = {
   [key: string]: unknown;
 };
 
+/**
+ * Catalog size blanks are square PNGs with the sticker letterboxed + drop-shadow.
+ * Empirically the white sheet is ~75% of a full edge-touching letterbox (all 759 sizes).
+ */
+export const CATALOG_SIZE_BLANK_SHEET_SCALE = 0.75;
+
+export type NormRect = { x: number; y: number; width: number; height: number };
+
+/**
+ * Normalized print guide for a size aspect inside a square catalog blank.
+ * Matches `scripts/assets/catalog-blanks/wall-decals/*.png` framing so the
+ * dashed placer outline reaches the sticker's long edges (fixes 18×24 / 24×18
+ * when harvest only stored a shared 2:3 visibleRect).
+ */
+export function visibleRectForCatalogSizeAspect(
+  aspectRatio: string | null | undefined,
+  sheetScale: number = CATALOG_SIZE_BLANK_SHEET_SCALE,
+): NormRect | null {
+  if (!aspectRatio) return null;
+  const [aw, ah] = String(aspectRatio).split(":").map(Number);
+  if (!(aw > 0 && ah > 0) || !(sheetScale > 0 && sheetScale <= 1)) return null;
+  const ar = aw / ah;
+  const round = (n: number) => +n.toFixed(5);
+  if (ar >= 1) {
+    // Landscape: full letterbox fills width, then shrink for drop-shadow margin.
+    const width = sheetScale;
+    const height = (1 / ar) * sheetScale;
+    return {
+      x: round((1 - width) / 2),
+      y: round((1 - height) / 2),
+      width: round(width),
+      height: round(height),
+    };
+  }
+  // Portrait: full letterbox fills height.
+  const width = ar * sheetScale;
+  const height = sheetScale;
+  return {
+    x: round((1 - width) / 2),
+    y: round((1 - height) / 2),
+    width: round(width),
+    height: round(height),
+  };
+}
+
+/** Printify-style print dims from a w:h aspect (long side ≈ 3600). */
+export function printFileDimsForAspectRatio(
+  aspectRatio: string | null | undefined,
+): { width: number; height: number } | null {
+  if (!aspectRatio) return null;
+  const [aw, ah] = String(aspectRatio).split(":").map(Number);
+  if (!(aw > 0 && ah > 0)) return null;
+  const long = 3600;
+  if (aw >= ah) {
+    return { width: long, height: Math.max(1, Math.round((long * ah) / aw)) };
+  }
+  return { width: Math.max(1, Math.round((long * aw) / ah)), height: long };
+}
+
 /** Resolve a blank URL for a selected size from blanksBySize (+ orientation fallback). */
 export function resolveBlankUrlForSize(
   images: BaseMockupImagesLike | null | undefined,

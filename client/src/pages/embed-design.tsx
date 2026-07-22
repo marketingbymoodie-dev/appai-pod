@@ -2242,6 +2242,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     return isLandscapeSizeAspect(ar);
   }, [printSizes, selectedSize, productTypeConfig?.aspectRatio]);
 
+  /** Inch AR for catalog size blanks (wall decals) — drives dashed guide when harvest is shared 2:3. */
+  const catalogSizeAspectRatio = useMemo(() => {
+    const sizeConfig = printSizes.find((s) => s.id === selectedSize);
+    if (!sizeConfig) return null;
+    return (
+      sizeConfig.aspectRatio ||
+      resolveSizeAspectRatio(sizeConfig, productTypeConfig?.aspectRatio) ||
+      null
+    );
+  }, [printSizes, selectedSize, productTypeConfig?.aspectRatio]);
+
   /** Classify catalog placeholder images by natural aspect (for orientation blanks). */
   const [catalogBlankByOrientation, setCatalogBlankByOrientation] = useState<
     Partial<Record<CanvasOrientation, string>>
@@ -8252,6 +8263,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               fabricWeave: flatFabricWeave,
               landscapeOrientation: flatLandscapeOrientation,
               blankUrlOverride: flatDecorMode ? null : orientationBlankOverride,
+              catalogSizeAspectRatio:
+                !flatDecorMode && orientationBlankOverride
+                  ? catalogSizeAspectRatio
+                  : null,
             },
           );
           if (cancelled || !dataUrl) continue;
@@ -8333,6 +8348,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flatFabricWeave,
     flatLandscapeOrientation,
     orientationBlankOverride,
+    catalogSizeAspectRatio,
     persistFlatMockupsForGallery,
     flatMockupRefreshNonce,
   ]);
@@ -10549,6 +10565,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     landscapeOrientation={flatLandscapeOrientation}
                     // Never pin catalog orientation photos over decorPerSize frame-colour blanks.
                     blankUrlOverride={flatDecorMode ? null : orientationBlankOverride}
+                    catalogSizeAspectRatio={
+                      !flatDecorMode && orientationBlankOverride
+                        ? catalogSizeAspectRatio
+                        : null
+                    }
                     // Tester auto-flushes Apply after generate; never seed "saved"
                     // from onChange alone or flush becomes a no-op.
                     skipInitialAutoApply={!isAdminTester && !!flatPlacerState}
