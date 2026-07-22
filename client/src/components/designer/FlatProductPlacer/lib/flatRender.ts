@@ -1105,6 +1105,38 @@ function solidifyMaskForClip(
   return solid;
 }
 
+/**
+ * Clip the offscreen artwork layer to the printable area.
+ * Prefer the pixel mask when present; otherwise hard-clip to `rect` (wall-decal
+ * catalog blanks skip the shared harvest mask but still need side/top trim).
+ */
+export function clipFlatArtToPrintArea(
+  actx: CanvasRenderingContext2D,
+  opts: {
+    mask: HTMLImageElement | null;
+    rect: Rect;
+    canvasW: number;
+    canvasH: number;
+    fabricWeave?: boolean;
+  },
+): "mask" | "rect" {
+  const { mask, rect, canvasW, canvasH, fabricWeave } = opts;
+  actx.globalCompositeOperation = "destination-in";
+  if (mask) {
+    if (fabricWeave) {
+      actx.drawImage(solidifyMaskForClip(mask, canvasW, canvasH), 0, 0);
+    } else {
+      actx.drawImage(mask, 0, 0, canvasW, canvasH);
+    }
+    actx.globalCompositeOperation = "source-over";
+    return "mask";
+  }
+  actx.fillStyle = "#fff";
+  actx.fillRect(rect.x, rect.y, rect.width, rect.height);
+  actx.globalCompositeOperation = "source-over";
+  return "rect";
+}
+
 // ---------------------------------------------------------------------------
 // Fabric weave texture — tunable config
 // ---------------------------------------------------------------------------
@@ -1803,18 +1835,13 @@ export function renderFlatView(input: FlatRenderInput): void {
     actx.drawImage(artwork, box.x, box.y, box.width, box.height);
   }
 
-  if (mask) {
-    actx.globalCompositeOperation = "destination-in";
-    if (fabricWeave && !edgeWrapMode) {
-      // Woven-fabric harvests produce masks with pinhole noise (magenta
-      // detection stumbles on thread grooves). Clipping with the raw mask
-      // lets the light blank show through as white speckle — solidify first.
-      actx.drawImage(solidifyMaskForClip(mask, W, H), 0, 0);
-    } else {
-      actx.drawImage(mask, 0, 0, W, H);
-    }
-    actx.globalCompositeOperation = "source-over";
-  }
+  clipFlatArtToPrintArea(actx, {
+    mask,
+    rect,
+    canvasW: W,
+    canvasH: H,
+    fabricWeave: fabricWeave && !edgeWrapMode,
+  });
 
   const shadeMode: "blank" | "map" =
     view.shadingMode === "map" || (forceShadingMap && shading) ? "map" : view.shadingMode;
