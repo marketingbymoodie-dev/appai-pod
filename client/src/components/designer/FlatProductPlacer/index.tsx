@@ -384,6 +384,22 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [availableViews, artworkSourceUrl]);
 
+  // Print Side dropdown → PRINT ON BACK / front toggles (parent owns printPlacement).
+  const parentEnabledFront = initialState?.enabled?.front;
+  const parentEnabledBack = initialState?.enabled?.back;
+  useEffect(() => {
+    if (parentEnabledFront === undefined && parentEnabledBack === undefined) return;
+    setState((prev) => {
+      if (!prev) return prev;
+      const front =
+        typeof parentEnabledFront === "boolean" ? parentEnabledFront : prev.enabled.front;
+      const back =
+        typeof parentEnabledBack === "boolean" ? parentEnabledBack : prev.enabled.back;
+      if (prev.enabled.front === front && prev.enabled.back === back) return prev;
+      return { ...prev, enabled: { ...prev.enabled, front, back } };
+    });
+  }, [parentEnabledFront, parentEnabledBack]);
+
   useEffect(() => {
     if (state) onChangeRef.current?.(state);
   }, [state]);

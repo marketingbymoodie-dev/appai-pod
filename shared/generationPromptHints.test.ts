@@ -108,10 +108,15 @@ describe("generationPromptHints", () => {
     expect(styleAllowsGeneratedText("Minimalist Icon", "simple icon")).toBe(false);
   });
 
-  it("requires a 5% text-free border on flat decor", () => {
+  it("requires 15% top/bottom text-free bands on flat decor", () => {
     const block = buildDecorTextEdgeRestrictions(false);
-    expect(block).toContain("5%");
-    expect(buildDecorTextSafeMarginShortConstraint()).toContain("5%");
+    expect(block).toContain("15%");
+    expect(block).toContain("TOP and BOTTOM");
+    expect(buildDecorTextSafeMarginShortConstraint()).toContain("15%");
+    expect(buildAopSizingRequirements("the word Totes Love in the middle")).toContain(
+      "TEXT SAFE ZONE",
+    );
+    expect(buildAopSizingRequirements("jungle leaves pattern")).not.toContain("TEXT SAFE ZONE");
   });
 
   it("decor allows text only for Vintage Poster or explicit user ask", () => {

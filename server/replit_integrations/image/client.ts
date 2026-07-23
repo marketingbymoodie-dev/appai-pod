@@ -253,7 +253,7 @@ function compressPrompt(
     // art and wall decals don't get portrait vignettes with white side bars.
     const orient = buildDecorOrientationShortConstraint(aspectRatio);
     // Full-bleed for paint/scene. Text only for Vintage Poster or explicit user ask —
-    // otherwise Watercolor/etc. invent slogans (and the 5% margin would invite text).
+    // otherwise Watercolor/etc. invent slogans (and the text-safe margin would invite text).
     const allowText = decorAllowsGeneratedText({
       promptBlob: raw,
       userPrompt,
@@ -276,8 +276,7 @@ function compressPrompt(
     !isAllOverPrint &&
     styleAllowsGeneratedText(null, raw)
   ) {
-    compressed =
-      "Keep ALL text/letters at least 5% of the canvas away from every edge. " + compressed;
+    compressed = buildDecorTextSafeMarginShortConstraint() + compressed;
   }
 
   // Hard truncate — preserve the user's artwork description over verbose constraints

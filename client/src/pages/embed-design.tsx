@@ -7276,6 +7276,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         ? toAbsoluteImageUrl(generatedDesign.imageUrl)
         : s.artworkUrl;
       setFlatPlacerState({ ...s, artworkUrl });
+      // Keep Print Side dropdown aligned with PRINT ON FRONT/BACK toggles.
+      if (supportsPrintPlacementSelection) {
+        const derived: "front" | "back" | "both" =
+          s.enabled.front && s.enabled.back
+            ? "both"
+            : s.enabled.back && !s.enabled.front
+              ? "back"
+              : "front";
+        setPrintPlacement((prev) => (prev === derived ? prev : derived));
+      }
       setFlatPlacementDirty(true);
       if (isAdminTester && savedJobIdRef.current) {
         emitTesterDesignStatus({
@@ -7329,7 +7339,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         })();
       }, 700);
     },
-    [generatedDesign?.imageUrl, isAdminTester, emitTesterDesignStatus, flushFlatPlacer],
+    [
+      generatedDesign?.imageUrl,
+      isAdminTester,
+      emitTesterDesignStatus,
+      flushFlatPlacer,
+      supportsPrintPlacementSelection,
+    ],
   );
 
   const handleFlatAssetsFailed = useCallback((reason: string) => {
@@ -10812,6 +10828,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     initialState={{
                       ...(flatPlacerState ?? {}),
                       artworkUrl: toAbsoluteImageUrl(generatedDesign!.imageUrl),
+                      // Keep PRINT ON BACK / front in sync with Print Side dropdown.
+                      enabled: {
+                        front:
+                          !supportsPrintPlacementSelection ||
+                          printPlacement === "front" ||
+                          printPlacement === "both",
+                        back:
+                          supportsPrintPlacementSelection
+                            ? printPlacement === "back" || printPlacement === "both"
+                            : (flatPlacerState?.enabled?.back ?? false),
+                      },
                     }}
                     onChange={handleFlatPlacerChange}
                     onViewChange={handleFlatPlacerViewChange}

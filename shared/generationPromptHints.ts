@@ -50,6 +50,7 @@ export function shouldUseStyleReferenceImage(
 
 /** Full AOP sizing block injected by route handlers (line 3 respects B&W requests). */
 export function buildAopSizingRequirements(userDesc: string | null | undefined): string {
+  const textSafe = buildAopTextVerticalSafeConstraint(userDesc);
   return `
 MANDATORY IMAGE REQUIREMENTS FOR ALL-OVER PRINT (AOP) - FOLLOW EXACTLY:
 1. ISOLATED MOTIF: Create a SINGLE, centered graphic design that is ISOLATED from any background scenery. This motif will be tiled into a repeating pattern.
@@ -62,7 +63,7 @@ MANDATORY IMAGE REQUIREMENTS FOR ALL-OVER PRINT (AOP) - FOLLOW EXACTLY:
 7. PRINT-READY: This is for all-over print fabric — create an isolated motif graphic.
 8. COMPOSITION FORMAT: Fill the canvas matching the requested aspect ratio with the design centered.
 9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
-`;
+${textSafe}`;
 }
 
 /** Non-AOP apparel chroma-key sizing — color line respects B&W requests. */
@@ -184,11 +185,32 @@ export function decorAllowsGeneratedText(opts: {
   return false;
 }
 
+/**
+ * Top/bottom inset for text on near-square print areas (e.g. tote). Landscape art
+ * cover-cropped to square loses ~12–15% vertically — keep words inside the safe band.
+ */
+export const FLAT_PANEL_VERTICAL_TEXT_SAFE_PERCENT = 15;
+
 /** Compact rule that survives Replicate prompt compression (flat decor / wall art). */
 export function buildDecorTextSafeMarginShortConstraint(): string {
   return (
-    "Keep ALL text/letters/words at least 5% of the canvas away from every edge " +
-    "(outer 5% border must contain no text). Background/scene may still fill edge-to-edge. "
+    `Keep ALL text/letters/words at least ${FLAT_PANEL_VERTICAL_TEXT_SAFE_PERCENT}% of the canvas ` +
+    "away from the TOP and BOTTOM edges, and at least 5% from the left and right edges " +
+    `(outer ${FLAT_PANEL_VERTICAL_TEXT_SAFE_PERCENT}% top/bottom bands must contain no text). ` +
+    "Background/scene may still fill edge-to-edge. "
+  );
+}
+
+/** Extra AOP line when the user asked for words — tote/flat panels crop landscape art. */
+export function buildAopTextVerticalSafeConstraint(
+  userDesc: string | null | undefined,
+): string {
+  if (!userPromptRequestsText(userDesc)) return "";
+  return (
+    `10. TEXT SAFE ZONE: Keep ALL text/letters/words inside the center ` +
+    `${100 - FLAT_PANEL_VERTICAL_TEXT_SAFE_PERCENT * 2}% of the canvas height ` +
+    `(at least ${FLAT_PANEL_VERTICAL_TEXT_SAFE_PERCENT}% clear margin from the TOP and BOTTOM). ` +
+    "Do not place words near the top or bottom edge.\n"
   );
 }
 
@@ -210,12 +232,14 @@ TEXT AND ELEMENT PLACEMENT - CRITICAL:
 - The outer 20% margins on ALL sides should contain ONLY background/scenery - NO text whatsoever
 - This is a WRAP-AROUND cylindrical product - edges will be hidden or wrapped around`;
   }
+  const v = FLAT_PANEL_VERTICAL_TEXT_SAFE_PERCENT;
   return `
 TEXT AND ELEMENT PLACEMENT - CRITICAL:
-- Keep ALL text, letters, and words at least 5% of the canvas away from every edge
-- The outer 5% border on all four sides must contain NO text (background/scene only)
-- Background and scenery may still fill edge-to-edge — only text must stay inset
-- Avoid placing critical content near the edges where it may be cut off during printing`;
+- Keep ALL text, letters, words, and important details at least ${v}% of the canvas away from the TOP and BOTTOM edges
+- The outer ${v}% bands at top and bottom must contain NO text (background/scene only)
+- Keep text at least 5% inset from the LEFT and RIGHT edges
+- Background and scenery may still fill edge-to-edge — only text/critical details must stay inset
+- Near-square products (totes, etc.) often crop landscape art top/bottom — never put words in that crop zone`;
 }
 
 /**
