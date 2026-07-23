@@ -992,9 +992,10 @@ function applyPhoneCaseMapShading(
  * Multiply a normalized shading layer over the artwork layer, restricted to
  * the artwork's own alpha so transparent (garment) pixels stay untouched.
  *
- * When `fabricWeave` is set (tapestry / woven decor), skip blank luminance
- * multiply (photo noise → sand-grain "speckle") and apply a procedural
- * warp/weft pattern instead.
+ * When `fabricWeave` is set (tapestry / woven decor):
+ * 1) Multiply a *blurred* blank luminance so art picks up the real cloth
+ *    folds/shadows without photo-noise "speckle".
+ * 2) Layer a light procedural warp/weft for yarn structure Printify shows.
  */
 function applyShading(
   artCanvas: HTMLCanvasElement,
@@ -1008,8 +1009,8 @@ function applyShading(
   opts?: { phoneCaseMap?: boolean; fabricWeave?: boolean },
 ): void {
   if (opts?.fabricWeave) {
-    // Blank AO is the speckly grain on tapestry photos — do not multiply it.
-    applyProceduralFabricWeave(artCanvas, artCtx, w, h);
+    applyBlurredBlankFabricMultiply(artCanvas, artCtx, blank, w, h, artworkCorsClean);
+    applyProceduralFabricWeave(artCanvas, artCtx, w, h, { strengthScale: 0.4 });
     return;
   }
 
@@ -1319,18 +1320,72 @@ function getFabricWeaveTile(cfg: WeaveConfig): HTMLCanvasElement {
 }
 
 /**
+ * Blurred blank luminance multiply for tapestry: real cloth shading from the
+ * harvested blank, without the sand-grain speckle that raw photo AO produced.
+ */
+function applyBlurredBlankFabricMultiply(
+  artCanvas: HTMLCanvasElement,
+  artCtx: CanvasRenderingContext2D,
+  blank: HTMLImageElement,
+  w: number,
+  h: number,
+  artworkCorsClean: boolean,
+): void {
+  const shade = document.createElement("canvas");
+  shade.width = w;
+  shade.height = h;
+  const sctx = shade.getContext("2d");
+  if (!sctx) return;
+
+  // Blur kills Printify photo grain; grayscale keeps cloth folds/shadows.
+  sctx.filter = "grayscale(1) blur(2.5px)";
+  sctx.drawImage(blank, 0, 0, w, h);
+  sctx.filter = "none";
+
+  let normalized = artworkCorsClean;
+  if (artworkCorsClean) {
+    try {
+      normalizeShadeInPlace(sctx, artCtx, w, h);
+    } catch {
+      normalized = false;
+    }
+  }
+
+  sctx.globalCompositeOperation = "destination-in";
+  sctx.drawImage(artCanvas, 0, 0);
+  sctx.globalCompositeOperation = "source-over";
+
+  artCtx.save();
+  if (normalized) {
+    artCtx.globalCompositeOperation = "multiply";
+    artCtx.drawImage(shade, 0, 0);
+  } else {
+    artCtx.globalCompositeOperation = "soft-light";
+    artCtx.globalAlpha = 0.6;
+    artCtx.drawImage(shade, 0, 0);
+  }
+  artCtx.restore();
+}
+
+/**
  * Emboss art with a tiled warp/weft pattern. Two passes:
  * overlay (texture contrast — highlights in shadow, grooves in light) then
  * multiply (overall fabric darkening to match Printify renders).
  * Instant: one cached tile, no network, no getImageData.
+ *
+ * `strengthScale` damps both passes when blank multiply already supplies body shading.
  */
 function applyProceduralFabricWeave(
   artCanvas: HTMLCanvasElement,
   artCtx: CanvasRenderingContext2D,
   w: number,
   h: number,
+  opts?: { strengthScale?: number },
 ): void {
   const cfg = getWeaveConfig();
+  const strength = Math.max(0, Math.min(1, opts?.strengthScale ?? 1));
+  if (strength <= 0) return;
+
   const tile = getFabricWeaveTile(cfg);
   const weave = document.createElement("canvas");
   weave.width = w;
@@ -1354,11 +1409,11 @@ function applyProceduralFabricWeave(
   artCtx.save();
   // Pass 1: overlay — strong weave contrast without flattening the art.
   artCtx.globalCompositeOperation = "overlay";
-  artCtx.globalAlpha = Math.max(0, Math.min(1, cfg.overlayAlpha));
+  artCtx.globalAlpha = Math.max(0, Math.min(1, cfg.overlayAlpha * strength));
   artCtx.drawImage(weave, 0, 0);
   // Pass 2: multiply — fabric absorbs light, matching Printify's darker render.
   artCtx.globalCompositeOperation = "multiply";
-  artCtx.globalAlpha = Math.max(0, Math.min(1, cfg.multiplyAlpha));
+  artCtx.globalAlpha = Math.max(0, Math.min(1, cfg.multiplyAlpha * strength));
   artCtx.drawImage(weave, 0, 0);
   artCtx.restore();
 }
