@@ -449,7 +449,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   }, [applyStatus, onApplyStatusChange]);
 
   // ---------- Core render helper ----------
-  const scaleMax = flatPlacementScaleMax({ edgeWrapMode, decorMode });
+  const scaleMax = flatPlacementScaleMax({ edgeWrapMode, decorMode, fabricWeave });
 
   const renderInto = useCallback(
     (canvas: HTMLCanvasElement, v: ViewName, forApply: boolean): boolean => {
@@ -745,11 +745,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       artworkImg.naturalWidth,
       artworkImg.naturalHeight,
     );
-    if (edgeWrapMode) {
-      if (!flatCovers(placementRect, box)) {
-        coverageWarning = "edge-gap";
-      }
-    } else if (decorMode) {
+    if (edgeWrapMode || decorMode || fabricWeave) {
+      // Tapestry / decor / phone: warn when art leaves the print area uncovered.
       if (!flatCovers(placementRect, box)) {
         coverageWarning = "edge-gap";
       }
@@ -967,6 +964,12 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                 outline on all four sides.
               </p>
             )}
+            {fabricWeave && !edgeWrapMode && !decorMode && (
+              <p className="text-[10px] text-muted-foreground leading-snug">
+                Fill the dashed outline edge-to-edge — any gap shows the raw
+                tapestry weave under your design.
+              </p>
+            )}
             <div className="mt-2">
               <FinePositionNudge
                 onNudge={(axis, dir) => nudgePlacement(state.view, axis, dir)}
@@ -976,7 +979,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           </div>
         )}
 
-        {viewEnabled && artworkImg && coverageWarning === "trim" && (
+        {viewEnabled && artworkImg && coverageWarning === "trim" && !fabricWeave && (
           <div className="flex items-start gap-2 rounded border border-amber-400/50 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>
@@ -987,7 +990,18 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           </div>
         )}
 
-        {viewEnabled && artworkImg && coverageWarning === "edge-gap" && decorMode && !edgeWrapMode && (
+        {viewEnabled && artworkImg && coverageWarning === "edge-gap" && fabricWeave && !edgeWrapMode && (
+          <div className="flex items-start gap-2 rounded border border-amber-400/50 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>
+              Artwork doesn&apos;t fully cover the tapestry — raw weave will show
+              around the edges. Scale up or reposition so your design fills the
+              printable area.
+            </span>
+          </div>
+        )}
+
+        {viewEnabled && artworkImg && coverageWarning === "edge-gap" && decorMode && !edgeWrapMode && !fabricWeave && (
           <div className="flex items-start gap-2 rounded border border-amber-400/50 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>

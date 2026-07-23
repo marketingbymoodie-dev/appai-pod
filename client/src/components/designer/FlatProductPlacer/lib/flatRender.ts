@@ -47,13 +47,17 @@ export const FLAT_SCALE_MAX = 1.0;
 export const FLAT_SCALE_MAX_EDGE_WRAP = 2.0;
 /** Framed / decor — zoom in to crop built-in borders past the mat opening. */
 export const FLAT_SCALE_MAX_DECOR = 2.5;
+/** Tapestry — zoom past 100% so art can refill after nudging (avoid raw weave). */
+export const FLAT_SCALE_MAX_FABRIC = 2.0;
 
 export function flatPlacementScaleMax(opts: {
   edgeWrapMode?: boolean;
   decorMode?: boolean;
+  fabricWeave?: boolean;
 }): number {
   if (opts.edgeWrapMode) return FLAT_SCALE_MAX_EDGE_WRAP;
   if (opts.decorMode) return FLAT_SCALE_MAX_DECOR;
+  if (opts.fabricWeave) return FLAT_SCALE_MAX_FABRIC;
   return FLAT_SCALE_MAX;
 }
 
