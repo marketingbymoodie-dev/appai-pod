@@ -1144,6 +1144,8 @@ export type FabricBlendConfig = {
   transparency: number;
   /** Soft-light cream tint from blank, 0–1. */
   cream: number;
+  /** Extra overall darkening (multiply mid-grey), 0–1. */
+  darkening: number;
   /** Cloth saturation before multiply: 0 = grey, 1 = natural, 2 = boosted. */
   vibrance: number;
   /** Fine film grain, 0–1. */
@@ -1162,6 +1164,7 @@ export type FabricBlendConfig = {
 export const DEFAULT_FABRIC_BLEND_CONFIG: FabricBlendConfig = {
   transparency: 0,
   cream: 0,
+  darkening: 0,
   vibrance: 1,
   grain: 0,
   speckle: 0,
@@ -1519,6 +1522,22 @@ function applySimpleBlankMultiply(
     artCtx.globalCompositeOperation = "soft-light";
     artCtx.globalAlpha = Math.max(0, Math.min(1, cfg.cream));
     artCtx.drawImage(cloth, 0, 0);
+  }
+  if (cfg.darkening > 0.001) {
+    // Mid-grey multiply darkens fabric without crushing blacks to solid.
+    const shade = document.createElement("canvas");
+    shade.width = w;
+    shade.height = h;
+    const sctx = shade.getContext("2d");
+    if (sctx) {
+      const g = Math.round(255 * (1 - Math.max(0, Math.min(1, cfg.darkening)) * 0.55));
+      sctx.fillStyle = `rgb(${g},${g},${g})`;
+      sctx.fillRect(0, 0, w, h);
+      clipLayerToArt(shade, artCanvas);
+      artCtx.globalCompositeOperation = "multiply";
+      artCtx.globalAlpha = 1;
+      artCtx.drawImage(shade, 0, 0);
+    }
   }
   if (cfg.linealAlpha > 0.001) {
     const lineal = buildLinealOverlay(w, h, cfg);

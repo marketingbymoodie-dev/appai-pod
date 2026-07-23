@@ -1144,6 +1144,16 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                   toPatch: (v: number) => ({ cream: v / 100 }),
                 },
                 {
+                  key: "darkening" as const,
+                  label: "Darkening",
+                  min: 0,
+                  max: 100,
+                  step: 1,
+                  value: Math.round(blendCfg.darkening * 100),
+                  format: (v: number) => `${v}%`,
+                  toPatch: (v: number) => ({ darkening: v / 100 }),
+                },
+                {
                   key: "vibrance" as const,
                   label: "Vibrance",
                   min: 0,
