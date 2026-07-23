@@ -1160,20 +1160,21 @@ export type FabricBlendConfig = {
   linealAlpha: number;
 };
 
-/** Shipped defaults — update after merchant dials in against Printify. */
+/** Shipped defaults — dialed in against Printify woven tapestry (2026-07). */
 export const DEFAULT_FABRIC_BLEND_CONFIG: FabricBlendConfig = {
-  transparency: 0,
-  cream: 0,
-  darkening: 0,
-  vibrance: 1,
-  grain: 0,
-  speckle: 0,
-  linealX: 6,
-  linealY: 6,
-  linealAlpha: 0,
+  transparency: 0.17,
+  cream: 0.41,
+  darkening: 0.07,
+  vibrance: 0.2,
+  grain: 0.9,
+  speckle: 0.91,
+  linealX: 7,
+  linealY: 5,
+  linealAlpha: 0.2,
 };
 
-const FABRIC_BLEND_STORAGE_KEY = "appai:fabricBlendConfig:v1";
+/** Bump when defaults change so stale browser tuning does not override merchants. */
+const FABRIC_BLEND_STORAGE_KEY = "appai:fabricBlendConfig:v2";
 
 let activeFabricBlendConfig: FabricBlendConfig | null = null;
 
