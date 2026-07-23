@@ -102,7 +102,9 @@ async function urlToBase64(
 }
 
 import {
+  buildDecorNoTextUnlessAskedShortConstraint,
   buildDecorTextSafeMarginShortConstraint,
+  decorAllowsGeneratedText,
   styleAllowsGeneratedText,
   userPromptRequestsMonochrome,
 } from "@shared/generationPromptHints";
@@ -250,15 +252,21 @@ function compressPrompt(
     // a compact orientation rule from the requested aspect ratio so landscape framed
     // art and wall decals don't get portrait vignettes with white side bars.
     const orient = buildDecorOrientationShortConstraint(aspectRatio);
-    // Full-bleed for paint/scene, but keep typography off the trim edge (Vintage Poster etc.).
-    // Verbose TEXT AND ELEMENT PLACEMENT blocks are stripped above — re-inject compactly.
-    const textMargin = buildDecorTextSafeMarginShortConstraint();
+    // Full-bleed for paint/scene. Text only for Vintage Poster or explicit user ask —
+    // otherwise Watercolor/etc. invent slogans (and the 5% margin would invite text).
+    const allowText = decorAllowsGeneratedText({
+      promptBlob: raw,
+      userPrompt,
+    });
+    const textRule = allowText
+      ? buildDecorTextSafeMarginShortConstraint()
+      : buildDecorNoTextUnlessAskedShortConstraint();
     const shortConstraints = cylindricalWrap
       ? orient +
         "Full-bleed background to all edges. Keep text and focal subjects in the center 60% (cylindrical wrap safe area). "
       : orient +
         "Full-bleed, edge-to-edge, no borders, no blank margins, no letterboxing — paint to all four edges. " +
-        textMargin;
+        textRule;
     compressed = shortConstraints + compressed;
   }
 

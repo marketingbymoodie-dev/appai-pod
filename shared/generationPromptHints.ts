@@ -144,11 +144,59 @@ export function styleAllowsGeneratedText(
   );
 }
 
+/** Decor exception: Vintage Poster may invent period typography without the user asking. */
+export function styleIsVintagePoster(
+  styleName: string | null | undefined,
+  stylePrefix: string | null | undefined,
+): boolean {
+  const combined = `${styleName || ""} ${stylePrefix || ""}`.toLowerCase();
+  if (!combined.trim()) return false;
+  return /\bvintage\s+poster\b/.test(combined) || /\bperiod typography\b/.test(combined);
+}
+
+/** True when the customer explicitly asked for words/letters in their prompt. */
+export function userPromptRequestsText(userDesc: string | null | undefined): boolean {
+  if (!userDesc) return false;
+  const t = userDesc.toLowerCase();
+  return (
+    /\b(text|texts|lettering|typography|wordmark|slogan|caption|title|headline)\b/.test(t) ||
+    /\b(words?|letters?|quote|quotes|saying|phrase|phrases)\b/.test(t) ||
+    /\b(write|written|says?|reading|labeled|label)\b/.test(t) ||
+    /["“'][^"”']{2,}["”']/.test(userDesc) ||
+    /\bwith the (words?|text|phrase)\b/.test(t)
+  );
+}
+
+/**
+ * Flat decor / wall art: allow generated text only for Vintage Poster or when
+ * the user explicitly asked. Apparel Opinionated/Quotes use styleAllowsGeneratedText.
+ */
+export function decorAllowsGeneratedText(opts: {
+  styleName?: string | null;
+  stylePrefix?: string | null;
+  /** Full prompt blob (may include style prefix) when style name is unavailable. */
+  promptBlob?: string | null;
+  userPrompt?: string | null;
+}): boolean {
+  if (userPromptRequestsText(opts.userPrompt)) return true;
+  if (styleIsVintagePoster(opts.styleName, opts.stylePrefix)) return true;
+  if (styleIsVintagePoster(null, opts.promptBlob)) return true;
+  return false;
+}
+
 /** Compact rule that survives Replicate prompt compression (flat decor / wall art). */
 export function buildDecorTextSafeMarginShortConstraint(): string {
   return (
     "Keep ALL text/letters/words at least 5% of the canvas away from every edge " +
     "(outer 5% border must contain no text). Background/scene may still fill edge-to-edge. "
+  );
+}
+
+/** Survives compression — decor/wall art must not invent slogans on Watercolor etc. */
+export function buildDecorNoTextUnlessAskedShortConstraint(): string {
+  return (
+    "Do NOT add any text, letters, words, slogans, speech bubbles, or labels " +
+    "unless the user explicitly requested them. "
   );
 }
 

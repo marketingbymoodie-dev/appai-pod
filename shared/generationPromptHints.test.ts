@@ -4,16 +4,20 @@ import {
   apparelMotifDesignColors,
   buildAopPatternSizingRequirements,
   buildAopSizingRequirements,
+  buildDecorNoTextUnlessAskedShortConstraint,
   buildDecorTextEdgeRestrictions,
   buildDecorTextSafeMarginShortConstraint,
   buildOrientationCompositionExtra,
+  decorAllowsGeneratedText,
   filterStyleReferenceUrls,
   hasUserArtworkDescription,
   shouldUseStyleReferenceImage,
   styleAllowsGeneratedText,
   styleIsPatternMaker,
+  styleIsVintagePoster,
   useCylindricalWrapPrompt,
   userPromptRequestsMonochrome,
+  userPromptRequestsText,
 } from "./generationPromptHints";
 
 describe("generationPromptHints", () => {
@@ -108,5 +112,32 @@ describe("generationPromptHints", () => {
     const block = buildDecorTextEdgeRestrictions(false);
     expect(block).toContain("5%");
     expect(buildDecorTextSafeMarginShortConstraint()).toContain("5%");
+  });
+
+  it("decor allows text only for Vintage Poster or explicit user ask", () => {
+    expect(styleIsVintagePoster("Vintage Poster", "period typography")).toBe(true);
+    expect(styleIsVintagePoster("Watercolor", "soft watercolor scene")).toBe(false);
+    expect(userPromptRequestsText("racoon see no evil")).toBe(false);
+    expect(userPromptRequestsText('with the words "SEE NO EVIL"')).toBe(true);
+    expect(
+      decorAllowsGeneratedText({
+        styleName: "Watercolor",
+        stylePrefix: "soft watercolor",
+        userPrompt: "three raccoons on a tapestry",
+      }),
+    ).toBe(false);
+    expect(
+      decorAllowsGeneratedText({
+        promptBlob: "A full-bleed vintage travel illustration ... period typography ...",
+        userPrompt: "shark on beach",
+      }),
+    ).toBe(true);
+    expect(
+      decorAllowsGeneratedText({
+        styleName: "Watercolor",
+        userPrompt: "add text saying hear no evil",
+      }),
+    ).toBe(true);
+    expect(buildDecorNoTextUnlessAskedShortConstraint()).toMatch(/Do NOT add any text/i);
   });
 });
