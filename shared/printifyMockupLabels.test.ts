@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  isContext1MockupLabel,
   isContextLikeMockupLabel,
+  isOnPersonMockupLabel,
+  lifestyleMockupPreferenceRank,
   normalizeMockupCameraLabel,
 } from "./printifyMockupLabels";
 
@@ -20,6 +23,18 @@ describe("isContextLikeMockupLabel", () => {
     expect(isContextLikeMockupLabel("on+person")).toBe(true);
     expect(isContextLikeMockupLabel("on-person")).toBe(true);
     expect(isContextLikeMockupLabel("on-person-1-front")).toBe(true);
+  });
+
+  it("ranks On Person above Context 1 for Lifestyle Shot", () => {
+    expect(lifestyleMockupPreferenceRank("on-person")).toBeLessThan(
+      lifestyleMockupPreferenceRank("context-1"),
+    );
+    expect(lifestyleMockupPreferenceRank("on-person")).toBeLessThan(
+      lifestyleMockupPreferenceRank("context-2"),
+    );
+    expect(isOnPersonMockupLabel("On Person")).toBe(true);
+    expect(isContext1MockupLabel("context-1")).toBe(true);
+    expect(isContext1MockupLabel("context-2")).toBe(false);
   });
 
   it("rejects flatlay and side-person cameras", () => {

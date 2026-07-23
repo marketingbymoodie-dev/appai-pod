@@ -100,7 +100,10 @@ import {
 } from "@/lib/postGenGalleryNav";
 import {
   FLAT_LIFESTYLE_PRINTIFY_SCALE_FACTOR,
+  isContext1MockupLabel,
   isContextLikeMockupLabel,
+  isOnPersonMockupLabel,
+  lifestyleMockupPreferenceRank,
 } from "@shared/printifyMockupLabels";
 import { hasExactVariantMapping, hasVariantMappingForColor } from "@shared/variantMapResolve";
 
@@ -1099,6 +1102,7 @@ function formatPostGenMockupLabel(raw: string, fallback: string): string {
   if (l === "front" || l === "mockup 1") return "Front";
   if (l === "back" || l === "mockup 2") return "Back";
   if (l.startsWith("printers") || l.startsWith("printify")) return "Printers Mockup";
+  if (/\bon[\s-]*person\b/i.test(l)) return "On Person";
   if (/lifestyle/i.test(l)) return "Lifestyle";
   if (/(context|room|home|bedroom|wall)/i.test(l)) return "Context";
   return raw || fallback;
@@ -4126,10 +4130,23 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             }
           } else {
             // Strict: only real lifestyle/context/room cameras — never flatlay fallback.
-            const contextImgs = absImages.filter((img: { label: string }) =>
-              isPrintifyContextMockupLabel(img.label),
+            // Prefer On Person over Context 1 (tote table flatlay).
+            const contextImgs = absImages
+              .filter((img: { label: string }) => isPrintifyContextMockupLabel(img.label))
+              .sort(
+                (a: { label: string }, b: { label: string }) =>
+                  lifestyleMockupPreferenceRank(a.label) -
+                  lifestyleMockupPreferenceRank(b.label),
+              );
+            const hasOnPerson = contextImgs.some((img: { label: string }) =>
+              isOnPersonMockupLabel(img.label),
             );
-            extras = contextImgs.slice(0, 2);
+            extras = contextImgs
+              .filter(
+                (img: { label: string }) =>
+                  !(hasOnPerson && isContext1MockupLabel(img.label)),
+              )
+              .slice(0, 2);
             if (extras.length === 0) {
               console.log(
                 "[Mockups] Context merge: no lifestyle/context views from Printify",
@@ -4155,11 +4172,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             seen.add(key);
             const label = mergeProductMockups
               ? "printers"
-              : /lifestyle/i.test(extra.label)
-                ? "lifestyle"
-                : /context/i.test(extra.label)
-                  ? extra.label
-                  : "context";
+              : isOnPersonMockupLabel(extra.label)
+                ? "on-person"
+                : /lifestyle/i.test(extra.label)
+                  ? "lifestyle"
+                  : /context/i.test(extra.label)
+                    ? extra.label
+                    : "context";
             mergedImages.push({ url: extra.url, label });
           }
           const mergedUrls = mergedImages.map((m) => m.url);
@@ -7246,6 +7265,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     frameColorsArePhoneModels,
   ]);
 
+  const handleFlatPlacerViewChange = useCallback(() => {
+    // Leave Lifestyle / catalog override — show the live editor blank again.
+    setSelectedMockupIndex(0);
+  }, []);
+
   const handleFlatPlacerChange = useCallback(
     (s: FlatProductPlacerState) => {
       const artworkUrl = generatedDesign?.imageUrl
@@ -8259,6 +8283,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       selectedPostGenItem.kind === "catalog")
       ? selectedPostGenItem.url
       : null;
+  const flatCanvasOverrideLabel = flatCanvasOverrideUrl
+    ? formatPostGenMockupLabel(selectedPostGenItem?.label ?? "", "Context")
+    : null;
 
   /**
    * On-demand Printify for framed/catalog flats (lifestyle) and tapestry (product weave).
@@ -8329,7 +8356,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         title: isTapestryPrinters ? "Printers mockup ready" : "Lifestyle shot ready",
         description: isTapestryPrinters
           ? "Showing the printer’s woven mockup — use the dots or arrows to switch views."
-          : "Showing Context — use the dots or arrows under the preview to switch views.",
+          : "Showing On Person — use the dots or arrows under the preview to switch views. Front/Back returns to the editor.",
       });
     } finally {
       setLifestyleShotLoading(false);
@@ -10787,6 +10814,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       artworkUrl: toAbsoluteImageUrl(generatedDesign!.imageUrl),
                     }}
                     onChange={handleFlatPlacerChange}
+                    onViewChange={handleFlatPlacerViewChange}
                     onApply={handleFlatApply}
                     onApplyStatusChange={setFlatApplyStatus}
                     onAssetsFailed={handleFlatAssetsFailed}
@@ -10805,6 +10833,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     // from onChange alone or flush becomes a no-op.
                     skipInitialAutoApply={!isAdminTester && !!flatPlacerState}
                     canvasOverrideUrl={flatCanvasOverrideUrl}
+                    canvasOverrideLabel={flatCanvasOverrideLabel}
                     lifestyleAction={
                       canRequestLifestyleShot
                         ? {

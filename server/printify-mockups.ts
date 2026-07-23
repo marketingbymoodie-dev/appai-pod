@@ -11,11 +11,18 @@ import {
   resolvePrintifyPanelImageId,
 } from "@shared/pulloverPocketPrintMerge";
 import {
+  isContext1MockupLabel,
   isContextLikeMockupLabel,
+  isOnPersonMockupLabel,
+  lifestyleMockupPreferenceRank,
   normalizeMockupCameraLabel,
 } from "@shared/printifyMockupLabels";
 
-export { isContextLikeMockupLabel, normalizeMockupCameraLabel } from "@shared/printifyMockupLabels";
+export {
+  isContextLikeMockupLabel,
+  isOnPersonMockupLabel,
+  normalizeMockupCameraLabel,
+} from "@shared/printifyMockupLabels";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 const MAX_RETRIES = 3;
@@ -798,16 +805,16 @@ function selectPreferredViews(
     ...img,
     norm: normalizeMockupCameraLabel(img.label),
   }));
-  // Lifestyle Shot: only context-like cameras — do not fall through to flat
-  // "front"/"back" from PREFERRED_LABELS (tote Context 2 / On Person).
+  // Lifestyle Shot: On Person first (tote), then Context 2 — not Context 1 flatlay.
+  // Do not fall through to flat "front"/"back" from PREFERRED_LABELS.
   const preferredLabels = frontBackOnly
     ? AOP_FLAT_LAY_LABELS
     : preferContextViews
       ? ([
-          "lifestyle",
-          "context",
           "on person",
-          "on-person",
+          "lifestyle",
+          "context 2",
+          "context",
           "bedroom",
           "bed",
           "room",
@@ -817,9 +824,11 @@ function selectPreferredViews(
       : PREFERRED_LABELS;
   const maxViews = frontBackOnly
     ? AOP_FLAT_LAY_LABELS.length
-    : printPlacement === "front" || printPlacement === "back"
-      ? 1
-      : MAX_MOCKUP_VIEWS;
+    : preferContextViews
+      ? 2
+      : printPlacement === "front" || printPlacement === "back"
+        ? 1
+        : MAX_MOCKUP_VIEWS;
 
   for (const pref of preferredLabels) {
     const prefNorm = normalizeMockupCameraLabel(pref);
@@ -858,6 +867,17 @@ function selectPreferredViews(
       seenUrls.add(img.url);
       if (selected.length >= maxViews) break;
     }
+  }
+
+  if (preferContextViews && selected.length > 0) {
+    const hasOnPerson = selected.some((img) => isOnPersonMockupLabel(img.label));
+    const ranked = selected
+      .filter((img) => !(hasOnPerson && isContext1MockupLabel(img.label)))
+      .sort(
+        (a, b) =>
+          lifestyleMockupPreferenceRank(a.label) - lifestyleMockupPreferenceRank(b.label),
+      );
+    return ranked.slice(0, maxViews);
   }
 
   return selected;

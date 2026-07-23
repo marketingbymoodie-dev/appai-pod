@@ -111,6 +111,8 @@ export type FlatProductPlacerProps = {
   initialState?: Partial<FlatProductPlacerState> | null;
   onApply?: (result: FlatProductPlacerApplyResult) => void | Promise<void>;
   onChange?: (state: FlatProductPlacerState) => void;
+  /** Fired when the customer clicks Front / Back (not on every placement edit). */
+  onViewChange?: (view: ViewName) => void;
   /** Fired when an explicit persist starts / finishes (for ATC gating). */
   onApplyStatusChange?: (status: FlatApplyStatus) => void;
   /** Called when blank/mask assets cannot load — parent should fall back to Printify. */
@@ -147,6 +149,8 @@ export type FlatProductPlacerProps = {
   } | null;
   /** When set, canvas shows this image (e.g. Printify Context) instead of live placer. */
   canvasOverrideUrl?: string | null;
+  /** Badge text when showing a Lifestyle / catalog override (e.g. "On Person"). */
+  canvasOverrideLabel?: string | null;
 };
 
 type LoadedAssets = {
@@ -244,6 +248,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       initialState,
       onApply,
       onChange,
+      onViewChange,
       onApplyStatusChange,
       onAssetsFailed,
       skipInitialAutoApply = false,
@@ -255,6 +260,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       catalogSizeAspectRatio = null,
       lifestyleAction = null,
       canvasOverrideUrl = null,
+      canvasOverrideLabel = null,
     },
     ref,
   ) {
@@ -570,8 +576,14 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   }, [state, artworkImg, assetsLoading, skipInitialAutoApply, colorId]);
 
   // ---------- Mutators ----------
+  const onViewChangeRef = useRef(onViewChange);
+  onViewChangeRef.current = onViewChange;
   const setView = useCallback((view: ViewName) => {
-    setState((prev) => (prev ? { ...prev, view } : prev));
+    setState((prev) => {
+      if (!prev || prev.view === view) return prev;
+      queueMicrotask(() => onViewChangeRef.current?.(view));
+      return { ...prev, view };
+    });
   }, []);
 
   const setEnabled = useCallback((view: ViewName, on: boolean) => {
@@ -852,7 +864,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             )}
             {canvasOverrideUrl && (
               <div className="pointer-events-none absolute left-2 top-2 rounded bg-background/85 px-2 py-1 text-[10px] font-medium text-foreground shadow-sm">
-                Context
+                {canvasOverrideLabel?.trim() || "Context"}
               </div>
             )}
           </div>

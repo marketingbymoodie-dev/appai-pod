@@ -508,7 +508,7 @@ describe("Mockup camera_label preference", () => {
     ]);
   });
 
-  it("preferContextViews surfaces Context 2 / On Person before flat front", () => {
+  it("preferContextViews surfaces On Person before Context / flat front", () => {
     const images = [
       { url: "https://x.example/front.png", label: "front" },
       { url: "https://x.example/side.png", label: "front side" },
@@ -516,13 +516,13 @@ describe("Mockup camera_label preference", () => {
       { url: "https://x.example/person.png", label: "On Person" },
     ];
     const picked = pickPreferredMockupViews(images, false, undefined, true).map((p) => p.label);
-    expect(picked[0]).toBe("Context 2");
-    expect(picked).toContain("On Person");
+    expect(picked[0]).toBe("On Person");
+    expect(picked).toContain("Context 2");
     expect(picked).not.toContain("front");
     expect(picked).not.toContain("front side");
   });
 
-  it("preferContextViews keeps tote on-person/context even when AOP frontBackOnly would apply", () => {
+  it("preferContextViews prefers tote On Person and drops Context 1", () => {
     // Real Printify create-product labels for Shoulder Tote bp 836.
     const images = [
       { url: "https://x.example/front.png", label: "front" },
@@ -532,14 +532,13 @@ describe("Mockup camera_label preference", () => {
       { url: "https://x.example/c2.png", label: "context-2" },
     ];
     // Bug shape: isAop → frontBackOnly=true strips lifestyle (only flat lays).
-    // Lifestyle Shot must call with frontBackOnly=false when preferContextViews.
     const aopTrimmed = pickPreferredMockupViews(images, true, undefined, true).map((p) => p.label);
     expect(aopTrimmed).toEqual(["front", "back"]);
 
     const lifestyle = pickPreferredMockupViews(images, false, undefined, true).map((p) => p.label);
-    expect(lifestyle[0]).toBe("context-1");
-    expect(lifestyle).toContain("on-person");
+    expect(lifestyle[0]).toBe("on-person");
     expect(lifestyle).toContain("context-2");
+    expect(lifestyle).not.toContain("context-1");
     expect(lifestyle).not.toContain("front");
     expect(lifestyle).not.toContain("back");
   });
