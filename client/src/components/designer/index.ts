@@ -1,5 +1,6 @@
 export { MockupPreview } from "./MockupPreview";
 export { ProductMockup } from "./ProductMockup";
+export { MockupZoomPreview } from "./MockupZoomPreview";
 export { ZoomControls } from "./ZoomControls";
 export { FrameColorSelector } from "./FrameColorSelector";
 export { SizeSelector } from "./SizeSelector";

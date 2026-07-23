@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import type { PrintSize, FrameColor, ImageTransform, PrintShape, DesignerType } from "./types";
 import { SafeZoneMask } from "./SafeZoneMask";
 import ArtworkTransformOverlay from "./ArtworkTransformOverlay";
+import { MockupZoomPreview } from "./MockupZoomPreview";
 
 interface ProductMockupProps {
   imageUrl?: string | null;
@@ -609,6 +610,8 @@ export function ProductMockup({
   };
 
   const showTransformOverlay = !!imageUrl && enableDrag && !mockupUrl && !isLoading;
+  // Composite mockup slides only — never on Artwork drag or while loading.
+  const showMockupZoomPreview = !!mockupUrl && !isLoading && !enableDrag;
   // Desktop Shopify embed: parent page owns scroll. `touch-action: pan-y` makes Chrome
   // consume wheel at the compositor on this box before our forward handler runs.
   const isDesktopEmbed =
@@ -646,6 +649,9 @@ export function ProductMockup({
             <span>Loading...</span>
           </div>
         </div>
+      )}
+      {showMockupZoomPreview && (
+        <MockupZoomPreview imageUrl={mockupUrl!} enabled />
       )}
     </div>
   );
