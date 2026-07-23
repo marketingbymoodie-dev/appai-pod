@@ -73,7 +73,10 @@ import {
   styleChoicesIncludeCanvasOrientation,
   type CanvasOrientation,
 } from "@shared/productVariantOptions";
-import { resolveBlankUrlForSize } from "@shared/catalogSizeBlanks";
+import {
+  isCatalogSizeBlankBlueprint,
+  resolveBlankUrlForSize,
+} from "@shared/catalogSizeBlanks";
 import { resolveFabricWeaveTexture } from "@shared/fabricWeave";
 import {
   filterStylePresetsForPage,
@@ -8023,8 +8026,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     !flatRenderFailed
   );
   const flatPlacerActive = flatPlacerEligible && flatPlacerEditOpen;
+  // Framed decor + catalog size blanks (wall decals / comforter) share the
+  // on-demand Printify Context / Lifestyle Shot path.
   const canRequestLifestyleShot = !!(
-    flatDecorMode &&
+    (flatDecorMode ||
+      isCatalogSizeBlankBlueprint(productTypeConfig?.printifyBlueprintId)) &&
     flatPlacerEligible &&
     productTypeConfig?.hasPrintifyMockups &&
     selectedSize &&

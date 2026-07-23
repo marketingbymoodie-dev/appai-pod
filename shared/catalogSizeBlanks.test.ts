@@ -44,19 +44,25 @@ describe("catalogSizeBlanks", () => {
     const p18x24 = visibleRectForCatalogSizeAspect("3:4");
     expect(p18x24).toBeTruthy();
     expect(p18x24!.width / p18x24!.height).toBeCloseTo(0.75, 2);
-    expect(p18x24!.height).toBeCloseTo(0.75, 2);
+    // Outer sheet is 0.75; print inset (0.965) excludes drop-shadow fringe.
+    expect(p18x24!.height).toBeCloseTo(0.75 * 0.965, 3);
 
     const l24x18 = visibleRectForCatalogSizeAspect("4:3");
     expect(l24x18).toBeTruthy();
     expect(l24x18!.width / l24x18!.height).toBeCloseTo(4 / 3, 2);
-    expect(l24x18!.width).toBeCloseTo(0.75, 2);
+    expect(l24x18!.width).toBeCloseTo(0.75 * 0.965, 3);
 
     // Must NOT match 2:3 / 3:2 (the shared-harvest failure mode).
     expect(p18x24!.width / p18x24!.height).not.toBeCloseTo(2 / 3, 2);
     expect(l24x18!.width / l24x18!.height).not.toBeCloseTo(3 / 2, 2);
 
     const p12x18 = visibleRectForCatalogSizeAspect("2:3");
-    expect(p12x18!.width).toBeCloseTo(0.5, 2);
-    expect(p12x18!.height).toBeCloseTo(0.75, 2);
+    expect(p12x18!.width).toBeCloseTo((2 / 3) * 0.75 * 0.965, 3);
+    expect(p12x18!.height).toBeCloseTo(0.75 * 0.965, 3);
+  });
+
+  it("can skip print inset when measuring the outer sheet bbox", () => {
+    const outer = visibleRectForCatalogSizeAspect("4:3", 0.75, 1);
+    expect(outer!.width).toBeCloseTo(0.75, 3);
   });
 });

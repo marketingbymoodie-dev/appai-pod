@@ -106,7 +106,7 @@ describe("resolveFlatViewCalibration catalog size blank refit", () => {
     expect(calib?.visibleRectNormalized).toBeTruthy();
     const r = calib!.visibleRectNormalized!;
     expect(r.width / r.height).toBeCloseTo(0.75, 2);
-    expect(r.height).toBeCloseTo(0.75, 2);
+    expect(r.height).toBeCloseTo(0.75 * 0.965, 3);
     expect(r.width / r.height).not.toBeCloseTo(2 / 3, 2);
   });
 
@@ -119,7 +119,7 @@ describe("resolveFlatViewCalibration catalog size blank refit", () => {
     });
     const r = calib!.visibleRectNormalized!;
     expect(r.width / r.height).toBeCloseTo(4 / 3, 2);
-    expect(r.width).toBeCloseTo(0.75, 2);
+    expect(r.width).toBeCloseTo(0.75 * 0.965, 3);
     expect(r.width / r.height).not.toBeCloseTo(1.5, 2);
   });
 });

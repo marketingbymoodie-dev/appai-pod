@@ -78,9 +78,17 @@ export type BaseMockupImagesLike = {
 
 /**
  * Catalog size blanks are square PNGs with the sticker letterboxed + drop-shadow.
- * Empirically the white sheet is ~75% of a full edge-touching letterbox (all 759 sizes).
+ * Empirically the outer sticker+shadow bbox is ~75% of a full edge-touching letterbox
+ * (all 759 sizes). Print guide then shrinks further by PRINT_INSET so art/clip stay
+ * on the printable face and do not fill the wall-shadow fringe.
  */
 export const CATALOG_SIZE_BLANK_SHEET_SCALE = 0.75;
+
+/**
+ * Extra shrink of the print guide inside the outer sheet bbox (~3.5%).
+ * Matches ~12–16px drop-shadow fringe on 1024² wall-decal catalog blanks.
+ */
+export const CATALOG_SIZE_BLANK_PRINT_INSET = 0.965;
 
 export type NormRect = { x: number; y: number; width: number; height: number };
 
@@ -88,31 +96,34 @@ export type NormRect = { x: number; y: number; width: number; height: number };
  * Normalized print guide for a size aspect inside a square catalog blank.
  * Matches `scripts/assets/catalog-blanks/wall-decals/*.png` framing so the
  * dashed placer outline reaches the sticker's long edges (fixes 18×24 / 24×18
- * when harvest only stored a shared 2:3 visibleRect).
+ * when harvest only stored a shared 2:3 visibleRect), then insets past the
+ * mockup drop-shadow so print preview does not spill into non-print area.
  */
 export function visibleRectForCatalogSizeAspect(
   aspectRatio: string | null | undefined,
   sheetScale: number = CATALOG_SIZE_BLANK_SHEET_SCALE,
+  printInset: number = CATALOG_SIZE_BLANK_PRINT_INSET,
 ): NormRect | null {
   if (!aspectRatio) return null;
   const [aw, ah] = String(aspectRatio).split(":").map(Number);
   if (!(aw > 0 && ah > 0) || !(sheetScale > 0 && sheetScale <= 1)) return null;
+  if (!(printInset > 0 && printInset <= 1)) return null;
   const ar = aw / ah;
   const round = (n: number) => +n.toFixed(5);
+  let width: number;
+  let height: number;
   if (ar >= 1) {
-    // Landscape: full letterbox fills width, then shrink for drop-shadow margin.
-    const width = sheetScale;
-    const height = (1 / ar) * sheetScale;
-    return {
-      x: round((1 - width) / 2),
-      y: round((1 - height) / 2),
-      width: round(width),
-      height: round(height),
-    };
+    // Landscape: full letterbox fills width, then shrink for outer sheet margin.
+    width = sheetScale;
+    height = (1 / ar) * sheetScale;
+  } else {
+    // Portrait: full letterbox fills height.
+    width = ar * sheetScale;
+    height = sheetScale;
   }
-  // Portrait: full letterbox fills height.
-  const width = ar * sheetScale;
-  const height = sheetScale;
+  // Inset from center so the guide/clip exclude the catalog blank's wall shadow.
+  width *= printInset;
+  height *= printInset;
   return {
     x: round((1 - width) / 2),
     y: round((1 - height) / 2),
