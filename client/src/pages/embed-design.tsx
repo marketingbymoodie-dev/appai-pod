@@ -4023,6 +4023,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         y: clampedY,
         shop: shopDomain,
         bgColor: aopBgColor,
+        preferContextViews: mergeContextOnly || undefined,
       } : isShopify ? {
         productTypeId: ptId,
         designImageUrl: hostedUrl,
@@ -4038,6 +4039,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         shop: shopDomain,
         sessionToken,
         bgColor: aopBgColor,
+        preferContextViews: mergeContextOnly || undefined,
       } : {
         productTypeId: ptId,
         designImageUrl: hostedUrl,
@@ -4051,6 +4053,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         x: clampedX,
         y: clampedY,
         bgColor: aopBgColor,
+        preferContextViews: mergeContextOnly || undefined,
       };
 
       setMockupError(null);

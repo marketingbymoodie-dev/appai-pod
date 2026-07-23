@@ -101,7 +101,11 @@ async function urlToBase64(
   return { mimeType: contentType, data: buf.toString("base64") };
 }
 
-import { userPromptRequestsMonochrome } from "@shared/generationPromptHints";
+import {
+  buildDecorTextSafeMarginShortConstraint,
+  styleAllowsGeneratedText,
+  userPromptRequestsMonochrome,
+} from "@shared/generationPromptHints";
 
 export type GenerateImageParams = {
   prompt: string;
@@ -246,12 +250,26 @@ function compressPrompt(
     // a compact orientation rule from the requested aspect ratio so landscape framed
     // art and wall decals don't get portrait vignettes with white side bars.
     const orient = buildDecorOrientationShortConstraint(aspectRatio);
+    // Full-bleed for paint/scene, but keep typography off the trim edge (Vintage Poster etc.).
+    // Verbose TEXT AND ELEMENT PLACEMENT blocks are stripped above — re-inject compactly.
+    const textMargin = buildDecorTextSafeMarginShortConstraint();
     const shortConstraints = cylindricalWrap
       ? orient +
         "Full-bleed background to all edges. Keep text and focal subjects in the center 60% (cylindrical wrap safe area). "
       : orient +
-        "Full-bleed, edge-to-edge, no borders, no blank margins, no letterboxing — paint to all four edges. ";
+        "Full-bleed, edge-to-edge, no borders, no blank margins, no letterboxing — paint to all four edges. " +
+        textMargin;
     compressed = shortConstraints + compressed;
+  }
+
+  // Apparel text styles (Opinionated / Quotes) still need a safe margin when text is expected.
+  if (
+    isApparel &&
+    !isAllOverPrint &&
+    styleAllowsGeneratedText(null, raw)
+  ) {
+    compressed =
+      "Keep ALL text/letters at least 5% of the canvas away from every edge. " + compressed;
   }
 
   // Hard truncate — preserve the user's artwork description over verbose constraints

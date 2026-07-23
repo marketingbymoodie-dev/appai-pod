@@ -6,7 +6,14 @@
  * - Structured error responses with step info
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { normalizeMockupCameraLabel, pickPreferredMockupViews, shouldSupplementInlineMockups, extractBase64FromDataUrl, isWrapOnlyPlaceholder } from "./printify-mockups";
+import {
+  normalizeMockupCameraLabel,
+  pickPreferredMockupViews,
+  shouldSupplementInlineMockups,
+  isContextLikeMockupLabel,
+  extractBase64FromDataUrl,
+  isWrapOnlyPlaceholder,
+} from "./printify-mockups";
 
 // We test the module's exported function
 // Mock fetch for Printify API calls
@@ -441,6 +448,44 @@ describe("Mockup camera_label preference", () => {
     expect(
       shouldSupplementInlineMockups([{ url: "https://x.example/f.png", label: "front" }], true),
     ).toBe(false);
+  });
+
+  it("preferContextViews keeps waiting until a lifestyle/context camera appears", () => {
+    expect(
+      shouldSupplementInlineMockups(
+        [
+          { url: "https://x.example/f.png", label: "front" },
+          { url: "https://x.example/s.png", label: "front side" },
+        ],
+        false,
+        true,
+      ),
+    ).toBe(true);
+    expect(
+      shouldSupplementInlineMockups(
+        [
+          { url: "https://x.example/f.png", label: "front" },
+          { url: "https://x.example/c.png", label: "context-1" },
+        ],
+        false,
+        true,
+      ),
+    ).toBe(false);
+    expect(isContextLikeMockupLabel("context-1")).toBe(true);
+    expect(isContextLikeMockupLabel("front side")).toBe(false);
+  });
+
+  it("keeps context-N / wall cameras instead of dropping them after front match", () => {
+    const images = [
+      { url: "https://x.example/front.png", label: "front" },
+      { url: "https://x.example/ctx.png", label: "context-1" },
+      { url: "https://x.example/wall.png", label: "wall" },
+    ];
+    expect(pickPreferredMockupViews(images).map((p) => p.label)).toEqual([
+      "front",
+      "context-1",
+      "wall",
+    ]);
   });
 
   it("dedupes by URL when the same asset appears under two labels", () => {

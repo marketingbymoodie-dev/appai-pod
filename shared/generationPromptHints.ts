@@ -121,6 +121,37 @@ export function useCylindricalWrapPrompt(opts: {
   return !!opts.isKnownWrapAround;
 }
 
+/**
+ * Styles that commonly generate typography (Vintage Poster, Opinionated, Quotes, etc.).
+ * Used to keep text-safe-margin rules even when the user did not type "text" themselves.
+ */
+export function styleAllowsGeneratedText(
+  styleName: string | null | undefined,
+  stylePrefix: string | null | undefined,
+): boolean {
+  const combined = `${styleName || ""} ${stylePrefix || ""}`.toLowerCase();
+  if (!combined.trim()) return false;
+  return (
+    /\bvintage\s+poster\b/.test(combined) ||
+    /\bperiod typography\b/.test(combined) ||
+    /\btypography\b/.test(combined) ||
+    /\blettering\b/.test(combined) ||
+    /\btext stack\b/.test(combined) ||
+    /\bopinionated\b/.test(combined) ||
+    /\bquotes?\b/.test(combined) ||
+    /\bslogan\b/.test(combined) ||
+    /\bwordmark\b/.test(combined)
+  );
+}
+
+/** Compact rule that survives Replicate prompt compression (flat decor / wall art). */
+export function buildDecorTextSafeMarginShortConstraint(): string {
+  return (
+    "Keep ALL text/letters/words at least 5% of the canvas away from every edge " +
+    "(outer 5% border must contain no text). Background/scene may still fill edge-to-edge. "
+  );
+}
+
 /** Edge / text placement rules for decor & hard goods (not apparel chroma). */
 export function buildDecorTextEdgeRestrictions(cylindricalWrap: boolean): string {
   if (cylindricalWrap) {
@@ -132,8 +163,10 @@ TEXT AND ELEMENT PLACEMENT - CRITICAL:
 - This is a WRAP-AROUND cylindrical product - edges will be hidden or wrapped around`;
   }
   return `
-TEXT AND ELEMENT PLACEMENT:
-- Keep all text and important elements within the central 75% of the image
+TEXT AND ELEMENT PLACEMENT - CRITICAL:
+- Keep ALL text, letters, and words at least 5% of the canvas away from every edge
+- The outer 5% border on all four sides must contain NO text (background/scene only)
+- Background and scenery may still fill edge-to-edge — only text must stay inset
 - Avoid placing critical content near the edges where it may be cut off during printing`;
 }
 

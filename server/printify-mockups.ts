@@ -28,6 +28,7 @@ const LEGGINGS_STYLE_PRIORITY = [
   "room",
   "duvet",
   "home",
+  "wall",
   "back",
   "front side",
   "front-side",
@@ -90,6 +91,11 @@ export interface MockupRequest {
   onPrintifyProductCreated?: (productId: string) => void;
   /** When true, build 2650×5250 folded print canvas before upload (fulfillment only). */
   toteFoldedFulfillment?: boolean;
+  /**
+   * Lifestyle Shot: keep polling until a context/lifestyle-like camera appears
+   * (or short timeout), and do not drop non-exact context labels in view selection.
+   */
+  preferContextViews?: boolean;
 }
 
 export interface MockupImage {
@@ -684,15 +690,36 @@ function extractCameraLabel(url: string): string {
   }
 }
 
+/** True when a Printify camera_label looks like a room/lifestyle/context shot. */
+export function isContextLikeMockupLabel(label: string): boolean {
+  const n = normalizeMockupCameraLabel(label);
+  if (!n || n === "front" || n === "back" || n === "mockup 1" || n === "mockup 2") {
+    return false;
+  }
+  // Require room/lifestyle tokens — do not treat "front side" / "side person" as context.
+  return /(lifestyle|context|room|home|bedroom|\bwall\b)/.test(n);
+}
+
 /**
  * True when inline create-product images are likely incomplete.
- * Only wait when we have a single view — ≥2 images is enough for storefront
- * (front/back/carousel). Blocking on lifestyle/context often burns ~2 minutes
+ * Default: only wait when we have a single view — ≥2 images is enough for
+ * storefront carousels. Blocking on lifestyle/context often burns ~2 minutes
  * for blueprints (e.g. tumbler) that never return those camera labels.
+ *
+ * Lifestyle Shot (`preferContextViews`): also wait when we have multiple images
+ * but none look like context/lifestyle yet.
  */
-export function shouldSupplementInlineMockups(images: MockupImage[], isAop: boolean): boolean {
+export function shouldSupplementInlineMockups(
+  images: MockupImage[],
+  isAop: boolean,
+  preferContextViews = false,
+): boolean {
   if (isAop || images.length === 0) return false;
-  return images.length < 2;
+  if (images.length < 2) return true;
+  if (preferContextViews) {
+    return !images.some((img) => isContextLikeMockupLabel(img.label));
+  }
+  return false;
 }
 
 function mergeMockupImages(
@@ -745,6 +772,21 @@ export function isWrapOnlyPlaceholder(
   return positions.length > 0 && !hasBack;
 }
 
+/**
+ * Exact match, or numbered suffixes like `context-1` / `lifestyle 2`.
+ * Does NOT treat `front side` as a match for `front` (those have their own preferred tokens).
+ */
+function labelMatchesPreferredToken(norm: string, prefNorm: string): boolean {
+  if (!norm || !prefNorm) return false;
+  if (norm === prefNorm) return true;
+  let rest: string | null = null;
+  if (norm.startsWith(`${prefNorm}-`)) rest = norm.slice(prefNorm.length + 1);
+  else if (norm.startsWith(`${prefNorm} `)) rest = norm.slice(prefNorm.length + 1);
+  else if (norm.startsWith(`${prefNorm}_`)) rest = norm.slice(prefNorm.length + 1);
+  if (rest === null) return false;
+  return /^\d+$/.test(rest.trim());
+}
+
 function selectPreferredViews(
   images: MockupImage[],
   frontBackOnly = false,
@@ -768,7 +810,7 @@ function selectPreferredViews(
     if (printPlacement && !labelMatchesPrintPlacement(prefNorm, printPlacement)) continue;
     const match = annotated.find(
       (img) =>
-        img.norm === prefNorm &&
+        labelMatchesPreferredToken(img.norm, prefNorm) &&
         !seenUrls.has(img.url) &&
         (!printPlacement || labelMatchesPrintPlacement(img.norm, printPlacement)),
     );
@@ -786,6 +828,18 @@ function selectPreferredViews(
     return (fallback.length > 0 ? fallback : annotated)
       .slice(0, maxViews)
       .map((img) => ({ url: img.url, label: img.label }));
+  }
+
+  // Keep remaining unique cameras (e.g. wall / context-N) so Lifestyle Shot
+  // is not left with only the preferred `front` match.
+  if (!frontBackOnly && selected.length < maxViews) {
+    for (const img of annotated) {
+      if (seenUrls.has(img.url)) continue;
+      if (printPlacement && !labelMatchesPrintPlacement(img.norm, printPlacement)) continue;
+      selected.push({ url: img.url, label: img.label });
+      seenUrls.add(img.url);
+      if (selected.length >= maxViews) break;
+    }
   }
 
   return selected;
@@ -1327,14 +1381,17 @@ export async function generatePrintifyMockup(
       };
     }
 
+    const preferContextViews = !!request.preferContextViews;
     const supplementInline = mockupData
-      ? shouldSupplementInlineMockups(mockupData.images, isAop)
+      ? shouldSupplementInlineMockups(mockupData.images, isAop, preferContextViews)
       : false;
 
     if (!mockupData || supplementInline) {
       const pollStarted = Date.now();
-      // Single-view supplement: short budget (~8–12s). Full poll when create returned nothing.
-      const pollRetries = supplementInline && mockupData ? 5 : 60;
+      // Single-view / lifestyle supplement: short budget. Full poll when create returned nothing.
+      // Lifestyle Shot gets a longer short-poll so context cameras can arrive.
+      const pollRetries =
+        supplementInline && mockupData ? (preferContextViews ? 12 : 5) : 60;
       try {
         const polled = await pRetry(
           async (attemptNumber) => {
@@ -1344,9 +1401,13 @@ export async function generatePrintifyMockup(
               throw new Error("Mockups not ready yet");
             }
             const merged = mergeMockupImages(mockupData, data);
-            if (supplementInline && shouldSupplementInlineMockups(merged.images, isAop)) {
+            if (
+              supplementInline &&
+              shouldSupplementInlineMockups(merged.images, isAop, preferContextViews)
+            ) {
               console.log(
-                `[Printify Mockup] Poll attempt ${attemptNumber}: ${merged.images.length} image(s), still waiting for additional views`,
+                `[Printify Mockup] Poll attempt ${attemptNumber}: ${merged.images.length} image(s), still waiting for additional views` +
+                  (preferContextViews ? " (prefer context)" : ""),
               );
               throw new Error("Additional mockup views not ready yet");
             }

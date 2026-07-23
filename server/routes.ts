@@ -8382,7 +8382,7 @@ ${orientationExtra}
     // Generate correlationId before try so it's available in catch
     const correlationId = `mockup_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     try {
-      const { productTypeId: requestedProductTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, mirrorLegs, panelUrls, printOnBack, printPlacement, bgColor } = req.body;
+      const { productTypeId: requestedProductTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, mirrorLegs, panelUrls, printOnBack, printPlacement, bgColor, preferContextViews } = req.body;
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
@@ -8582,9 +8582,16 @@ ${orientationExtra}
         mirrorLegs: !!mirrorLegs,
         panelUrls: Array.isArray(panelUrls) && panelUrls.length > 0 ? panelUrls : undefined,
         bgColor: typeof bgColor === "string" ? bgColor : undefined,
+        preferContextViews: !!preferContextViews,
       }, {
         correlationId,
-        cacheParts: { shop, productTypeId: productType.id, sizeId, printPlacement: effectivePrintPlacement ?? (effectiveDoubleSided ? "both" : "front") },
+        cacheParts: {
+          shop,
+          productTypeId: productType.id,
+          sizeId,
+          printPlacement: effectivePrintPlacement ?? (effectiveDoubleSided ? "both" : "front"),
+          preferContextViews: !!preferContextViews,
+        },
       });
 
       console.log(`[Storefront Mockup] [${correlationId}] Result:`, {
@@ -16001,7 +16008,7 @@ ${orientationExtra}
   app.post("/api/mockup/generate", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
-      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, mirrorLegs, panelUrls, printOnBack, printPlacement, bgColor } = req.body;
+      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, mirrorLegs, panelUrls, printOnBack, printPlacement, bgColor, preferContextViews } = req.body;
 
       if (!productTypeId || !designImageUrl) {
         return res.status(400).json({ error: "Missing required fields" });
@@ -16097,9 +16104,16 @@ ${orientationExtra}
         mirrorLegs: !!mirrorLegs,
         panelUrls: Array.isArray(panelUrls) && panelUrls.length > 0 ? panelUrls : undefined,
         bgColor: typeof bgColor === "string" ? bgColor : undefined,
+        preferContextViews: !!preferContextViews,
       }, {
         correlationId,
-        cacheParts: { userId, productTypeId: productType.id, sizeId, printPlacement: effectivePrintPlacement ?? (effectiveDoubleSided ? "both" : "front") },
+        cacheParts: {
+          userId,
+          productTypeId: productType.id,
+          sizeId,
+          printPlacement: effectivePrintPlacement ?? (effectiveDoubleSided ? "both" : "front"),
+          preferContextViews: !!preferContextViews,
+        },
       });
 
       console.log("[Mockup Generate] Result:", { jobId, queued: !cached, success: cached?.success, mockups: cached?.mockupImages?.length });
@@ -16115,7 +16129,7 @@ ${orientationExtra}
   // Uses Shopify session tokens instead of Replit auth
   app.post("/api/shopify/mockup", async (req: Request, res: Response) => {
     try {
-      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, sessionToken, mirrorLegs, panelUrls, printOnBack, printPlacement, bgColor } = req.body;
+      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, sessionToken, mirrorLegs, panelUrls, printOnBack, printPlacement, bgColor, preferContextViews } = req.body;
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
@@ -16240,9 +16254,16 @@ ${orientationExtra}
         mirrorLegs: !!mirrorLegs,
         panelUrls: Array.isArray(panelUrls) && panelUrls.length > 0 ? panelUrls : undefined,
         bgColor: typeof bgColor === "string" ? bgColor : undefined,
+        preferContextViews: !!preferContextViews,
       }, {
         correlationId,
-        cacheParts: { shop, productTypeId: productType.id, sizeId, printPlacement: effectivePrintPlacement ?? (effectiveDoubleSided ? "both" : "front") },
+        cacheParts: {
+          shop,
+          productTypeId: productType.id,
+          sizeId,
+          printPlacement: effectivePrintPlacement ?? (effectiveDoubleSided ? "both" : "front"),
+          preferContextViews: !!preferContextViews,
+        },
       });
 
       console.log("[Shopify Mockup] Generated result:", { jobId, queued: !cached, success: cached?.success, mockupCount: cached?.mockupUrls?.length });

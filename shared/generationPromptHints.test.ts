@@ -4,10 +4,13 @@ import {
   apparelMotifDesignColors,
   buildAopPatternSizingRequirements,
   buildAopSizingRequirements,
+  buildDecorTextEdgeRestrictions,
+  buildDecorTextSafeMarginShortConstraint,
   buildOrientationCompositionExtra,
   filterStyleReferenceUrls,
   hasUserArtworkDescription,
   shouldUseStyleReferenceImage,
+  styleAllowsGeneratedText,
   styleIsPatternMaker,
   useCylindricalWrapPrompt,
   userPromptRequestsMonochrome,
@@ -93,5 +96,17 @@ describe("generationPromptHints", () => {
       "ORIENTATION LOCK — PORTRAIT",
     );
     expect(buildOrientationCompositionExtra(1.5, "apparel")).toBe("");
+  });
+
+  it("detects text-friendly styles like Vintage Poster", () => {
+    expect(styleAllowsGeneratedText("Vintage Poster", "period typography")).toBe(true);
+    expect(styleAllowsGeneratedText("Opinionated", "bold stacked text typography")).toBe(true);
+    expect(styleAllowsGeneratedText("Minimalist Icon", "simple icon")).toBe(false);
+  });
+
+  it("requires a 5% text-free border on flat decor", () => {
+    const block = buildDecorTextEdgeRestrictions(false);
+    expect(block).toContain("5%");
+    expect(buildDecorTextSafeMarginShortConstraint()).toContain("5%");
   });
 });
