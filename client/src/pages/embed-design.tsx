@@ -1091,6 +1091,7 @@ function formatPostGenMockupLabel(raw: string, fallback: string): string {
   const l = raw.toLowerCase();
   if (l === "front" || l === "mockup 1") return "Front";
   if (l === "back" || l === "mockup 2") return "Back";
+  if (l.startsWith("printers") || l.startsWith("printify")) return "Printers Mockup";
   if (/(lifestyle|context|room|home|bedroom|wall)/i.test(l)) return "Context";
   return raw || fallback;
 }
@@ -1102,11 +1103,11 @@ function isPrintifyContextMockupLabel(label: string): boolean {
   return /(lifestyle|context|room|home|bedroom|wall|person|side)/i.test(l);
 }
 
-/** On-demand Printify slides: lifestyle/context OR tapestry product mockups. */
+/** On-demand slides: lifestyle/context OR tapestry Printers Mockup. */
 function isPrintifyOnDemandMockupLabel(label: string): boolean {
   const l = String(label || "").toLowerCase();
   if (!l) return false;
-  if (l.startsWith("printify")) return true;
+  if (l.startsWith("printers") || l.startsWith("printify")) return true;
   return isPrintifyContextMockupLabel(label);
 }
 
@@ -4158,7 +4159,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             if (seen.has(key)) continue;
             seen.add(key);
             const label = mergeProductMockups
-              ? "printify"
+              ? "printers"
               : /context|lifestyle/i.test(extra.label)
                 ? extra.label
                 : "context";
@@ -4176,7 +4177,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           console.log(
             '[Mockups] Merged',
             extras.length,
-            mergeProductMockups ? "product mockup(s)" : "context shot(s)",
+            mergeProductMockups ? "printers mockup(s)" : "context shot(s)",
             "onto",
             fronts.length,
             "flat front(s)",
@@ -8291,7 +8292,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     );
     setLifestyleShotLoading(true);
     setLifestyleShotError(null);
-    const isTapestryPrintify = flatFabricWeave;
+    const isTapestryPrinters = flatFabricWeave;
     try {
       const result = await fetchPrintifyMockups(
         toAbsoluteImageUrl(generatedDesign.imageUrl),
@@ -8306,18 +8307,18 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         undefined,
         undefined,
         undefined,
-        isTapestryPrintify
+        isTapestryPrinters
           ? { mergeProductMockups: true }
           : { mergeContextOnly: true },
       );
       if (!result.ok) {
         const msg =
           result.error ||
-          (isTapestryPrintify ? "Printify mockup failed" : "Lifestyle shot failed");
+          (isTapestryPrinters ? "Printers mockup failed" : "Lifestyle shot failed");
         setLifestyleShotError(msg);
         toast({
-          title: isTapestryPrintify
-            ? "Printify mockup unavailable"
+          title: isTapestryPrinters
+            ? "Printers mockup unavailable"
             : "Lifestyle shot unavailable",
           description: msg,
           variant: "destructive",
@@ -8325,9 +8326,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         return;
       }
       toast({
-        title: isTapestryPrintify ? "Printify mockup ready" : "Lifestyle shot ready",
-        description: isTapestryPrintify
-          ? "Showing Printify’s woven mockup — use the dots or arrows to switch views."
+        title: isTapestryPrinters ? "Printers mockup ready" : "Lifestyle shot ready",
+        description: isTapestryPrinters
+          ? "Showing the printer’s woven mockup — use the dots or arrows to switch views."
           : "Showing Context — use the dots or arrows under the preview to switch views.",
       });
     } finally {
@@ -8357,7 +8358,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flatPlacerActive && flatApplyStatus === "saving"
   );
 
-  const flatMockupBlankKey = `${flatBlankColorId}::${selectedSize ?? ""}::${flatFabricWeave ? "weave" : "plain"}::r${flatMockupRefreshNonce}`;
+  // Stable identity for keeping on-demand Printers/Context slides across re-rasters.
+  // Refresh nonce must NOT be part of this — Apply used to set identity without nonce,
+  // so `…::weave` !== `…::weave::r0` wiped Printers Mockup right after it landed.
+  const flatMockupBlankIdentity = `${flatBlankColorId}::${selectedSize ?? ""}::${flatFabricWeave ? "weave" : "plain"}`;
+  const flatMockupBlankKey = `${flatMockupBlankIdentity}::r${flatMockupRefreshNonce}`;
 
   // Force mockup re-raster when blank / size changes (apparel + framed decor — same auto path as HFP Printify).
   useEffect(() => {
@@ -8517,10 +8522,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         }
         setFlatRenderFailed(false);
         flatFrontMockupsRef.current = images;
-        // Keep lifestyle/context across placement re-rasters (framed + wall decals).
-        // Only drop them on size/colour blank-key change — old Context won't match.
+        // Keep Printers/Context across placement re-rasters.
+        // Only drop on size/colour/artwork identity change — not refresh-nonce bumps.
         const blankKeyChanged =
-          flatMockupBlankKey !== currentMockupColorRef.current;
+          flatMockupBlankIdentity !== currentMockupColorRef.current;
         setPrintifyMockupImages((prev) => {
           if (blankKeyChanged) return images.slice(0, 4);
           const seen = new Set(images.map((i) => mockupImageUrlKey(i.url)));
@@ -8548,11 +8553,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         setSelectedMockupIndex((prev) => (prev === 0 ? 1 : prev));
         setMockupsStale(false);
         setLifestyleShotError(null);
-        currentMockupColorRef.current = flatMockupBlankKey;
+        currentMockupColorRef.current = flatMockupBlankIdentity;
         setFlatMockupRefreshing(false);
         void persistFlatMockupsForGallery(
           images.map((i) => i.url),
-          flatMockupBlankKey,
+          flatMockupBlankIdentity,
         );
       })();
     }, 200);
@@ -8568,6 +8573,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     generatedDesign?.imageUrl,
     flatBlankColorId,
     flatMockupBlankKey,
+    flatMockupBlankIdentity,
     printPlacement,
     flatDecorMode,
     flatFabricWeave,
@@ -10807,16 +10813,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             active: lifestyleShotActive,
                             label: flatFabricWeave
                               ? hasLifestyleShot
-                                ? "Refresh Printify Mockup"
-                                : "Printify Mockup"
+                                ? "Refresh Printers Mockup"
+                                : "Printers Mockup"
                               : hasLifestyleShot
                                 ? "Refresh Lifestyle Shot"
                                 : "Lifestyle Shot",
                             loadingLabel: flatFabricWeave
-                              ? "Generating Printify mockup…"
+                              ? "Generating printers mockup…"
                               : "Generating lifestyle…",
                             idleHint: flatFabricWeave
-                              ? "Finish placement (or generate artwork) to enable Printify Mockup"
+                              ? "Finish placement (or generate artwork) to enable Printers Mockup"
                               : "Finish placement (or generate artwork) to enable Lifestyle Shot",
                             error: lifestyleShotError,
                           }

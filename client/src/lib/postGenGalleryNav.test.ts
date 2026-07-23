@@ -26,12 +26,19 @@ describe("stepPostGenGalleryIndex", () => {
     expect(stepPostGenGalleryIndex(0, -1, items, true)).toBe(2);
   });
 
-  it("reaches Printify product mockups while placer is open", () => {
-    const withPrintify: PostGenGalleryNavItem[] = [
+  it("reaches Printers Mockup slides while placer is open", () => {
+    const withPrinters: PostGenGalleryNavItem[] = [
       { kind: "artwork", label: "Artwork" },
       { kind: "mockup", url: "https://x.example/front.png", label: "front" },
-      { kind: "mockup", url: "https://x.example/pfy.png", label: "printify" },
+      { kind: "mockup", url: "https://x.example/pfy.png", label: "printers" },
     ];
-    expect(stepPostGenGalleryIndex(0, 1, withPrintify, true)).toBe(2);
+    expect(stepPostGenGalleryIndex(0, 1, withPrinters, true)).toBe(2);
+    expect(
+      stepPostGenGalleryIndex(0, 1, [
+        { kind: "artwork", label: "Artwork" },
+        { kind: "mockup", url: "https://x.example/front.png", label: "front" },
+        { kind: "mockup", url: "https://x.example/a.png", label: "Printers Mockup" },
+      ], true),
+    ).toBe(2);
   });
 });

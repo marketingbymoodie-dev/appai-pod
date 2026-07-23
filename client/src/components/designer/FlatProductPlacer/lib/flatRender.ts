@@ -1136,7 +1136,7 @@ export function clipFlatArtToPrintArea(
 }
 
 // ---------------------------------------------------------------------------
-// Tapestry blank-blend — TEMP tuning (browser-local until baked as defaults)
+// Tapestry blank-blend (merchant defaults dialed vs Printify woven mockups)
 // ---------------------------------------------------------------------------
 
 export type FabricBlendConfig = {
@@ -1487,10 +1487,7 @@ function buildNoiseOverlay(
   return c;
 }
 
-/**
- * Real tapestry blank × art, with TEMP blend knobs (transparency, vibrance,
- * grain/speckle, lineal X/Y). Defaults stay neutral until merchant tunes them.
- */
+/** Real tapestry blank × art using shipped FabricBlendConfig defaults. */
 function applySimpleBlankMultiply(
   artCanvas: HTMLCanvasElement,
   artCtx: CanvasRenderingContext2D,

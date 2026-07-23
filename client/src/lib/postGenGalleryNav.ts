@@ -7,7 +7,7 @@ export function isPostGenContextLabel(label: string): boolean {
   const l = String(label || "").toLowerCase();
   if (!l) return false;
   if (l === "front" || l === "back" || l === "mockup 1" || l === "mockup 2") return false;
-  if (l.startsWith("printify")) return true;
+  if (l.startsWith("printers") || l.startsWith("printify")) return true;
   return /(lifestyle|context|room|home|bedroom|wall|person|side)/i.test(l);
 }
 
