@@ -686,19 +686,24 @@ async function getProductMockups(
   }
 }
 
-function extractCameraLabel(url: string, img?: { camera_label?: string; label?: string }): string {
+function extractCameraLabel(
+  url: string,
+  img?: { camera_label?: string; label?: string; position?: string },
+): string {
+  const match = url.match(/[?&]camera_label=([^&]+)/i);
+  if (match) {
+    try {
+      return decodeURIComponent(match[1].replace(/\+/g, " "));
+    } catch {
+      return match[1].replace(/\+/g, " ");
+    }
+  }
   const fromObj =
     (typeof img?.camera_label === "string" && img.camera_label) ||
     (typeof img?.label === "string" && img.label) ||
+    (typeof img?.position === "string" && img.position) ||
     "";
-  if (fromObj.trim()) return fromObj.trim();
-  const match = url.match(/[?&]camera_label=([^&]+)/i);
-  if (!match) return "front";
-  try {
-    return decodeURIComponent(match[1].replace(/\+/g, " "));
-  } catch {
-    return match[1].replace(/\+/g, " ");
-  }
+  return fromObj.trim() || "front";
 }
 
 /**
@@ -1461,13 +1466,25 @@ export async function generatePrintifyMockup(
       }
     }
 
-    const placementForViews = isAop ? effectivePrintPlacement : undefined;
+    // Lifestyle Shot: never use AOP front/back-only trimming — tote bags are
+    // often isAllOverPrint in the DB but Printify still emits on-person/context-*.
+    // Also skip printPlacement filtering (e.g. "front" would drop "on-person").
+    const frontBackOnly = preferContextViews ? false : isAop;
+    const placementForViews =
+      preferContextViews || !isAop ? undefined : effectivePrintPlacement;
     const selected = selectPreferredViews(
       mockupData.images,
-      isAop,
+      frontBackOnly,
       placementForViews,
       preferContextViews,
     );
+
+    if (preferContextViews) {
+      console.log(
+        `[Printify Mockup] Lifestyle selection: ${selected.map((s) => s.label).join(", ") || "(none)"} ` +
+          `from ${mockupData.images.length} camera(s): ${mockupData.images.map((i) => i.label).join(", ")}`,
+      );
+    }
 
     return {
       success: true,

@@ -522,6 +522,28 @@ describe("Mockup camera_label preference", () => {
     expect(picked).not.toContain("front side");
   });
 
+  it("preferContextViews keeps tote on-person/context even when AOP frontBackOnly would apply", () => {
+    // Real Printify create-product labels for Shoulder Tote bp 836.
+    const images = [
+      { url: "https://x.example/front.png", label: "front" },
+      { url: "https://x.example/back.png", label: "back" },
+      { url: "https://x.example/person.png", label: "on-person" },
+      { url: "https://x.example/c1.png", label: "context-1" },
+      { url: "https://x.example/c2.png", label: "context-2" },
+    ];
+    // Bug shape: isAop → frontBackOnly=true strips lifestyle (only flat lays).
+    // Lifestyle Shot must call with frontBackOnly=false when preferContextViews.
+    const aopTrimmed = pickPreferredMockupViews(images, true, undefined, true).map((p) => p.label);
+    expect(aopTrimmed).toEqual(["front", "back"]);
+
+    const lifestyle = pickPreferredMockupViews(images, false, undefined, true).map((p) => p.label);
+    expect(lifestyle[0]).toBe("context-1");
+    expect(lifestyle).toContain("on-person");
+    expect(lifestyle).toContain("context-2");
+    expect(lifestyle).not.toContain("front");
+    expect(lifestyle).not.toContain("back");
+  });
+
   it("dedupes by URL when the same asset appears under two labels", () => {
     const u = "https://x.example/same.png";
     const images = [

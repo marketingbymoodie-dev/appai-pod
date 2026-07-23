@@ -6,6 +6,8 @@ export function normalizeMockupCameraLabel(raw: string): string {
   const s = String(raw || "")
     .replace(/\+/g, " ")
     .replace(/_/g, " ")
+    .replace(/-/g, " ")
+    .replace(/\s+/g, " ")
     .trim();
   try {
     return decodeURIComponent(s).trim().toLowerCase();
