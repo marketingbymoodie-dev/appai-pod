@@ -10,6 +10,12 @@ import {
   expandPanelImageIdsWithCollarAliases,
   resolvePrintifyPanelImageId,
 } from "@shared/pulloverPocketPrintMerge";
+import {
+  isContextLikeMockupLabel,
+  normalizeMockupCameraLabel,
+} from "@shared/printifyMockupLabels";
+
+export { isContextLikeMockupLabel, normalizeMockupCameraLabel } from "@shared/printifyMockupLabels";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 const MAX_RETRIES = 3;
@@ -690,16 +696,6 @@ function extractCameraLabel(url: string): string {
   }
 }
 
-/** True when a Printify camera_label looks like a room/lifestyle/context shot. */
-export function isContextLikeMockupLabel(label: string): boolean {
-  const n = normalizeMockupCameraLabel(label);
-  if (!n || n === "front" || n === "back" || n === "mockup 1" || n === "mockup 2") {
-    return false;
-  }
-  // Require room/lifestyle tokens — do not treat "front side" / "side person" as context.
-  return /(lifestyle|context|room|home|bedroom|\bwall\b)/.test(n);
-}
-
 /**
  * True when inline create-product images are likely incomplete.
  * Default: only wait when we have a single view — ≥2 images is enough for
@@ -737,16 +733,6 @@ function mergeMockupImages(
     }
   }
   return { urls: images.map((img) => img.url), images };
-}
-
-/** Normalize Printify camera_label for comparison (spaces, + / %20, case). */
-export function normalizeMockupCameraLabel(raw: string): string {
-  const s = raw.replace(/\+/g, " ").replace(/_/g, " ").trim();
-  try {
-    return decodeURIComponent(s).trim().toLowerCase();
-  } catch {
-    return s.trim().toLowerCase();
-  }
 }
 
 function labelMatchesPrintPlacement(norm: string, placement: "front" | "back" | "both"): boolean {
@@ -791,6 +777,7 @@ function selectPreferredViews(
   images: MockupImage[],
   frontBackOnly = false,
   printPlacement?: "front" | "back" | "both",
+  preferContextViews = false,
 ): MockupImage[] {
   const selected: MockupImage[] = [];
   const seenUrls = new Set<string>();
@@ -798,7 +785,21 @@ function selectPreferredViews(
     ...img,
     norm: normalizeMockupCameraLabel(img.label),
   }));
-  const preferredLabels = frontBackOnly ? AOP_FLAT_LAY_LABELS : PREFERRED_LABELS;
+  // Lifestyle Shot: surface room/context cameras before flat "front".
+  const preferredLabels = frontBackOnly
+    ? AOP_FLAT_LAY_LABELS
+    : preferContextViews
+      ? ([
+          "lifestyle",
+          "context",
+          "bedroom",
+          "bed",
+          "room",
+          "home",
+          "wall",
+          ...PREFERRED_LABELS,
+        ] as const)
+      : PREFERRED_LABELS;
   const maxViews = frontBackOnly
     ? AOP_FLAT_LAY_LABELS.length
     : printPlacement === "front" || printPlacement === "back"
@@ -836,6 +837,8 @@ function selectPreferredViews(
     for (const img of annotated) {
       if (seenUrls.has(img.url)) continue;
       if (printPlacement && !labelMatchesPrintPlacement(img.norm, printPlacement)) continue;
+      // When asking for lifestyle, skip extra flatlay/on-model sides.
+      if (preferContextViews && !isContextLikeMockupLabel(img.label)) continue;
       selected.push({ url: img.url, label: img.label });
       seenUrls.add(img.url);
       if (selected.length >= maxViews) break;
@@ -850,8 +853,9 @@ export function pickPreferredMockupViews(
   images: { url: string; label: string }[],
   frontBackOnly = false,
   printPlacement?: "front" | "back" | "both",
+  preferContextViews = false,
 ): { url: string; label: string }[] {
-  return selectPreferredViews(images, frontBackOnly, printPlacement);
+  return selectPreferredViews(images, frontBackOnly, printPlacement, preferContextViews);
 }
 
 async function deleteProduct(shopId: string, productId: string, apiToken: string) {
@@ -1390,8 +1394,9 @@ export async function generatePrintifyMockup(
       const pollStarted = Date.now();
       // Single-view / lifestyle supplement: short budget. Full poll when create returned nothing.
       // Lifestyle Shot gets a longer short-poll so context cameras can arrive.
+      // Lifestyle: wait longer — tote/decor blueprints often emit context after front.
       const pollRetries =
-        supplementInline && mockupData ? (preferContextViews ? 12 : 5) : 60;
+        supplementInline && mockupData ? (preferContextViews ? 28 : 5) : 60;
       try {
         const polled = await pRetry(
           async (attemptNumber) => {
@@ -1447,7 +1452,12 @@ export async function generatePrintifyMockup(
     }
 
     const placementForViews = isAop ? effectivePrintPlacement : undefined;
-    const selected = selectPreferredViews(mockupData.images, isAop, placementForViews);
+    const selected = selectPreferredViews(
+      mockupData.images,
+      isAop,
+      placementForViews,
+      preferContextViews,
+    );
 
     return {
       success: true,

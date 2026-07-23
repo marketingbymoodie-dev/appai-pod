@@ -98,6 +98,10 @@ import {
   isFlatPlacerGalleryReachable,
   stepPostGenGalleryIndex,
 } from "@/lib/postGenGalleryNav";
+import {
+  FLAT_LIFESTYLE_PRINTIFY_SCALE_FACTOR,
+  isContextLikeMockupLabel,
+} from "@shared/printifyMockupLabels";
 import { hasExactVariantMapping, hasVariantMappingForColor } from "@shared/variantMapResolve";
 
 /** Printify mockup cache key — size affects variant resolution for apparel. */
@@ -1095,15 +1099,14 @@ function formatPostGenMockupLabel(raw: string, fallback: string): string {
   if (l === "front" || l === "mockup 1") return "Front";
   if (l === "back" || l === "mockup 2") return "Back";
   if (l.startsWith("printers") || l.startsWith("printify")) return "Printers Mockup";
-  if (/(lifestyle|context|room|home|bedroom|wall)/i.test(l)) return "Context";
+  if (/lifestyle/i.test(l)) return "Lifestyle";
+  if (/(context|room|home|bedroom|wall)/i.test(l)) return "Context";
   return raw || fallback;
 }
 
+/** Align with server — never treat flatlay "front side" as Lifestyle Context. */
 function isPrintifyContextMockupLabel(label: string): boolean {
-  const l = String(label || "").toLowerCase();
-  if (!l) return false;
-  if (l === "front" || l === "back" || l === "mockup 1" || l === "mockup 2") return false;
-  return /(lifestyle|context|room|home|bedroom|wall|person|side)/i.test(l);
+  return isContextLikeMockupLabel(label);
 }
 
 /** On-demand slides: lifestyle/context OR tapestry Printers Mockup. */
@@ -4122,31 +4125,20 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               return;
             }
           } else {
+            // Strict: only real lifestyle/context/room cameras — never flatlay fallback.
             const contextImgs = absImages.filter((img: { label: string }) =>
               isPrintifyContextMockupLabel(img.label),
             );
-            extras =
-              contextImgs.length > 0
-                ? contextImgs.slice(0, 2)
-                : absImages
-                    .filter((img: { label: string }) => !/^(front|mockup 1)$/i.test(img.label || ""))
-                    .slice(0, 2);
-            // Printify often labels every camera "front" — still take distinct extra URLs.
-            if (extras.length === 0 && absImages.length > 1) {
-              const frontKey = mockupImageUrlKey(absImages[0]?.url || "");
-              extras = absImages
-                .slice(1)
-                .filter((img: { url: string }) => mockupImageUrlKey(img.url) !== frontKey)
-                .slice(0, 2);
-            }
+            extras = contextImgs.slice(0, 2);
             if (extras.length === 0) {
               console.log(
-                '[Mockups] Context merge: no lifestyle/context views from Printify',
+                "[Mockups] Context merge: no lifestyle/context views from Printify",
                 absImages.map((i: { label: string }) => i.label),
               );
               contextMergeOutcome = {
                 ok: false,
-                error: "Printify returned no lifestyle/context views",
+                error:
+                  "Printify returned no lifestyle/context views for this product. Try again in a moment, or use Artwork / catalog views.",
               };
               return;
             }
@@ -4163,9 +4155,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             seen.add(key);
             const label = mergeProductMockups
               ? "printers"
-              : /context|lifestyle/i.test(extra.label)
-                ? extra.label
-                : "context";
+              : /lifestyle/i.test(extra.label)
+                ? "lifestyle"
+                : /context/i.test(extra.label)
+                  ? extra.label
+                  : "context";
             mergedImages.push({ url: extra.url, label });
           }
           const mergedUrls = mergedImages.map((m) => m.url);
@@ -8232,11 +8226,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     );
   }, [flatPlacerActive, selectedMockupIndex, postGenGalleryItems]);
 
-  // Framed decor + catalog size blanks + woven tapestry share on-demand Printify.
+  // Framed decor + catalog blanks + tapestry + folded/flat totes share on-demand Printify.
   const canRequestLifestyleShot = !!(
     (flatDecorMode ||
       isCatalogSizeBlankBlueprint(productTypeConfig?.printifyBlueprintId) ||
-      flatFabricWeave) &&
+      flatFabricWeave ||
+      toteFoldedLayout ||
+      (flatPlacerEligible && !isApparel && !flatEdgeWrapMode)) &&
     flatPlacerEligible &&
     productTypeConfig?.hasPrintifyMockups &&
     selectedSize &&
@@ -8283,7 +8279,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       await flushFlatPlacer({ force: true });
     }
     const front = flatPlacerState?.placements?.front;
-    const scalePct = Math.round(Math.max(0.1, Math.min(2, front?.scale ?? 1.1)) * 100);
+    const coverScale = Math.max(0.1, Math.min(2, front?.scale ?? 1.1));
+    // Damp cover→Printify so Lifestyle art size matches the Artwork placer slide.
+    const scalePct = Math.round(
+      coverScale * FLAT_LIFESTYLE_PRINTIFY_SCALE_FACTOR * 100,
+    );
     const xPct = Math.round(
       Math.max(0, Math.min(100, 50 + (front?.offsetX ?? 0) * 50)),
     );

@@ -22,6 +22,16 @@ describe("stepPostGenGalleryIndex", () => {
     expect(stepPostGenGalleryIndex(0, 1, items, true)).toBe(2);
   });
 
+  it("does not treat flatlay front-side as lifestyle context", () => {
+    expect(
+      isFlatPlacerGalleryReachable({
+        kind: "mockup",
+        url: "https://x.example/fs.png",
+        label: "front side",
+      }),
+    ).toBe(false);
+  });
+
   it("from Context continues to catalog Primary when placer is open", () => {
     expect(stepPostGenGalleryIndex(2, 1, items, true)).toBe(3);
   });
