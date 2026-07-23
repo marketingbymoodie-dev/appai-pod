@@ -656,7 +656,7 @@ function extractMockupImagesFromProduct(product: any): MockupImage[] {
     .filter((img: any) => img && typeof img.src === "string" && img.src.length > 0)
     .map((img: any) => ({
       url: img.src,
-      label: extractCameraLabel(img.src),
+      label: extractCameraLabel(img.src, img),
     }));
 }
 
@@ -686,8 +686,13 @@ async function getProductMockups(
   }
 }
 
-function extractCameraLabel(url: string): string {
-  const match = url.match(/camera_label=([^&]+)/);
+function extractCameraLabel(url: string, img?: { camera_label?: string; label?: string }): string {
+  const fromObj =
+    (typeof img?.camera_label === "string" && img.camera_label) ||
+    (typeof img?.label === "string" && img.label) ||
+    "";
+  if (fromObj.trim()) return fromObj.trim();
+  const match = url.match(/[?&]camera_label=([^&]+)/i);
   if (!match) return "front";
   try {
     return decodeURIComponent(match[1].replace(/\+/g, " "));
@@ -710,11 +715,14 @@ export function shouldSupplementInlineMockups(
   isAop: boolean,
   preferContextViews = false,
 ): boolean {
-  if (isAop || images.length === 0) return false;
-  if (images.length < 2) return true;
+  if (images.length === 0) return false;
+  // Lifestyle Shot must wait even when the blueprint is AOP-titled but using
+  // flat placer (e.g. shoulder tote) — otherwise we never see Context / On Person.
   if (preferContextViews) {
     return !images.some((img) => isContextLikeMockupLabel(img.label));
   }
+  if (isAop) return false;
+  if (images.length < 2) return true;
   return false;
 }
 
@@ -785,19 +793,21 @@ function selectPreferredViews(
     ...img,
     norm: normalizeMockupCameraLabel(img.label),
   }));
-  // Lifestyle Shot: surface room/context cameras before flat "front".
+  // Lifestyle Shot: only context-like cameras — do not fall through to flat
+  // "front"/"back" from PREFERRED_LABELS (tote Context 2 / On Person).
   const preferredLabels = frontBackOnly
     ? AOP_FLAT_LAY_LABELS
     : preferContextViews
       ? ([
           "lifestyle",
           "context",
+          "on person",
+          "on-person",
           "bedroom",
           "bed",
           "room",
           "home",
           "wall",
-          ...PREFERRED_LABELS,
         ] as const)
       : PREFERRED_LABELS;
   const maxViews = frontBackOnly

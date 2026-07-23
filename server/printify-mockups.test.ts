@@ -471,7 +471,27 @@ describe("Mockup camera_label preference", () => {
         true,
       ),
     ).toBe(false);
+    // AOP flag must not short-circuit Lifestyle wait (tote is AOP-titled, flat placer).
+    expect(
+      shouldSupplementInlineMockups(
+        [{ url: "https://x.example/f.png", label: "front" }],
+        true,
+        true,
+      ),
+    ).toBe(true);
+    expect(
+      shouldSupplementInlineMockups(
+        [
+          { url: "https://x.example/f.png", label: "front" },
+          { url: "https://x.example/p.png", label: "On Person" },
+        ],
+        true,
+        true,
+      ),
+    ).toBe(false);
     expect(isContextLikeMockupLabel("context-1")).toBe(true);
+    expect(isContextLikeMockupLabel("Context 2")).toBe(true);
+    expect(isContextLikeMockupLabel("On Person")).toBe(true);
     expect(isContextLikeMockupLabel("front side")).toBe(false);
   });
 
@@ -486,6 +506,20 @@ describe("Mockup camera_label preference", () => {
       "context-1",
       "wall",
     ]);
+  });
+
+  it("preferContextViews surfaces Context 2 / On Person before flat front", () => {
+    const images = [
+      { url: "https://x.example/front.png", label: "front" },
+      { url: "https://x.example/side.png", label: "front side" },
+      { url: "https://x.example/ctx2.png", label: "Context 2" },
+      { url: "https://x.example/person.png", label: "On Person" },
+    ];
+    const picked = pickPreferredMockupViews(images, false, undefined, true).map((p) => p.label);
+    expect(picked[0]).toBe("Context 2");
+    expect(picked).toContain("On Person");
+    expect(picked).not.toContain("front");
+    expect(picked).not.toContain("front side");
   });
 
   it("dedupes by URL when the same asset appears under two labels", () => {

@@ -16,14 +16,23 @@ export function normalizeMockupCameraLabel(raw: string): string {
 
 /**
  * True when a Printify camera_label looks like a room/lifestyle/context shot.
- * Do NOT treat "front side" / "side person" as context (those are flat / on-model).
+ * Includes Printify UI names like "Context 2" and "On Person".
+ * Do NOT treat flatlay "front side" / "side person" as context.
  */
 export function isContextLikeMockupLabel(label: string): boolean {
   const n = normalizeMockupCameraLabel(label);
   if (!n || n === "front" || n === "back" || n === "mockup 1" || n === "mockup 2") {
     return false;
   }
-  return /(lifestyle|context|room|home|bedroom|\bwall\b)/.test(n);
+  // Flatlay / crop angles — not lifestyle.
+  if (/\b(front|back)\s*side\b/.test(n)) return false;
+  if (/\bside\s*person\b/.test(n)) return false;
+  if (/\bfront\s*person\b/.test(n)) return false;
+
+  if (/(lifestyle|context|room|home|bedroom|\bwall\b)/.test(n)) return true;
+  // Printify tote UI: "On Person" (bag on shoulder) — camera_label on+person / on-person.
+  if (/\bon[\s-]*person\b/.test(n)) return true;
+  return false;
 }
 
 /**
