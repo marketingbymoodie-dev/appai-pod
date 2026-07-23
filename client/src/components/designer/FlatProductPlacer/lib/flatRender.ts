@@ -1009,8 +1009,10 @@ function applyShading(
   opts?: { phoneCaseMap?: boolean; fabricWeave?: boolean },
 ): void {
   if (opts?.fabricWeave) {
+    // Cloth colour into art → coarse weave → light blank again so cream peeks through knots.
     applyBlurredBlankFabricMultiply(artCanvas, artCtx, blank, w, h, artworkCorsClean);
-    applyProceduralFabricWeave(artCanvas, artCtx, w, h, { strengthScale: 0.4 });
+    applyProceduralFabricWeave(artCanvas, artCtx, w, h);
+    applyFabricBlankShowThrough(artCanvas, artCtx, blank, w, h, 0.22);
     return;
   }
 
@@ -1165,22 +1167,24 @@ export type WeaveConfig = {
   multiplyAlpha: number;
 };
 
-// Defaults hand-tuned in the admin weave panel against Printify's tapestry render (2026-07).
+// Tuned against Printify woven tapestry mockups (bp 1649) — coarse knot grid,
+// strong micro-contrast in both lights and darks (2026-07).
 export const DEFAULT_WEAVE_CONFIG: WeaveConfig = {
-  weftMin: 2,
-  weftMax: 5,
-  warpMin: 7,
-  warpMax: 8,
-  scale: 0.35,
-  slub: 54,
-  cellNoise: 13,
-  grooveTone: 90, // groove darkness 38
-  ridgeTone: 172, // ridge brightness 44
-  overlayAlpha: 0.4,
-  multiplyAlpha: 0.45,
+  weftMin: 4,
+  weftMax: 8,
+  warpMin: 6,
+  warpMax: 11,
+  scale: 0.95,
+  slub: 70,
+  cellNoise: 22,
+  grooveTone: 62,
+  ridgeTone: 198,
+  overlayAlpha: 0.62,
+  multiplyAlpha: 0.72,
 };
 
-const WEAVE_STORAGE_KEY = "appai:weaveConfig";
+/** Bump when defaults change so stale admin localStorage does not keep a fine weave. */
+const WEAVE_STORAGE_KEY = "appai:weaveConfig:v3";
 
 let activeWeaveConfig: WeaveConfig | null = null;
 
@@ -1319,9 +1323,48 @@ function getFabricWeaveTile(cfg: WeaveConfig): HTMLCanvasElement {
   return tile;
 }
 
+/** Soft-blurred blank clipped to art alpha (cream cloth + folds, less photo grain). */
+function buildFabricClothLayer(
+  artCanvas: HTMLCanvasElement,
+  blank: HTMLImageElement,
+  w: number,
+  h: number,
+): HTMLCanvasElement | null {
+  const cloth = document.createElement("canvas");
+  cloth.width = w;
+  cloth.height = h;
+  const cctx = cloth.getContext("2d");
+  if (!cctx) return null;
+  cctx.filter = "blur(0.8px)";
+  cctx.drawImage(blank, 0, 0, w, h);
+  cctx.filter = "none";
+  cctx.globalCompositeOperation = "destination-in";
+  cctx.drawImage(artCanvas, 0, 0);
+  cctx.globalCompositeOperation = "source-over";
+  return cloth;
+}
+
+/** Light blank soft-light so woven cream peeks through after the knot pass. */
+function applyFabricBlankShowThrough(
+  artCanvas: HTMLCanvasElement,
+  artCtx: CanvasRenderingContext2D,
+  blank: HTMLImageElement,
+  w: number,
+  h: number,
+  alpha: number,
+): void {
+  const cloth = buildFabricClothLayer(artCanvas, blank, w, h);
+  if (!cloth) return;
+  artCtx.save();
+  artCtx.globalCompositeOperation = "soft-light";
+  artCtx.globalAlpha = Math.max(0, Math.min(1, alpha));
+  artCtx.drawImage(cloth, 0, 0);
+  artCtx.restore();
+}
+
 /**
- * Blurred blank luminance multiply for tapestry: real cloth shading from the
- * harvested blank, without the sand-grain speckle that raw photo AO produced.
+ * Blend art into the real tapestry blank: cream/beige cloth colour shows
+ * through (Printify-like), with light fold shading and without photo grain.
  */
 function applyBlurredBlankFabricMultiply(
   artCanvas: HTMLCanvasElement,
@@ -1329,41 +1372,20 @@ function applyBlurredBlankFabricMultiply(
   blank: HTMLImageElement,
   w: number,
   h: number,
-  artworkCorsClean: boolean,
+  _artworkCorsClean: boolean,
 ): void {
-  const shade = document.createElement("canvas");
-  shade.width = w;
-  shade.height = h;
-  const sctx = shade.getContext("2d");
-  if (!sctx) return;
-
-  // Blur kills Printify photo grain; grayscale keeps cloth folds/shadows.
-  sctx.filter = "grayscale(1) blur(2.5px)";
-  sctx.drawImage(blank, 0, 0, w, h);
-  sctx.filter = "none";
-
-  let normalized = artworkCorsClean;
-  if (artworkCorsClean) {
-    try {
-      normalizeShadeInPlace(sctx, artCtx, w, h);
-    } catch {
-      normalized = false;
-    }
-  }
-
-  sctx.globalCompositeOperation = "destination-in";
-  sctx.drawImage(artCanvas, 0, 0);
-  sctx.globalCompositeOperation = "source-over";
+  const cloth = buildFabricClothLayer(artCanvas, blank, w, h);
+  if (!cloth) return;
 
   artCtx.save();
-  if (normalized) {
-    artCtx.globalCompositeOperation = "multiply";
-    artCtx.drawImage(shade, 0, 0);
-  } else {
-    artCtx.globalCompositeOperation = "soft-light";
-    artCtx.globalAlpha = 0.6;
-    artCtx.drawImage(shade, 0, 0);
-  }
+  // Multiply: ink into cloth — whites pick up blank cream, darks keep weave valleys.
+  artCtx.globalCompositeOperation = "multiply";
+  artCtx.globalAlpha = 0.72;
+  artCtx.drawImage(cloth, 0, 0);
+  // Soft-light: extra warm blank cast so light areas read as woven fabric, not paper white.
+  artCtx.globalCompositeOperation = "soft-light";
+  artCtx.globalAlpha = 0.45;
+  artCtx.drawImage(cloth, 0, 0);
   artCtx.restore();
 }
 
@@ -1407,11 +1429,15 @@ function applyProceduralFabricWeave(
   wctx.globalCompositeOperation = "source-over";
 
   artCtx.save();
-  // Pass 1: overlay — strong weave contrast without flattening the art.
+  // Pass 1: overlay — yarn ridges/grooves visible in both light and dark art.
   artCtx.globalCompositeOperation = "overlay";
   artCtx.globalAlpha = Math.max(0, Math.min(1, cfg.overlayAlpha * strength));
   artCtx.drawImage(weave, 0, 0);
-  // Pass 2: multiply — fabric absorbs light, matching Printify's darker render.
+  // Pass 2: hard-light — Printify-like knot micro-contrast (breaks up flats).
+  artCtx.globalCompositeOperation = "hard-light";
+  artCtx.globalAlpha = Math.max(0, Math.min(1, 0.35 * strength));
+  artCtx.drawImage(weave, 0, 0);
+  // Pass 3: multiply — fabric absorbs light, matching Printify's heavier blend.
   artCtx.globalCompositeOperation = "multiply";
   artCtx.globalAlpha = Math.max(0, Math.min(1, cfg.multiplyAlpha * strength));
   artCtx.drawImage(weave, 0, 0);
