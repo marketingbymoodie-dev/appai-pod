@@ -12,9 +12,20 @@ export function isPostGenContextLabel(label: string): boolean {
 }
 
 /**
- * While the flat placer is open, Front rasters and catalog blanks look identical to
- * the live canvas — step only through Artwork + on-demand Printify shots (lifestyle
- * or tapestry product mockups) so those remain reachable after wrapping the carousel.
+ * While the flat placer is open, skip local Front/Back rasters (they match the
+ * live canvas). Keep Artwork, merchant catalog Views (Primary / View 2…), and
+ * on-demand Printers/Context mockups.
+ */
+export function isFlatPlacerGalleryReachable(item: PostGenGalleryNavItem): boolean {
+  if (item.kind === "artwork") return true;
+  if (item.kind === "catalog") return true;
+  if (item.kind === "mockup") return isPostGenContextLabel(item.label);
+  return false;
+}
+
+/**
+ * Step the post-gen carousel. When the flat placer is open, skip Front rasters
+ * so catalog + Printers/Context slides stay reachable after wrapping.
  */
 export function stepPostGenGalleryIndex(
   current: number,
@@ -30,8 +41,7 @@ export function stepPostGenGalleryIndex(
     if (!flatPlacerActive) return next;
     const item = items[next];
     if (!item) continue;
-    if (item.kind === "artwork") return next;
-    if (item.kind === "mockup" && isPostGenContextLabel(item.label)) return next;
+    if (isFlatPlacerGalleryReachable(item)) return next;
   }
   return next;
 }

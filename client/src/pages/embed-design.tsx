@@ -94,7 +94,10 @@ import {
   STOREFRONT_OPEN_GOOGLE_AUTH_MESSAGE,
 } from "@shared/storefront-auth";
 import { buildCentralAppUrl } from "@/lib/storefrontAuth";
-import { stepPostGenGalleryIndex } from "@/lib/postGenGalleryNav";
+import {
+  isFlatPlacerGalleryReachable,
+  stepPostGenGalleryIndex,
+} from "@/lib/postGenGalleryNav";
 import { hasExactVariantMapping, hasVariantMappingForColor } from "@shared/variantMapResolve";
 
 /** Printify mockup cache key — size affects variant resolution for apparel. */
@@ -8219,16 +8222,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   );
   const flatPlacerActive = flatPlacerEligible && flatPlacerEditOpen;
 
-  // Flat placer preview only changes for Artwork + on-demand Printify — if we land
-  // on Front (or a catalog blank), step back toward Artwork.
+  // Flat placer: skip local Front rasters only. Catalog Views + Printers stay reachable.
   useEffect(() => {
     if (!flatPlacerActive || postGenGalleryItems.length <= 1) return;
     const item = postGenGalleryItems[selectedMockupIndex];
-    if (!item) return;
-    const reachable =
-      item.kind === "artwork" ||
-      (item.kind === "mockup" && isPrintifyOnDemandMockupLabel(item.label));
-    if (reachable) return;
+    if (!item || isFlatPlacerGalleryReachable(item)) return;
     setSelectedMockupIndex((i) =>
       stepPostGenGalleryIndex(i, -1, postGenGalleryItems, true),
     );
@@ -8259,8 +8257,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const selectedPostGenItem = postGenGalleryItems[selectedMockupIndex] ?? null;
   const flatCanvasOverrideUrl =
     flatPlacerActive &&
-    selectedPostGenItem?.kind === "mockup" &&
-    isPrintifyOnDemandMockupLabel(selectedPostGenItem.label)
+    selectedPostGenItem &&
+    ((selectedPostGenItem.kind === "mockup" &&
+      isPrintifyOnDemandMockupLabel(selectedPostGenItem.label)) ||
+      selectedPostGenItem.kind === "catalog")
       ? selectedPostGenItem.url
       : null;
 
@@ -10869,11 +10869,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   postGenGalleryItems.length > 1 && (
                   <div className="flex justify-center gap-3 mt-1" data-testid="flat-placer-gallery-dots">
                     {postGenGalleryItems.map((item, idx) => {
-                      const isReachable =
-                        item.kind === "artwork" ||
-                        (item.kind === "mockup" &&
-                          isPrintifyOnDemandMockupLabel(item.label));
-                      if (!isReachable) return null;
+                      if (!isFlatPlacerGalleryReachable(item)) return null;
                       return (
                         <button
                           key={`${item.kind}-${idx}`}
