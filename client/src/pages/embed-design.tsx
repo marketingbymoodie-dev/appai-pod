@@ -1565,7 +1565,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         decorPerSize: cal.decorPerSize,
       })
     );
-    if (framedOrDecor) return true;
+    // Comforter / wall decals: same — Printify zoom mode left tester stuck on
+    // "Save design / Refresh Mockups" because placement never auto-Applied.
+    const catalogSizeBlank = isCatalogSizeBlankBlueprint(
+      productTypeConfig?.printifyBlueprintId,
+    );
+    if (framedOrDecor || catalogSizeBlank) return true;
     if (mode === "printify") return false;
     return true;
   }, [
@@ -1574,6 +1579,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     productTypeConfig?.flatCalibration,
     productTypeConfig?.designerType,
     productTypeConfig?.name,
+    productTypeConfig?.printifyBlueprintId,
   ]);
 
   // When OPTION duplicates SIZE (tapestry orientations), keep frameColor aligned for variantMap.
@@ -4397,8 +4403,66 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     );
   }, [isStorefront, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, printifyMockupImages.length, mockupLoading, mockupFailed, transform, fetchPrintifyMockups]);
 
+  /**
+   * Admin tester (Printify zoom products): persist scale/position/size for the
+   * Printify test-order bake. Not the same as "Save to My Designs".
+   */
+  const persistAdminTesterPrintifyDesign = useCallback(async () => {
+    if (!isAdminTester || useAopCustomizer || usesFlatOnTheFlyPreview) return false;
+    const jobId = savedJobIdRef.current;
+    const shop =
+      shopDomain || savedJobShopRef.current || adminTesterShopRef.current;
+    if (!jobId || !shop || !generatedDesign?.imageUrl) return false;
+    emitTesterDesignStatus({ jobId, aopPanels: "saving" });
+    try {
+      const res = await safeFetch(`${API_BASE}/api/storefront/save-state`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jobId,
+          shop,
+          designState: {
+            scale: transform.scale,
+            x: transform.x,
+            y: transform.y,
+            selectedSize: selectedSizeRef.current || selectedSize || null,
+            selectedFrameColor:
+              selectedFrameColorRef.current || selectedFrameColor || undefined,
+            artworkUrl: toAbsoluteImageUrl(generatedDesign.imageUrl),
+            stylePreset: selectedPreset && selectedPreset !== "" ? selectedPreset : null,
+            prompt,
+          },
+        }),
+      });
+      if (!res.ok) throw new Error(`save-state ${res.status}`);
+      emitTesterDesignStatus({ jobId, aopPanels: "saved" });
+      return true;
+    } catch (e) {
+      console.warn("[AdminTester] Printify design persist failed:", e);
+      emitTesterDesignStatus({ jobId, aopPanels: "error" });
+      return false;
+    }
+  }, [
+    isAdminTester,
+    useAopCustomizer,
+    usesFlatOnTheFlyPreview,
+    shopDomain,
+    generatedDesign?.imageUrl,
+    transform.scale,
+    transform.x,
+    transform.y,
+    selectedSize,
+    selectedFrameColor,
+    selectedPreset,
+    prompt,
+    emitTesterDesignStatus,
+  ]);
+
+  const testerPrintifyPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Mark mockups as stale when transform changes and mockups already exist.
-  // Flat decor included — zoom/Reset must require Refresh before ATC / test order.
+  // Admin tester Printify products auto-persist placement in the background
+  // (test order readiness) instead of demanding a manual "Save design" click.
   useEffect(() => {
     if (!printifyTransformEligible && !usesFlatOnTheFlyPreview) return;
     if (suppressMockupStaleRef.current) {
@@ -4411,20 +4475,101 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if ((hasMockups || hasFlatDesign) && !mockupLoading) {
       setMockupsStale(true);
       setFlatPlacementDirty(true);
-      // Don't clobber an in-flight Apply (generate auto-flush / size sync).
       if (
+        isAdminTester &&
+        savedJobIdRef.current &&
+        !usesFlatOnTheFlyPreview &&
+        !useAopCustomizer
+      ) {
+        if (testerPrintifyPersistTimerRef.current) {
+          clearTimeout(testerPrintifyPersistTimerRef.current);
+        }
+        emitTesterDesignStatus({
+          jobId: savedJobIdRef.current,
+          aopPanels: "saving",
+        });
+        testerPrintifyPersistTimerRef.current = setTimeout(() => {
+          void persistAdminTesterPrintifyDesign();
+        }, 400);
+      } else if (
         isAdminTester &&
         savedJobIdRef.current &&
         testerDesignStatusRef.current.aopPanels !== "saving"
       ) {
+        // Flat/AOP: Apply / panel upload owns the "saved" transition.
         emitTesterDesignStatus({
           jobId: savedJobIdRef.current,
           aopPanels: "none",
         });
       }
     }
+    return () => {
+      if (testerPrintifyPersistTimerRef.current) {
+        clearTimeout(testerPrintifyPersistTimerRef.current);
+        testerPrintifyPersistTimerRef.current = null;
+      }
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transform.scale, transform.x, transform.y]);
+
+  // Admin tester Printify path: after mockups finish (or load), sync placement so
+  // "Send a Test Order" is ready without a separate Save click.
+  useEffect(() => {
+    if (!isAdminTester || usesFlatOnTheFlyPreview || useAopCustomizer) return;
+    if (mockupLoading || mockupsStale) return;
+    if (!generatedDesign?.imageUrl || !savedJobIdRef.current) return;
+    if (testerDesignStatusRef.current.aopPanels === "saved") return;
+    void persistAdminTesterPrintifyDesign();
+  }, [
+    isAdminTester,
+    usesFlatOnTheFlyPreview,
+    useAopCustomizer,
+    mockupLoading,
+    mockupsStale,
+    printifyMockups.length,
+    printifyMockupImages.length,
+    generatedDesign?.imageUrl,
+    persistAdminTesterPrintifyDesign,
+  ]);
+
+  const testerAutoMockupKeyRef = useRef("");
+  // Admin tester: auto-refresh Printify mockups when zoom/placement goes stale
+  // so merchants aren't stuck clicking Refresh Mockups to continue.
+  useEffect(() => {
+    if (!isAdminTester || usesFlatOnTheFlyPreview || useAopCustomizer) return;
+    if (!mockupsStale || mockupLoading || !generatedDesign?.imageUrl) return;
+    if (!productTypeConfig?.hasPrintifyMockups || !selectedSize) return;
+    const key = `${selectedSize}|${selectedFrameColor || ""}|${transform.scale}|${transform.x}|${transform.y}|${generatedDesign.imageUrl}`;
+    if (testerAutoMockupKeyRef.current === key) return;
+    const t = window.setTimeout(() => {
+      testerAutoMockupKeyRef.current = key;
+      void fetchPrintifyMockups(
+        toAbsoluteImageUrl(generatedDesign.imageUrl),
+        productTypeConfig.id,
+        selectedSize,
+        selectedFrameColor || "default",
+        transform.scale,
+        transform.x,
+        transform.y,
+      );
+    }, 700);
+    return () => window.clearTimeout(t);
+  }, [
+    isAdminTester,
+    usesFlatOnTheFlyPreview,
+    useAopCustomizer,
+    mockupsStale,
+    mockupLoading,
+    generatedDesign?.imageUrl,
+    productTypeConfig?.hasPrintifyMockups,
+    productTypeConfig?.id,
+    selectedSize,
+    selectedFrameColor,
+    transform.scale,
+    transform.x,
+    transform.y,
+    fetchPrintifyMockups,
+  ]);
 
   // Keep frame colour aligned with the variant map. We only auto-switch when
   // the selected color has NO mapping at any size — not just the current size.
@@ -6023,7 +6168,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   const flushDesignForTester = useCallback(async () => {
     if (!usesFlatOnTheFlyPreview || !generatedDesign?.imageUrl) {
-      if (mockupsStale) {
+      // Printify zoom products: placement is persisted in the background; flush now.
+      if (isAdminTester && !useAopCustomizer) {
+        const ok = await persistAdminTesterPrintifyDesign();
+        if (!ok && testerDesignStatusRef.current.aopPanels !== "saved") {
+          throw new Error(
+            "Could not sync placement for the test order — try adjusting zoom once, then send again.",
+          );
+        }
+      } else if (mockupsStale) {
         throw new Error("Refresh mockups before sending a test order.");
       }
       return;
@@ -6096,6 +6249,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     transform.scale,
     emitTesterDesignStatus,
     flushFlatPlacer,
+    isAdminTester,
+    useAopCustomizer,
+    persistAdminTesterPrintifyDesign,
   ]);
 
   useEffect(() => {

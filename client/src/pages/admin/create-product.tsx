@@ -115,19 +115,19 @@ export default function AdminCreateProduct() {
       }
       if (testerStatusRef.current.aopPanels === "saving") {
         throw new Error(
-          "Design is still saving — wait a moment, then send the test order again.",
+          "Placement is still syncing — wait a moment, then send the test order again.",
         );
       }
       // AOP panels and flat Apply both report aopPanels saved/error. Do not send
-      // a test order until the on-screen design has been persisted.
+      // a test order until the on-screen design has been persisted for Printify.
       if (testerStatusRef.current.aopPanels === "error") {
         throw new Error(
-          "Last design save failed — adjust placement once more, wait for Design saved, then try again.",
+          "Last placement sync failed — nudge the artwork once, wait for Ready for test order, then try again.",
         );
       }
       if (testerStatusRef.current.aopPanels !== "saved") {
         throw new Error(
-          "Refresh mockups / apply your design and wait for Design saved, then send the test order.",
+          "Placement is still syncing for Printify — wait for Ready for test order, then send again.",
         );
       }
       const jobId = testerStatusRef.current.jobId;
@@ -197,9 +197,10 @@ export default function AdminCreateProduct() {
             <h1 className="text-2xl font-bold" data-testid="text-create-product-title">Art Generator Tester</h1>
             <p className="text-muted-foreground max-w-2xl">
               Test each Customizer page with an artwork generation
-              {canSaveDesigns ? ", save designs to My Designs," : ""} then send a test order to Printify to check
-              the output matches your mockup here. Important! Delete your test orders in your Printify admin
-              immediately if you have automatic fulfilment already enabled there.
+              {canSaveDesigns ? ", optionally save to My Designs," : ""} then send a test order to Printify to check
+              the output matches your mockup here. Size and placement sync for Printify automatically in the
+              background — you don&apos;t need a separate save step before the test order. Important! Delete your
+              test orders in your Printify admin immediately if you have automatic fulfilment already enabled there.
             </p>
           </div>
           {selectedProductTypeId && (
@@ -245,19 +246,19 @@ export default function AdminCreateProduct() {
                 {testOrderMutation.isPending
                   ? "Sending Test Order…"
                   : testerPanelStatus === "saving"
-                    ? "Design saving…"
+                    ? "Syncing placement…"
                     : testerPanelStatus === "none"
-                      ? "Save design / Refresh Mockups first"
+                      ? "Waiting for artwork…"
                       : "Send a Test Order to Printify"}
               </Button>
               {testerPanelStatus === "saving" && (
                 <p className="text-xs text-muted-foreground w-full" data-testid="text-design-saving">
-                  Saving design for Printify…
+                  Syncing size and placement for Printify in the background…
                 </p>
               )}
               {testerPanelStatus === "saved" && testerHasDesign && (
                 <p className="text-xs text-muted-foreground w-full" data-testid="text-design-saved">
-                  Design saved — ready for test order.
+                  Ready for test order — placement syncs automatically when you change size or move art.
                 </p>
               )}
             </div>
