@@ -1102,6 +1102,14 @@ function isPrintifyContextMockupLabel(label: string): boolean {
   return /(lifestyle|context|room|home|bedroom|wall|person|side)/i.test(l);
 }
 
+/** On-demand Printify slides: lifestyle/context OR tapestry product mockups. */
+function isPrintifyOnDemandMockupLabel(label: string): boolean {
+  const l = String(label || "").toLowerCase();
+  if (!l) return false;
+  if (l.startsWith("printify")) return true;
+  return isPrintifyContextMockupLabel(label);
+}
+
 /** Artwork + Printify mockups + merchant catalog extras (deduped). */
 function buildPostGenGalleryItems(
   catalogPreviewImages: string[],
@@ -3901,9 +3909,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     panelUrls?: { position: string; dataUrl: string }[],
     printPlacementOverride?: "front" | "back" | "both",
     bgColorOverride?: string,
-    fetchOpts?: { mergeContextOnly?: boolean },
+    fetchOpts?: { mergeContextOnly?: boolean; mergeProductMockups?: boolean },
   ): Promise<{ ok: boolean; contextCount?: number; error?: string }> => {
     const mergeContextOnly = !!fetchOpts?.mergeContextOnly;
+    const mergeProductMockups = !!fetchOpts?.mergeProductMockups;
     // Guard: never call the mockup endpoint without a real design image.
     if (!designImageUrl) {
       console.warn('[EmbedDesign] fetchPrintifyMockups called without designImageUrl — skipping');
@@ -3955,7 +3964,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       printPlacement: printPlacementOverride ?? printPlacement,
       panelHash: panelUrls?.map((p) => `${p.position}:${p.dataUrl.length}`).join("|") ?? "",
       mergeContextOnly,
+      mergeProductMockups,
     });
+
+    // On-demand merges (lifestyle / tapestry Printify) must not cancel a primary mockup job.
+    const isOnDemandMerge = mergeContextOnly || mergeProductMockups;
 
     if (activeMockupJobKeyRef.current === mockupJobKey) {
       console.log('[Mockups] Duplicate mockup request ignored while job is in flight');
@@ -3963,15 +3976,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
 
     let contextMergeOutcome: { ok: boolean; contextCount?: number; error?: string } | null =
-      mergeContextOnly ? null : { ok: true };
-    // Context-only fetches must not cancel / block a primary mockup job.
-    if (!mergeContextOnly) {
+      isOnDemandMerge ? null : { ok: true };
+    if (!isOnDemandMerge) {
       activeMockupJobKeyRef.current = mockupJobKey;
     }
-    const requestSeq = mergeContextOnly
+    const requestSeq = isOnDemandMerge
       ? mockupRequestSeqRef.current
       : ++mockupRequestSeqRef.current;
-    if (!mergeContextOnly) {
+    if (!isOnDemandMerge) {
       setMockupLoading(true);
       setMockupsStale(false);
       // Notify parent page so it can show the "Artwork Generating" overlay
@@ -4081,7 +4093,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       }
 
       const handleMockupSuccess = (result: any) => {
-        if (!mergeContextOnly && requestSeq !== mockupRequestSeqRef.current) {
+        if (!isOnDemandMerge && requestSeq !== mockupRequestSeqRef.current) {
           console.log('[Mockups] Ignoring stale mockup response', requestSeq);
           return;
         }
@@ -4091,35 +4103,49 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           url: toAbsoluteImageUrl(img.url),
         }));
 
-        // Flat framed decor: keep local front raster, append Printify lifestyle/context.
-        if (mergeContextOnly) {
-          const contextImgs = absImages.filter((img: { label: string }) =>
-            isPrintifyContextMockupLabel(img.label),
-          );
-          let extras =
-            contextImgs.length > 0
-              ? contextImgs.slice(0, 2)
-              : absImages
-                  .filter((img: { label: string }) => !/^(front|mockup 1)$/i.test(img.label || ""))
-                  .slice(0, 2);
-          // Printify often labels every camera "front" — still take distinct extra URLs.
-          if (extras.length === 0 && absImages.length > 1) {
-            const frontKey = mockupImageUrlKey(absImages[0]?.url || "");
-            extras = absImages
-              .slice(1)
-              .filter((img: { url: string }) => mockupImageUrlKey(img.url) !== frontKey)
-              .slice(0, 2);
-          }
-          if (extras.length === 0) {
-            console.log(
-              '[Mockups] Context merge: no lifestyle/context views from Printify',
-              absImages.map((i: { label: string }) => i.label),
+        // Flat products: keep local front raster, append Printify on-demand shots.
+        if (mergeContextOnly || mergeProductMockups) {
+          let extras: Array<{ url: string; label: string }> = [];
+          if (mergeProductMockups) {
+            // Tapestry: take Printify product cameras (woven photo), not lifestyle-only.
+            extras = absImages.slice(0, 2);
+            if (extras.length === 0) {
+              console.log("[Mockups] Product merge: no Printify mockups returned");
+              contextMergeOutcome = {
+                ok: false,
+                error: "Printify returned no mockups",
+              };
+              return;
+            }
+          } else {
+            const contextImgs = absImages.filter((img: { label: string }) =>
+              isPrintifyContextMockupLabel(img.label),
             );
-            contextMergeOutcome = {
-              ok: false,
-              error: "Printify returned no lifestyle/context views",
-            };
-            return;
+            extras =
+              contextImgs.length > 0
+                ? contextImgs.slice(0, 2)
+                : absImages
+                    .filter((img: { label: string }) => !/^(front|mockup 1)$/i.test(img.label || ""))
+                    .slice(0, 2);
+            // Printify often labels every camera "front" — still take distinct extra URLs.
+            if (extras.length === 0 && absImages.length > 1) {
+              const frontKey = mockupImageUrlKey(absImages[0]?.url || "");
+              extras = absImages
+                .slice(1)
+                .filter((img: { url: string }) => mockupImageUrlKey(img.url) !== frontKey)
+                .slice(0, 2);
+            }
+            if (extras.length === 0) {
+              console.log(
+                '[Mockups] Context merge: no lifestyle/context views from Printify',
+                absImages.map((i: { label: string }) => i.label),
+              );
+              contextMergeOutcome = {
+                ok: false,
+                error: "Printify returned no lifestyle/context views",
+              };
+              return;
+            }
           }
           const fronts =
             flatFrontMockupsRef.current.length > 0
@@ -4131,26 +4157,29 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             const key = mockupImageUrlKey(extra.url);
             if (seen.has(key)) continue;
             seen.add(key);
-            mergedImages.push({
-              url: extra.url,
-              label: /context|lifestyle/i.test(extra.label) ? extra.label : "context",
-            });
+            const label = mergeProductMockups
+              ? "printify"
+              : /context|lifestyle/i.test(extra.label)
+                ? extra.label
+                : "context";
+            mergedImages.push({ url: extra.url, label });
           }
           const mergedUrls = mergedImages.map((m) => m.url);
           setPrintifyMockupImages(mergedImages);
           setPrintifyMockups(mergedUrls);
           sendMockupsToParent(mergedUrls);
-          // Jump to Context in post-gen gallery (Artwork is index 0, then printify images).
-          const firstContextIdx = mergedImages.findIndex((m) =>
-            isPrintifyContextMockupLabel(m.label),
+          // Jump to on-demand shot in post-gen gallery (Artwork is index 0).
+          const firstOnDemandIdx = mergedImages.findIndex((m) =>
+            isPrintifyOnDemandMockupLabel(m.label),
           );
-          if (firstContextIdx >= 0) setSelectedMockupIndex(1 + firstContextIdx);
+          if (firstOnDemandIdx >= 0) setSelectedMockupIndex(1 + firstOnDemandIdx);
           console.log(
             '[Mockups] Merged',
             extras.length,
-            'context shot(s) onto',
+            mergeProductMockups ? "product mockup(s)" : "context shot(s)",
+            "onto",
             fronts.length,
-            'flat front(s)',
+            "flat front(s)",
           );
           contextMergeOutcome = { ok: true, contextCount: extras.length };
           return;
@@ -4224,7 +4253,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         let pollIndex = 0;
 
         while (Date.now() - started < MAX_POLL_MS) {
-          if (!mergeContextOnly && requestSeq !== mockupRequestSeqRef.current) {
+          if (!isOnDemandMerge && requestSeq !== mockupRequestSeqRef.current) {
             console.log('[Mockups] Stopping stale mockup poll', requestSeq);
             return;
           }
@@ -4275,15 +4304,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         throw new Error(result.error || result.message || "Mockup generation returned unsuccessful");
       }
     } catch (error) {
-      if (!mergeContextOnly && requestSeq !== mockupRequestSeqRef.current) {
+      if (!isOnDemandMerge && requestSeq !== mockupRequestSeqRef.current) {
         console.log('[Mockups] Ignoring stale mockup error', requestSeq);
         return { ok: false, error: "Stale mockup request" };
       }
-      if (mergeContextOnly) {
-        // Flat front is already good — context is best-effort for auto paths;
-        // Lifestyle Shot button surfaces this via the return value.
-        const msg = error instanceof Error ? error.message : "Lifestyle shot failed";
-        console.warn("[Mockups] Context merge failed (non-fatal):", error);
+      if (isOnDemandMerge) {
+        // Flat front is already good — on-demand Printify is best-effort;
+        // Lifestyle / Printify Mockup button surfaces this via the return value.
+        const msg = error instanceof Error ? error.message : "Printify mockup failed";
+        console.warn("[Mockups] On-demand merge failed (non-fatal):", error);
         contextMergeOutcome = { ok: false, error: msg };
         return contextMergeOutcome;
       }
@@ -4298,10 +4327,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         error: error instanceof Error ? error.message : "Failed to generate product preview",
       };
     } finally {
-      if (!mergeContextOnly && activeMockupJobKeyRef.current === mockupJobKey) {
+      if (!isOnDemandMerge && activeMockupJobKeyRef.current === mockupJobKey) {
         activeMockupJobKeyRef.current = null;
       }
-      if (!mergeContextOnly && requestSeq === mockupRequestSeqRef.current) {
+      if (!isOnDemandMerge && requestSeq === mockupRequestSeqRef.current) {
         setMockupLoading(false);
         setMockupTriggered(false);
         // Clear the "Artwork Generating" overlay on the parent page
@@ -4310,11 +4339,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         }
       }
     }
-    if (mergeContextOnly) {
+    if (isOnDemandMerge) {
       return (
         contextMergeOutcome ?? {
           ok: false,
-          error: "Printify returned no lifestyle/context views",
+          error: mergeProductMockups
+            ? "Printify returned no mockups"
+            : "Printify returned no lifestyle/context views",
         }
       );
     }
@@ -7117,7 +7148,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         const seen = new Set(frontImages.map((i) => mockupImageUrlKey(i.url)));
         const extras = prev.filter(
           (img) =>
-            isPrintifyContextMockupLabel(img.label) ||
+            isPrintifyOnDemandMockupLabel(img.label) ||
             (!/^(front|back|mockup 1|mockup 2)$/i.test(img.label || "") &&
               !seen.has(mockupImageUrlKey(img.url))),
         );
@@ -8187,33 +8218,33 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   );
   const flatPlacerActive = flatPlacerEligible && flatPlacerEditOpen;
 
-  // Flat placer preview only changes for Artwork + Context — if we land on Front
-  // (or a catalog blank), step back toward Artwork rather than jumping to Context.
+  // Flat placer preview only changes for Artwork + on-demand Printify — if we land
+  // on Front (or a catalog blank), step back toward Artwork.
   useEffect(() => {
     if (!flatPlacerActive || postGenGalleryItems.length <= 1) return;
     const item = postGenGalleryItems[selectedMockupIndex];
     if (!item) return;
     const reachable =
       item.kind === "artwork" ||
-      (item.kind === "mockup" && isPrintifyContextMockupLabel(item.label));
+      (item.kind === "mockup" && isPrintifyOnDemandMockupLabel(item.label));
     if (reachable) return;
     setSelectedMockupIndex((i) =>
       stepPostGenGalleryIndex(i, -1, postGenGalleryItems, true),
     );
   }, [flatPlacerActive, selectedMockupIndex, postGenGalleryItems]);
 
-  // Framed decor + catalog size blanks (wall decals / comforter) share the
-  // on-demand Printify Context / Lifestyle Shot path.
+  // Framed decor + catalog size blanks + woven tapestry share on-demand Printify.
   const canRequestLifestyleShot = !!(
     (flatDecorMode ||
-      isCatalogSizeBlankBlueprint(productTypeConfig?.printifyBlueprintId)) &&
+      isCatalogSizeBlankBlueprint(productTypeConfig?.printifyBlueprintId) ||
+      flatFabricWeave) &&
     flatPlacerEligible &&
     productTypeConfig?.hasPrintifyMockups &&
     selectedSize &&
     !useAopCustomizer
   );
   const hasLifestyleShot = printifyMockupImages.some((img) =>
-    isPrintifyContextMockupLabel(img.label),
+    isPrintifyOnDemandMockupLabel(img.label),
   );
   /** Shimmer/clickable only after generate + placement settled; dims when dirty. */
   const lifestyleShotActive = !!(
@@ -8228,12 +8259,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const flatCanvasOverrideUrl =
     flatPlacerActive &&
     selectedPostGenItem?.kind === "mockup" &&
-    isPrintifyContextMockupLabel(selectedPostGenItem.label)
+    isPrintifyOnDemandMockupLabel(selectedPostGenItem.label)
       ? selectedPostGenItem.url
       : null;
 
   /**
-   * On-demand Printify lifestyle/context for framed/pillow flat products.
+   * On-demand Printify for framed/catalog flats (lifestyle) and tapestry (product weave).
    * Avoids creating a Mockup Preview product until the customer asks.
    */
   const requestLifestyleShot = useCallback(async () => {
@@ -8260,6 +8291,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     );
     setLifestyleShotLoading(true);
     setLifestyleShotError(null);
+    const isTapestryPrintify = flatFabricWeave;
     try {
       const result = await fetchPrintifyMockups(
         toAbsoluteImageUrl(generatedDesign.imageUrl),
@@ -8274,21 +8306,29 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         undefined,
         undefined,
         undefined,
-        { mergeContextOnly: true },
+        isTapestryPrintify
+          ? { mergeProductMockups: true }
+          : { mergeContextOnly: true },
       );
       if (!result.ok) {
-        const msg = result.error || "Lifestyle shot failed";
+        const msg =
+          result.error ||
+          (isTapestryPrintify ? "Printify mockup failed" : "Lifestyle shot failed");
         setLifestyleShotError(msg);
         toast({
-          title: "Lifestyle shot unavailable",
+          title: isTapestryPrintify
+            ? "Printify mockup unavailable"
+            : "Lifestyle shot unavailable",
           description: msg,
           variant: "destructive",
         });
         return;
       }
       toast({
-        title: "Lifestyle shot ready",
-        description: "Showing Context — use the dots or arrows under the preview to switch views.",
+        title: isTapestryPrintify ? "Printify mockup ready" : "Lifestyle shot ready",
+        description: isTapestryPrintify
+          ? "Showing Printify’s woven mockup — use the dots or arrows to switch views."
+          : "Showing Context — use the dots or arrows under the preview to switch views.",
       });
     } finally {
       setLifestyleShotLoading(false);
@@ -8304,6 +8344,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     fetchPrintifyMockups,
     selectedSize,
     selectedFrameColor,
+    flatFabricWeave,
     toast,
   ]);
 
@@ -8485,7 +8526,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           const seen = new Set(images.map((i) => mockupImageUrlKey(i.url)));
           const extras = prev.filter(
             (img) =>
-              isPrintifyContextMockupLabel(img.label) ||
+              isPrintifyOnDemandMockupLabel(img.label) ||
               (!/^(front|back|mockup 1|mockup 2)$/i.test(img.label || "") &&
                 !seen.has(mockupImageUrlKey(img.url))),
           );
@@ -10764,9 +10805,19 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             onClick: () => void requestLifestyleShot(),
                             loading: lifestyleShotLoading,
                             active: lifestyleShotActive,
-                            label: hasLifestyleShot
-                              ? "Refresh Lifestyle Shot"
-                              : "Lifestyle Shot",
+                            label: flatFabricWeave
+                              ? hasLifestyleShot
+                                ? "Refresh Printify Mockup"
+                                : "Printify Mockup"
+                              : hasLifestyleShot
+                                ? "Refresh Lifestyle Shot"
+                                : "Lifestyle Shot",
+                            loadingLabel: flatFabricWeave
+                              ? "Generating Printify mockup…"
+                              : "Generating lifestyle…",
+                            idleHint: flatFabricWeave
+                              ? "Finish placement (or generate artwork) to enable Printify Mockup"
+                              : "Finish placement (or generate artwork) to enable Lifestyle Shot",
                             error: lifestyleShotError,
                           }
                         : null
@@ -10815,7 +10866,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       const isReachable =
                         item.kind === "artwork" ||
                         (item.kind === "mockup" &&
-                          isPrintifyContextMockupLabel(item.label));
+                          isPrintifyOnDemandMockupLabel(item.label));
                       if (!isReachable) return null;
                       return (
                         <button

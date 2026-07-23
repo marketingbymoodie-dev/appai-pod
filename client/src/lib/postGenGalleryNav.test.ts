@@ -25,4 +25,13 @@ describe("stepPostGenGalleryIndex", () => {
   it("from Artwork going back reaches Context again", () => {
     expect(stepPostGenGalleryIndex(0, -1, items, true)).toBe(2);
   });
+
+  it("reaches Printify product mockups while placer is open", () => {
+    const withPrintify: PostGenGalleryNavItem[] = [
+      { kind: "artwork", label: "Artwork" },
+      { kind: "mockup", url: "https://x.example/front.png", label: "front" },
+      { kind: "mockup", url: "https://x.example/pfy.png", label: "printify" },
+    ];
+    expect(stepPostGenGalleryIndex(0, 1, withPrintify, true)).toBe(2);
+  });
 });

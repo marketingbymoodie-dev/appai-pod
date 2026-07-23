@@ -141,6 +141,8 @@ export type FlatProductPlacerProps = {
     loading?: boolean;
     active?: boolean;
     label: string;
+    loadingLabel?: string;
+    idleHint?: string;
     error?: string | null;
   } | null;
   /** When set, canvas shows this image (e.g. Printify Context) instead of live placer. */
@@ -1054,7 +1056,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                     : undefined
                 }
               >
-                {lifestyleAction.loading ? "Generating lifestyle…" : lifestyleAction.label}
+                {lifestyleAction.loading
+                  ? lifestyleAction.loadingLabel || "Generating…"
+                  : lifestyleAction.label}
               </span>
             </button>
             {lifestyleAction.error ? (
@@ -1063,7 +1067,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               </p>
             ) : !lifestyleAction.active && !lifestyleAction.loading ? (
               <p className="text-center text-[10px] text-muted-foreground">
-                Finish placement (or generate artwork) to enable Lifestyle Shot
+                {lifestyleAction.idleHint ||
+                  "Finish placement (or generate artwork) to enable Lifestyle Shot"}
               </p>
             ) : null}
           </div>

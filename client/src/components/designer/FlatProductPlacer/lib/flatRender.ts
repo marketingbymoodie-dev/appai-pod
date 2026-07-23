@@ -992,10 +992,8 @@ function applyPhoneCaseMapShading(
  * Multiply a normalized shading layer over the artwork layer, restricted to
  * the artwork's own alpha so transparent (garment) pixels stay untouched.
  *
- * When `fabricWeave` is set (tapestry / woven decor):
- * 1) Multiply a *blurred* blank luminance so art picks up the real cloth
- *    folds/shadows without photo-noise "speckle".
- * 2) Layer a light procedural warp/weft for yarn structure Printify shows.
+ * When `fabricWeave` is set (tapestry): simple coloured blank multiply only —
+ * no procedural weave grid. Printify's photo mockup is available on demand.
  */
 function applyShading(
   artCanvas: HTMLCanvasElement,
@@ -1009,10 +1007,7 @@ function applyShading(
   opts?: { phoneCaseMap?: boolean; fabricWeave?: boolean },
 ): void {
   if (opts?.fabricWeave) {
-    // Cloth colour into art → coarse weave → light blank again so cream peeks through knots.
-    applyBlurredBlankFabricMultiply(artCanvas, artCtx, blank, w, h, artworkCorsClean);
-    applyProceduralFabricWeave(artCanvas, artCtx, w, h);
-    applyFabricBlankShowThrough(artCanvas, artCtx, blank, w, h, 0.22);
+    applySimpleBlankMultiply(artCanvas, artCtx, blank, w, h);
     return;
   }
 
@@ -1323,68 +1318,26 @@ function getFabricWeaveTile(cfg: WeaveConfig): HTMLCanvasElement {
   return tile;
 }
 
-/** Soft-blurred blank clipped to art alpha (cream cloth + folds, less photo grain). */
-function buildFabricClothLayer(
+/** Real tapestry blank × art — no procedural weave / no blur stack. */
+function applySimpleBlankMultiply(
   artCanvas: HTMLCanvasElement,
+  artCtx: CanvasRenderingContext2D,
   blank: HTMLImageElement,
   w: number,
   h: number,
-): HTMLCanvasElement | null {
+): void {
   const cloth = document.createElement("canvas");
   cloth.width = w;
   cloth.height = h;
   const cctx = cloth.getContext("2d");
-  if (!cctx) return null;
-  cctx.filter = "blur(0.8px)";
+  if (!cctx) return;
   cctx.drawImage(blank, 0, 0, w, h);
-  cctx.filter = "none";
   cctx.globalCompositeOperation = "destination-in";
   cctx.drawImage(artCanvas, 0, 0);
   cctx.globalCompositeOperation = "source-over";
-  return cloth;
-}
-
-/** Light blank soft-light so woven cream peeks through after the knot pass. */
-function applyFabricBlankShowThrough(
-  artCanvas: HTMLCanvasElement,
-  artCtx: CanvasRenderingContext2D,
-  blank: HTMLImageElement,
-  w: number,
-  h: number,
-  alpha: number,
-): void {
-  const cloth = buildFabricClothLayer(artCanvas, blank, w, h);
-  if (!cloth) return;
-  artCtx.save();
-  artCtx.globalCompositeOperation = "soft-light";
-  artCtx.globalAlpha = Math.max(0, Math.min(1, alpha));
-  artCtx.drawImage(cloth, 0, 0);
-  artCtx.restore();
-}
-
-/**
- * Blend art into the real tapestry blank: cream/beige cloth colour shows
- * through (Printify-like), with light fold shading and without photo grain.
- */
-function applyBlurredBlankFabricMultiply(
-  artCanvas: HTMLCanvasElement,
-  artCtx: CanvasRenderingContext2D,
-  blank: HTMLImageElement,
-  w: number,
-  h: number,
-  _artworkCorsClean: boolean,
-): void {
-  const cloth = buildFabricClothLayer(artCanvas, blank, w, h);
-  if (!cloth) return;
 
   artCtx.save();
-  // Multiply: ink into cloth — whites pick up blank cream, darks keep weave valleys.
   artCtx.globalCompositeOperation = "multiply";
-  artCtx.globalAlpha = 0.72;
-  artCtx.drawImage(cloth, 0, 0);
-  // Soft-light: extra warm blank cast so light areas read as woven fabric, not paper white.
-  artCtx.globalCompositeOperation = "soft-light";
-  artCtx.globalAlpha = 0.45;
   artCtx.drawImage(cloth, 0, 0);
   artCtx.restore();
 }
