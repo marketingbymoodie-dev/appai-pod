@@ -94,6 +94,7 @@ import {
   STOREFRONT_OPEN_GOOGLE_AUTH_MESSAGE,
 } from "@shared/storefront-auth";
 import { buildCentralAppUrl } from "@/lib/storefrontAuth";
+import { stepPostGenGalleryIndex } from "@/lib/postGenGalleryNav";
 import { hasExactVariantMapping, hasVariantMappingForColor } from "@shared/variantMapResolve";
 
 /** Printify mockup cache key — size affects variant resolution for apparel. */
@@ -8029,6 +8030,22 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     !flatRenderFailed
   );
   const flatPlacerActive = flatPlacerEligible && flatPlacerEditOpen;
+
+  // Flat placer preview only changes for Artwork + Context — if we land on Front
+  // (or a catalog blank), step back toward Artwork rather than jumping to Context.
+  useEffect(() => {
+    if (!flatPlacerActive || postGenGalleryItems.length <= 1) return;
+    const item = postGenGalleryItems[selectedMockupIndex];
+    if (!item) return;
+    const reachable =
+      item.kind === "artwork" ||
+      (item.kind === "mockup" && isPrintifyContextMockupLabel(item.label));
+    if (reachable) return;
+    setSelectedMockupIndex((i) =>
+      stepPostGenGalleryIndex(i, -1, postGenGalleryItems, true),
+    );
+  }, [flatPlacerActive, selectedMockupIndex, postGenGalleryItems]);
+
   // Framed decor + catalog size blanks (wall decals / comforter) share the
   // on-demand Printify Context / Lifestyle Shot path.
   const canRequestLifestyleShot = !!(
@@ -8303,10 +8320,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         }
         setFlatRenderFailed(false);
         flatFrontMockupsRef.current = images;
-        // Framed/decor: drop stale Printify lifestyle shots on size/colour swap —
-        // user re-requests via Lifestyle Shot. Apparel flat can keep prior extras.
+        // Keep lifestyle/context across placement re-rasters (framed + wall decals).
+        // Only drop them on size/colour blank-key change — old Context won't match.
+        const blankKeyChanged =
+          flatMockupBlankKey !== currentMockupColorRef.current;
         setPrintifyMockupImages((prev) => {
-          if (flatDecorMode) return images.slice(0, 4);
+          if (blankKeyChanged) return images.slice(0, 4);
           const seen = new Set(images.map((i) => mockupImageUrlKey(i.url)));
           const extras = prev.filter(
             (img) =>
@@ -8317,7 +8336,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           return [...images, ...extras].slice(0, 4);
         });
         setPrintifyMockups((prev) => {
-          if (flatDecorMode) return images.map((i) => i.url);
+          if (blankKeyChanged) return images.map((i) => i.url);
           const next = images.map((i) => i.url);
           const seen = new Set(next.map(mockupImageUrlKey));
           for (const url of prev) {
@@ -10606,10 +10625,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         type="button"
                         aria-label="Previous"
                         onClick={() =>
-                          setSelectedMockupIndex(
-                            (i) =>
-                              (i - 1 + postGenGalleryItems.length) %
-                              postGenGalleryItems.length,
+                          setSelectedMockupIndex((i) =>
+                            stepPostGenGalleryIndex(i, -1, postGenGalleryItems, true),
                           )
                         }
                         className="absolute left-1 top-[28%] -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
@@ -10621,8 +10638,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         type="button"
                         aria-label="Next"
                         onClick={() =>
-                          setSelectedMockupIndex(
-                            (i) => (i + 1) % postGenGalleryItems.length,
+                          setSelectedMockupIndex((i) =>
+                            stepPostGenGalleryIndex(i, 1, postGenGalleryItems, true),
                           )
                         }
                         className="absolute right-1 top-[28%] -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors lg:right-[calc(20rem+0.75rem)]"
@@ -10633,6 +10650,50 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     </>
                   )}
                 </div>
+                {/* Dots while placer is open (main ProductMockup dots are in the other branch). */}
+                {showsPrintifyMockupPreview &&
+                  generatedDesign?.imageUrl &&
+                  postGenGalleryItems.length > 1 && (
+                  <div className="flex justify-center gap-3 mt-1" data-testid="flat-placer-gallery-dots">
+                    {postGenGalleryItems.map((item, idx) => {
+                      const isReachable =
+                        item.kind === "artwork" ||
+                        (item.kind === "mockup" &&
+                          isPrintifyContextMockupLabel(item.label));
+                      if (!isReachable) return null;
+                      return (
+                        <button
+                          key={`${item.kind}-${idx}`}
+                          type="button"
+                          onClick={() => setSelectedMockupIndex(idx)}
+                          aria-label={item.label}
+                          className={`flex flex-col items-center gap-0.5 transition-all duration-200 ${
+                            selectedMockupIndex === idx
+                              ? "opacity-100"
+                              : "opacity-40 hover:opacity-70"
+                          }`}
+                        >
+                          <span
+                            className={`rounded-full transition-all duration-200 ${
+                              selectedMockupIndex === idx
+                                ? "w-4 h-2 bg-foreground"
+                                : "w-2 h-2 bg-foreground/60"
+                            }`}
+                          />
+                          <span
+                            className={`text-[10px] leading-tight font-medium ${
+                              selectedMockupIndex === idx
+                                ? "text-foreground"
+                                : "text-muted-foreground"
+                            }`}
+                          >
+                            {item.label}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             ) : (<>
             {/* Main interactive canvas - full size, always visible for editing */}
@@ -10835,8 +10896,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       type="button"
                       aria-label="Previous"
                     onClick={() =>
-                      setSelectedMockupIndex(
-                        (i) => (i - 1 + postGenGalleryItems.length) % postGenGalleryItems.length,
+                      setSelectedMockupIndex((i) =>
+                        stepPostGenGalleryIndex(i, -1, postGenGalleryItems, false),
                       )
                     }
                       className="absolute left-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
@@ -10847,7 +10908,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       type="button"
                       aria-label="Next"
                     onClick={() =>
-                      setSelectedMockupIndex((i) => (i + 1) % postGenGalleryItems.length)
+                      setSelectedMockupIndex((i) =>
+                        stepPostGenGalleryIndex(i, 1, postGenGalleryItems, false),
+                      )
                     }
                       className="absolute right-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
                     >
