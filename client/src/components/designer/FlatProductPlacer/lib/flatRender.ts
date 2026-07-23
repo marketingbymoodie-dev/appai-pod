@@ -1136,7 +1136,89 @@ export function clipFlatArtToPrintArea(
 }
 
 // ---------------------------------------------------------------------------
-// Fabric weave texture — tunable config
+// Tapestry blank-blend — TEMP tuning (browser-local until baked as defaults)
+// ---------------------------------------------------------------------------
+
+export type FabricBlendConfig = {
+  /** 0 = full blank multiply, 1 = no blank effect. */
+  transparency: number;
+  /** Soft-light cream tint from blank, 0–1. */
+  cream: number;
+  /** Cloth saturation before multiply: 0 = grey, 1 = natural, 2 = boosted. */
+  vibrance: number;
+  /** Fine film grain, 0–1. */
+  grain: number;
+  /** Coarser sparse speckle, 0–1. */
+  speckle: number;
+  /** Horizontal line spacing (px). Lower = denser weft-like lines. */
+  linealX: number;
+  /** Vertical line spacing (px). Lower = denser warp-like lines. */
+  linealY: number;
+  /** Lineal overlay strength, 0–1. */
+  linealAlpha: number;
+};
+
+/** Shipped defaults — update after merchant dials in against Printify. */
+export const DEFAULT_FABRIC_BLEND_CONFIG: FabricBlendConfig = {
+  transparency: 0,
+  cream: 0,
+  vibrance: 1,
+  grain: 0,
+  speckle: 0,
+  linealX: 6,
+  linealY: 6,
+  linealAlpha: 0,
+};
+
+const FABRIC_BLEND_STORAGE_KEY = "appai:fabricBlendConfig:v1";
+
+let activeFabricBlendConfig: FabricBlendConfig | null = null;
+
+function loadStoredFabricBlendConfig(): FabricBlendConfig {
+  try {
+    const raw = window.localStorage.getItem(FABRIC_BLEND_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        return { ...DEFAULT_FABRIC_BLEND_CONFIG, ...parsed };
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return { ...DEFAULT_FABRIC_BLEND_CONFIG };
+}
+
+export function getFabricBlendConfig(): FabricBlendConfig {
+  if (!activeFabricBlendConfig) activeFabricBlendConfig = loadStoredFabricBlendConfig();
+  return activeFabricBlendConfig;
+}
+
+export function setFabricBlendConfig(patch: Partial<FabricBlendConfig>): FabricBlendConfig {
+  activeFabricBlendConfig = { ...getFabricBlendConfig(), ...patch };
+  try {
+    window.localStorage.setItem(
+      FABRIC_BLEND_STORAGE_KEY,
+      JSON.stringify(activeFabricBlendConfig),
+    );
+  } catch {
+    // best-effort
+  }
+  return activeFabricBlendConfig;
+}
+
+export function resetFabricBlendConfig(): FabricBlendConfig {
+  activeFabricBlendConfig = { ...DEFAULT_FABRIC_BLEND_CONFIG };
+  try {
+    window.localStorage.removeItem(FABRIC_BLEND_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+  return activeFabricBlendConfig;
+}
+
+// ---------------------------------------------------------------------------
+// Fabric weave texture — tunable config (legacy procedural; admin calibrator)
 // ---------------------------------------------------------------------------
 
 export type WeaveConfig = {
@@ -1318,7 +1400,93 @@ function getFabricWeaveTile(cfg: WeaveConfig): HTMLCanvasElement {
   return tile;
 }
 
-/** Real tapestry blank × art — no procedural weave / no blur stack. */
+/** Deterministic noise for grain/speckle (stable across re-renders). */
+function makeBlendLcg(seed: number): () => number {
+  let s = seed >>> 0;
+  return () => {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
+
+function clipLayerToArt(
+  layer: HTMLCanvasElement,
+  artCanvas: HTMLCanvasElement,
+): void {
+  const ctx = layer.getContext("2d");
+  if (!ctx) return;
+  ctx.globalCompositeOperation = "destination-in";
+  ctx.drawImage(artCanvas, 0, 0);
+  ctx.globalCompositeOperation = "source-over";
+}
+
+function buildLinealOverlay(
+  w: number,
+  h: number,
+  cfg: FabricBlendConfig,
+): HTMLCanvasElement {
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext("2d");
+  if (!ctx) return c;
+  // Neutral mid-grey field; darken lines for multiply/overlay.
+  ctx.fillStyle = "rgb(180,180,180)";
+  ctx.fillRect(0, 0, w, h);
+  const lx = Math.max(2, Math.round(cfg.linealX));
+  const ly = Math.max(2, Math.round(cfg.linealY));
+  ctx.fillStyle = "rgb(95,95,95)";
+  for (let x = 0; x < w; x += lx) ctx.fillRect(x, 0, 1, h);
+  for (let y = 0; y < h; y += ly) ctx.fillRect(0, y, w, 1);
+  return c;
+}
+
+function buildNoiseOverlay(
+  w: number,
+  h: number,
+  grain: number,
+  speckle: number,
+): HTMLCanvasElement {
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext("2d");
+  if (!ctx) return c;
+  ctx.fillStyle = "rgb(128,128,128)";
+  ctx.fillRect(0, 0, w, h);
+  const rand = makeBlendLcg(0xb13ed);
+  // Fine grain — sample every few pixels for speed.
+  if (grain > 0.005) {
+    const step = Math.max(1, Math.round(3 - grain * 2));
+    const amp = Math.round(grain * 55);
+    for (let y = 0; y < h; y += step) {
+      for (let x = 0; x < w; x += step) {
+        const v = 128 + Math.round((rand() - 0.5) * 2 * amp);
+        ctx.fillStyle = `rgb(${v},${v},${v})`;
+        ctx.fillRect(x, y, step, step);
+      }
+    }
+  }
+  // Coarse sparse speckle.
+  if (speckle > 0.005) {
+    const count = Math.round((w * h * speckle) / 900);
+    for (let i = 0; i < count; i++) {
+      const x = Math.floor(rand() * w);
+      const y = Math.floor(rand() * h);
+      const dark = rand() > 0.5;
+      const v = dark ? Math.round(40 + rand() * 50) : Math.round(180 + rand() * 50);
+      const s = 1 + Math.floor(rand() * 2);
+      ctx.fillStyle = `rgb(${v},${v},${v})`;
+      ctx.fillRect(x, y, s, s);
+    }
+  }
+  return c;
+}
+
+/**
+ * Real tapestry blank × art, with TEMP blend knobs (transparency, vibrance,
+ * grain/speckle, lineal X/Y). Defaults stay neutral until merchant tunes them.
+ */
 function applySimpleBlankMultiply(
   artCanvas: HTMLCanvasElement,
   artCtx: CanvasRenderingContext2D,
@@ -1326,19 +1494,49 @@ function applySimpleBlankMultiply(
   w: number,
   h: number,
 ): void {
+  const cfg = getFabricBlendConfig();
+  const multiplyAlpha = Math.max(0, Math.min(1, 1 - cfg.transparency));
+
   const cloth = document.createElement("canvas");
   cloth.width = w;
   cloth.height = h;
   const cctx = cloth.getContext("2d");
   if (!cctx) return;
+
+  const sat = Math.max(0, Math.min(2, cfg.vibrance));
+  cctx.filter = `saturate(${Math.round(sat * 100)}%)`;
   cctx.drawImage(blank, 0, 0, w, h);
-  cctx.globalCompositeOperation = "destination-in";
-  cctx.drawImage(artCanvas, 0, 0);
-  cctx.globalCompositeOperation = "source-over";
+  cctx.filter = "none";
+  clipLayerToArt(cloth, artCanvas);
 
   artCtx.save();
-  artCtx.globalCompositeOperation = "multiply";
-  artCtx.drawImage(cloth, 0, 0);
+  if (multiplyAlpha > 0.001) {
+    artCtx.globalCompositeOperation = "multiply";
+    artCtx.globalAlpha = multiplyAlpha;
+    artCtx.drawImage(cloth, 0, 0);
+  }
+  if (cfg.cream > 0.001) {
+    artCtx.globalCompositeOperation = "soft-light";
+    artCtx.globalAlpha = Math.max(0, Math.min(1, cfg.cream));
+    artCtx.drawImage(cloth, 0, 0);
+  }
+  if (cfg.linealAlpha > 0.001) {
+    const lineal = buildLinealOverlay(w, h, cfg);
+    clipLayerToArt(lineal, artCanvas);
+    artCtx.globalCompositeOperation = "overlay";
+    artCtx.globalAlpha = Math.max(0, Math.min(1, cfg.linealAlpha));
+    artCtx.drawImage(lineal, 0, 0);
+  }
+  if (cfg.grain > 0.005 || cfg.speckle > 0.005) {
+    const noise = buildNoiseOverlay(w, h, cfg.grain, cfg.speckle);
+    clipLayerToArt(noise, artCanvas);
+    artCtx.globalCompositeOperation = "overlay";
+    artCtx.globalAlpha = Math.max(
+      0,
+      Math.min(1, Math.max(cfg.grain, cfg.speckle) * 0.85),
+    );
+    artCtx.drawImage(noise, 0, 0);
+  }
   artCtx.restore();
 }
 

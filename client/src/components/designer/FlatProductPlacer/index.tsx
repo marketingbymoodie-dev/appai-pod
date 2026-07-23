@@ -26,6 +26,7 @@ import {
   resolveCalibratorLayerAdjust,
   type FlatViewName,
 } from "./lib/flatAssets";
+import { Slider } from "@/components/ui/slider";
 import {
   flatArtBox,
   flatCovers,
@@ -34,8 +35,12 @@ import {
   flatPlacementScaleMax,
   flatPrintCanvasLayout,
   flatPrintCanvasPreviewDims,
+  getFabricBlendConfig,
   renderFlatView,
+  resetFabricBlendConfig,
+  setFabricBlendConfig,
   FLAT_SCALE_MIN,
+  type FabricBlendConfig,
   type Rect,
 } from "./lib/flatRender";
 import type {
@@ -448,6 +453,14 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     onApplyStatusChange?.(applyStatus);
   }, [applyStatus, onApplyStatusChange]);
 
+  // ---------- TEMP tapestry blend knobs (browser-local until baked) ----------
+  const [blendCfg, setBlendCfgState] = useState<FabricBlendConfig>(() =>
+    getFabricBlendConfig(),
+  );
+  const patchBlend = useCallback((patch: Partial<FabricBlendConfig>) => {
+    setBlendCfgState(setFabricBlendConfig(patch));
+  }, []);
+
   // ---------- Core render helper ----------
   const scaleMax = flatPlacementScaleMax({ edgeWrapMode, decorMode });
 
@@ -459,6 +472,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       if (!a?.blank || !calib) return false;
       const enabled = !!state.enabled[v];
       try {
+        // Read live blend knobs (blendCfg in deps forces re-render on slider change).
+        void blendCfg;
         renderFlatView({
           target: canvas,
           blank: a.blank,
@@ -484,7 +499,19 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         return false;
       }
     },
-    [state, assets, manifest, colorId, artworkImg, artworkCorsClean, edgeWrapMode, decorMode, fabricWeave, calibOpts],
+    [
+      state,
+      assets,
+      manifest,
+      colorId,
+      artworkImg,
+      artworkCorsClean,
+      edgeWrapMode,
+      decorMode,
+      fabricWeave,
+      calibOpts,
+      blendCfg,
+    ],
   );
 
   // ---------- Live canvas ----------
@@ -1071,6 +1098,137 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                   "Finish placement (or generate artwork) to enable Lifestyle Shot"}
               </p>
             ) : null}
+          </div>
+        )}
+
+        {fabricWeave && (
+          <div
+            className="mt-2 space-y-2 rounded-md border border-dashed border-amber-500/60 bg-amber-50/60 p-3"
+            data-testid="panel-fabric-blend-temp"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-900">
+                TEMP — tapestry blend
+              </p>
+              <button
+                type="button"
+                className="text-[10px] text-amber-900/80 underline-offset-2 hover:underline"
+                onClick={() => setBlendCfgState(resetFabricBlendConfig())}
+              >
+                Reset
+              </button>
+            </div>
+            <p className="text-[10px] text-amber-900/70">
+              Tune Artwork vs Printify, then send me the numbers (or Copy) to bake as merchant defaults.
+            </p>
+            {(
+              [
+                {
+                  key: "transparency" as const,
+                  label: "Transparency",
+                  min: 0,
+                  max: 100,
+                  step: 1,
+                  value: Math.round(blendCfg.transparency * 100),
+                  format: (v: number) => `${v}%`,
+                  toPatch: (v: number) => ({ transparency: v / 100 }),
+                },
+                {
+                  key: "cream" as const,
+                  label: "Cream tint",
+                  min: 0,
+                  max: 100,
+                  step: 1,
+                  value: Math.round(blendCfg.cream * 100),
+                  format: (v: number) => `${v}%`,
+                  toPatch: (v: number) => ({ cream: v / 100 }),
+                },
+                {
+                  key: "vibrance" as const,
+                  label: "Vibrance",
+                  min: 0,
+                  max: 200,
+                  step: 5,
+                  value: Math.round(blendCfg.vibrance * 100),
+                  format: (v: number) => `${v}%`,
+                  toPatch: (v: number) => ({ vibrance: v / 100 }),
+                },
+                {
+                  key: "grain" as const,
+                  label: "Grain",
+                  min: 0,
+                  max: 100,
+                  step: 1,
+                  value: Math.round(blendCfg.grain * 100),
+                  format: (v: number) => `${v}%`,
+                  toPatch: (v: number) => ({ grain: v / 100 }),
+                },
+                {
+                  key: "speckle" as const,
+                  label: "Speckle",
+                  min: 0,
+                  max: 100,
+                  step: 1,
+                  value: Math.round(blendCfg.speckle * 100),
+                  format: (v: number) => `${v}%`,
+                  toPatch: (v: number) => ({ speckle: v / 100 }),
+                },
+                {
+                  key: "linealX" as const,
+                  label: "Lineal X (spacing)",
+                  min: 2,
+                  max: 24,
+                  step: 1,
+                  value: Math.round(blendCfg.linealX),
+                  format: (v: number) => `${v}px`,
+                  toPatch: (v: number) => ({ linealX: v }),
+                },
+                {
+                  key: "linealY" as const,
+                  label: "Lineal Y (spacing)",
+                  min: 2,
+                  max: 24,
+                  step: 1,
+                  value: Math.round(blendCfg.linealY),
+                  format: (v: number) => `${v}px`,
+                  toPatch: (v: number) => ({ linealY: v }),
+                },
+                {
+                  key: "linealAlpha" as const,
+                  label: "Lineal strength",
+                  min: 0,
+                  max: 100,
+                  step: 1,
+                  value: Math.round(blendCfg.linealAlpha * 100),
+                  format: (v: number) => `${v}%`,
+                  toPatch: (v: number) => ({ linealAlpha: v / 100 }),
+                },
+              ] as const
+            ).map((row) => (
+              <div key={row.key} className="space-y-1">
+                <div className="flex justify-between text-[11px] text-amber-950">
+                  <span>{row.label}</span>
+                  <span className="tabular-nums opacity-80">{row.format(row.value)}</span>
+                </div>
+                <Slider
+                  min={row.min}
+                  max={row.max}
+                  step={row.step}
+                  value={[row.value]}
+                  onValueChange={([v]) => patchBlend(row.toPatch(v))}
+                />
+              </div>
+            ))}
+            <button
+              type="button"
+              className="w-full rounded border border-amber-700/40 bg-white/70 px-2 py-1.5 text-[11px] font-medium text-amber-950 hover:bg-white"
+              onClick={() => {
+                const json = JSON.stringify(blendCfg, null, 2);
+                void navigator.clipboard?.writeText(json);
+              }}
+            >
+              Copy values
+            </button>
           </div>
         )}
       </div>
