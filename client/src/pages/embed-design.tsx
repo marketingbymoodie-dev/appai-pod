@@ -49,6 +49,7 @@ import {
   renderFlatMockupDataUrl,
 } from "@/components/designer/FlatProductPlacer/lib/flatMockupPreview";
 import { resolveFlatBlankColorId, resolveFlatPlacementGeometryKey, resolveFlatBlank, normalizeFlatColorKey } from "@/components/designer/FlatProductPlacer/lib/flatAssets";
+import { flatDefaultPlacementScale } from "@/components/designer/FlatProductPlacer/lib/flatRender";
 import { shouldUseStyleReferenceImage } from "@shared/generationPromptHints";
 import {
   detectStylePromptMismatch,
@@ -5362,7 +5363,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       // Generate sets transform — don't treat that as a merchant zoom edit.
       suppressMockupStaleRef.current = true;
       if (usesFlatOnTheFlyPreview) {
-        const seedScale = Math.max(0.05, Math.min(2.5, zoomDefault / 100));
+        // Apparel chest prints default to 85% (slider max 100%). Decor/phone keep zoomDefault.
+        const seedScale = flatDefaultPlacementScale({
+          edgeWrapMode: flatEdgeWrapMode,
+          decorMode: flatDecorMode,
+          fabricWeave: !!flatFabricWeave,
+          zoomPercent: zoomDefault,
+        });
         const artworkAbs = toAbsoluteImageUrl(imageUrl);
         // Honor Print Side dropdown — do not force back off when "both" is selected.
         setFlatPlacerState({
@@ -5875,7 +5882,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       setTransform({ scale: zoomDefault, x: 50, y: 50 });
       flatFrontMockupsRef.current = [];
       if (usesFlatOnTheFlyPreview) {
-        const seedScale = Math.max(0.05, Math.min(2.5, zoomDefault / 100));
+        const seedScale = flatDefaultPlacementScale({
+          edgeWrapMode: flatEdgeWrapMode,
+          decorMode: flatDecorMode,
+          fabricWeave: !!flatFabricWeave,
+          zoomPercent: zoomDefault,
+        });
         const artworkAbs = toAbsoluteImageUrl(importedImageUrl);
         // Honor Print Side dropdown — do not force back off when "both" is selected.
         setFlatPlacerState({
@@ -10940,11 +10952,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     </>
                   )}
                 </div>
-                {/* Dots while placer is open (main ProductMockup dots are in the other branch). */}
+                {/* Dots while placer is open. lg:pr-80 centers under canvas (not controls). */}
                 {showsPrintifyMockupPreview &&
                   generatedDesign?.imageUrl &&
                   postGenGalleryItems.length > 1 && (
-                  <div className="flex justify-center gap-3 mt-1" data-testid="flat-placer-gallery-dots">
+                  <div className="flex justify-center gap-3 mt-1 lg:pr-80" data-testid="flat-placer-gallery-dots">
                     {postGenGalleryItems.map((item, idx) => {
                       if (!isFlatPlacerGalleryReachable(item)) return null;
                       return (

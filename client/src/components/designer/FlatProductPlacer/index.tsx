@@ -30,6 +30,7 @@ import {
   flatArtBox,
   flatCovers,
   flatOverflows,
+  flatDefaultPlacementScale,
   flatPlacementRectPx,
   flatPlacementScaleMax,
   flatPrintCanvasLayout,
@@ -199,13 +200,14 @@ function applyPlacementToState(
 function buildInitialState(
   availableViews: ViewName[],
   saved?: Partial<FlatProductPlacerState> | null,
+  defaultPlacement: ArtworkPlacement = DEFAULT_ARTWORK_PLACEMENT,
 ): FlatProductPlacerState {
   const canLink = availableViews.includes("front") && availableViews.includes("back");
   const base: FlatProductPlacerState = {
     view: "front",
     placements: {
-      front: { ...DEFAULT_ARTWORK_PLACEMENT },
-      back: { ...DEFAULT_ARTWORK_PLACEMENT },
+      front: { ...defaultPlacement },
+      back: { ...defaultPlacement },
     },
     enabled: {
       front: availableViews.includes("front"),
@@ -222,7 +224,7 @@ function buildInitialState(
   if (linkSides && canLink) {
     const sourceView: ViewName =
       saved.view === "back" && placements.back ? "back" : "front";
-    const source = placements[sourceView] ?? DEFAULT_ARTWORK_PLACEMENT;
+    const source = placements[sourceView] ?? defaultPlacement;
     placements = {
       ...placements,
       [sourceView]: { ...source },
@@ -274,7 +276,16 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     }),
     [landscapeOrientation, catalogSizeAspectRatio, refitCatalogSizeGuide],
   );
+  const defaultPlacement = useMemo<ArtworkPlacement>(
+    () => ({
+      ...DEFAULT_ARTWORK_PLACEMENT,
+      scale: flatDefaultPlacementScale({ edgeWrapMode, decorMode, fabricWeave }),
+    }),
+    [edgeWrapMode, decorMode, fabricWeave],
+  );
   const blank = useMemo(() => resolveFlatBlank(manifest, colorId), [manifest, colorId]);
+  /** View-only zoom of the editor canvas (does not change print placement). */
+  const [previewZoom, setPreviewZoom] = useState(1);
 
   const availableViews = useMemo<ViewName[]>(() => {
     const views: ViewName[] = [];
@@ -373,7 +384,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           saved &&
           Object.keys(saved).some((k) => k !== "artworkUrl")
         );
-        return buildInitialState(availableViews, saved);
+        return buildInitialState(availableViews, saved, defaultPlacement);
       }
       if (artworkSourceUrl && prev.artworkUrl !== artworkSourceUrl) {
         return { ...prev, artworkUrl: artworkSourceUrl };
@@ -382,7 +393,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     });
     // initialState consumed on first seed; artworkSourceUrl kept in sync after.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [availableViews, artworkSourceUrl]);
+  }, [availableViews, artworkSourceUrl, defaultPlacement]);
 
   // Print Side dropdown → PRINT ON BACK / front toggles (parent owns printPlacement).
   const parentEnabledFront = initialState?.enabled?.front;
@@ -418,11 +429,11 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       if (!prev) return prev;
       const placements = { ...prev.placements };
       for (const v of availableViews) {
-        placements[v] = { ...DEFAULT_ARTWORK_PLACEMENT };
+        placements[v] = { ...defaultPlacement };
       }
       return { ...prev, placements };
     });
-  }, [geometryKey, availableViews]);
+  }, [geometryKey, availableViews, defaultPlacement]);
 
   // ---------- Artwork loading (always from artworkSourceUrl) ----------
   const [artworkImg, setArtworkImg] = useState<HTMLImageElement | null>(null);
@@ -473,6 +484,30 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   // ---------- Core render helper ----------
   const scaleMax = flatPlacementScaleMax({ edgeWrapMode, decorMode, fabricWeave });
 
+  const clampPlacementScale = useCallback(
+    (scale: number) => Math.max(FLAT_SCALE_MIN, Math.min(scaleMax, scale)),
+    [scaleMax],
+  );
+
+  // Heal legacy seeds that stored >100% for apparel (old 135% Printify zoom).
+  useEffect(() => {
+    setState((prev) => {
+      if (!prev) return prev;
+      let changed = false;
+      const placements = { ...prev.placements };
+      for (const v of ["front", "back"] as ViewName[]) {
+        const p = placements[v];
+        if (!p) continue;
+        const scale = clampPlacementScale(p.scale);
+        if (scale !== p.scale) {
+          placements[v] = { ...p, scale };
+          changed = true;
+        }
+      }
+      return changed ? { ...prev, placements } : prev;
+    });
+  }, [clampPlacementScale]);
+
   const renderInto = useCallback(
     (canvas: HTMLCanvasElement, v: ViewName, forApply: boolean): boolean => {
       if (!state) return false;
@@ -480,6 +515,11 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       const calib = resolveFlatViewCalibration(manifest, colorId, v, calibOpts);
       if (!a?.blank || !calib) return false;
       const enabled = !!state.enabled[v];
+      const rawPlacement = state.placements[v] ?? defaultPlacement;
+      const placement = {
+        ...rawPlacement,
+        scale: clampPlacementScale(rawPlacement.scale),
+      };
       try {
         renderFlatView({
           target: canvas,
@@ -488,7 +528,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           shading: a.shading,
           artwork: enabled ? artworkImg : null,
           view: calib,
-          placement: state.placements[v],
+          placement,
           tier: manifest.tier,
           artworkCorsClean,
           forceShadingMap: edgeWrapMode,
@@ -517,6 +557,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       decorMode,
       fabricWeave,
       calibOpts,
+      clampPlacementScale,
+      defaultPlacement,
     ],
   );
 
@@ -627,27 +669,28 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
 
   const updatePlacement = useCallback(
     (view: ViewName, next: ArtworkPlacement) => {
+      const clamped = { ...next, scale: clampPlacementScale(next.scale) };
       setState((prev) =>
-        prev ? applyPlacementToState(prev, view, next, availableViews) : prev,
+        prev ? applyPlacementToState(prev, view, clamped, availableViews) : prev,
       );
     },
-    [availableViews],
+    [availableViews, clampPlacementScale],
   );
 
   const setScale = useCallback(
     (view: ViewName, scale: number) => {
       setState((prev) => {
         if (!prev) return prev;
-        const cur = prev.placements[view] ?? DEFAULT_ARTWORK_PLACEMENT;
+        const cur = prev.placements[view] ?? defaultPlacement;
         return applyPlacementToState(
           prev,
           view,
-          { ...cur, scale },
+          { ...cur, scale: clampPlacementScale(scale) },
           availableViews,
         );
       });
     },
-    [availableViews],
+    [availableViews, clampPlacementScale, defaultPlacement],
   );
 
   const resetView = useCallback(
@@ -657,12 +700,12 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         return applyPlacementToState(
           prev,
           view,
-          { ...DEFAULT_ARTWORK_PLACEMENT },
+          { ...defaultPlacement },
           availableViews,
         );
       });
     },
-    [availableViews],
+    [availableViews, defaultPlacement],
   );
 
   const nudgePlacement = useCallback(
@@ -769,7 +812,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   if (calib && artworkImg && viewEnabled && placementRect) {
     const box = flatArtBox(
       placementRect,
-      placement,
+      { ...placement, scale: clampPlacementScale(placement.scale) },
       artworkImg.naturalWidth,
       artworkImg.naturalHeight,
     );
@@ -790,6 +833,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     !!calib &&
     !!viewAssets.blank;
 
+  const displayScale = clampPlacementScale(placement.scale);
+
   // Layout mirrors HoodieAopPlacer: canvas flex-1 + controls lg:w-80 inside
   // the page's left 2/3 (col-span-2 of the wide 3-column embed grid).
   return (
@@ -801,10 +846,10 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             // Phone cases are tall — square crop clips the bottom.
             // Framed decor (esp. landscape 36×24) must not use lg:aspect-square either.
             edgeWrapMode
-              ? "relative flex max-h-[85vh] min-h-[360px] items-center justify-center bg-zinc-100 p-2 lg:max-h-[90vh] lg:p-3"
+              ? "relative flex max-h-[85vh] min-h-[360px] items-center justify-center bg-zinc-100 p-2 pb-12 lg:max-h-[90vh] lg:p-3 lg:pb-12"
               : decorMode
-                ? "relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 lg:max-h-[85vh] lg:p-4"
-                : "relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 lg:max-h-none lg:aspect-square lg:p-4"
+                ? "relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 pb-12 lg:max-h-[85vh] lg:p-4 lg:pb-12"
+                : "relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 pb-12 lg:max-h-none lg:aspect-square lg:p-4 lg:pb-12"
           }
           onClick={() => {
             if (canvasOverrideUrl) return;
@@ -816,7 +861,13 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           }}
           data-testid="flat-placer-canvas-area"
         >
-          <div className="relative flex max-h-full max-w-full items-center justify-center overflow-hidden">
+          <div
+            className="relative flex max-h-full max-w-full items-center justify-center overflow-hidden"
+            style={{
+              transform: previewZoom !== 1 ? `scale(${previewZoom})` : undefined,
+              transformOrigin: "center center",
+            }}
+          >
             <canvas
               ref={canvasRef}
               className={
@@ -850,7 +901,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                   canvasRef={canvasRef}
                   view={calib}
                   artwork={artworkImg}
-                  placement={placement}
+                  placement={{ ...placement, scale: displayScale }}
                   edgeWrapMode={edgeWrapMode}
                   innerGuideRect={displayEdgeGuides?.inner ?? null}
                   outerGuideRect={displayEdgeGuides?.outer ?? null}
@@ -883,6 +934,31 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                 {canvasOverrideLabel?.trim() || "Context"}
               </div>
             )}
+          </div>
+          {/* View zoom only — does not change artwork print scale / Apply payload. */}
+          <div
+            className="absolute bottom-2 left-2 right-2 z-10 flex items-center gap-2 rounded-md bg-background/90 px-2.5 py-1.5 shadow-sm border border-border/60"
+            onClick={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
+            data-testid="flat-placer-preview-zoom"
+          >
+            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Zoom
+            </span>
+            <input
+              type="range"
+              min={1}
+              max={2}
+              step={0.05}
+              value={previewZoom}
+              onChange={(e) => setPreviewZoom(Number(e.target.value))}
+              className="min-w-0 flex-1"
+              style={{ accentColor: "hsl(var(--primary))" }}
+              aria-label="Preview zoom"
+            />
+            <span className="w-9 shrink-0 text-right text-[10px] tabular-nums text-muted-foreground">
+              {Math.round(previewZoom * 100)}%
+            </span>
           </div>
         </div>
       </div>
@@ -965,7 +1041,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                 )}
               </span>
               <span className="text-muted-foreground/80">
-                {Math.round(placement.scale * 100)}%
+                {Math.round(displayScale * 100)}%
               </span>
             </div>
             <input
@@ -973,7 +1049,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               min={FLAT_SCALE_MIN}
               max={scaleMax}
               step={0.01}
-              value={placement.scale}
+              value={displayScale}
               onChange={(e) => setScale(state.view, Number(e.target.value))}
               className="w-full"
               style={{ accentColor: "hsl(var(--primary))" }}

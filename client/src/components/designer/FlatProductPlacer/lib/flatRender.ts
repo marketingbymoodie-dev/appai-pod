@@ -49,6 +49,13 @@ export const FLAT_SCALE_MAX_EDGE_WRAP = 2.0;
 export const FLAT_SCALE_MAX_DECOR = 2.5;
 /** Tapestry — zoom past 100% so art can refill after nudging (avoid raw weave). */
 export const FLAT_SCALE_MAX_FABRIC = 2.0;
+/**
+ * Standard flat DTG apparel (tees etc.): start under 100% so chest art fits
+ * inside the dashed print guide. Apparel seed used to inherit the old 135%
+ * Printify-mockup zoom, which always overflowed (and couldn't be re-selected
+ * because the slider max is 100%).
+ */
+export const FLAT_APPAREL_DEFAULT_SCALE = 0.85;
 
 export function flatPlacementScaleMax(opts: {
   edgeWrapMode?: boolean;
@@ -59,6 +66,22 @@ export function flatPlacementScaleMax(opts: {
   if (opts.decorMode) return FLAT_SCALE_MAX_DECOR;
   if (opts.fabricWeave) return FLAT_SCALE_MAX_FABRIC;
   return FLAT_SCALE_MAX;
+}
+
+/** Seed / reset placement scale for flat placer (print placement, not preview zoom). */
+export function flatDefaultPlacementScale(opts: {
+  edgeWrapMode?: boolean;
+  decorMode?: boolean;
+  fabricWeave?: boolean;
+  /** Percent zoom used for decor / edge-wrap / fabric (e.g. 110). Ignored for apparel. */
+  zoomPercent?: number;
+}): number {
+  const max = flatPlacementScaleMax(opts);
+  if (opts.edgeWrapMode || opts.decorMode || opts.fabricWeave) {
+    const pct = typeof opts.zoomPercent === "number" ? opts.zoomPercent : 100;
+    return Math.max(FLAT_SCALE_MIN, Math.min(max, pct / 100));
+  }
+  return Math.min(max, FLAT_APPAREL_DEFAULT_SCALE);
 }
 
 /** Floor for the normalized shading multiply so artwork never goes fully black. */
