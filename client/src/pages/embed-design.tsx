@@ -5364,13 +5364,22 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       if (usesFlatOnTheFlyPreview) {
         const seedScale = Math.max(0.05, Math.min(2.5, zoomDefault / 100));
         const artworkAbs = toAbsoluteImageUrl(imageUrl);
+        // Honor Print Side dropdown — do not force back off when "both" is selected.
         setFlatPlacerState({
           view: "front",
           placements: {
             front: { scale: seedScale, offsetX: 0, offsetY: 0 },
             back: { scale: seedScale, offsetX: 0, offsetY: 0 },
           },
-          enabled: { front: true, back: false },
+          enabled: {
+            front:
+              !supportsPrintPlacementSelection ||
+              printPlacement === "front" ||
+              printPlacement === "both",
+            back: supportsPrintPlacementSelection
+              ? printPlacement === "back" || printPlacement === "both"
+              : false,
+          },
           linkSides: true,
           artworkUrl: artworkAbs,
         });
@@ -5868,13 +5877,22 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       if (usesFlatOnTheFlyPreview) {
         const seedScale = Math.max(0.05, Math.min(2.5, zoomDefault / 100));
         const artworkAbs = toAbsoluteImageUrl(importedImageUrl);
+        // Honor Print Side dropdown — do not force back off when "both" is selected.
         setFlatPlacerState({
           view: "front",
           placements: {
             front: { scale: seedScale, offsetX: 0, offsetY: 0 },
             back: { scale: seedScale, offsetX: 0, offsetY: 0 },
           },
-          enabled: { front: true, back: false },
+          enabled: {
+            front:
+              !supportsPrintPlacementSelection ||
+              printPlacement === "front" ||
+              printPlacement === "both",
+            back: supportsPrintPlacementSelection
+              ? printPlacement === "back" || printPlacement === "both"
+              : false,
+          },
           linkSides: true,
           artworkUrl: artworkAbs,
         });
@@ -8500,13 +8518,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             back: { scale: 1, offsetX: 0, offsetY: 0 },
             ...(flatPlacerState?.placements ?? {}),
           },
+          // Print Side dropdown is source of truth when available — do not let a
+          // stale enabled.back:false (e.g. from an older generate seed) win via ??.
           enabled: {
-            front:
-              flatPlacerState?.enabled?.front ??
-              (printPlacement === "front" || printPlacement === "both"),
-            back:
-              flatPlacerState?.enabled?.back ??
-              (printPlacement === "back" || printPlacement === "both"),
+            front: supportsPrintPlacementSelection
+              ? printPlacement === "front" || printPlacement === "both"
+              : (flatPlacerState?.enabled?.front ?? true),
+            back: supportsPrintPlacementSelection
+              ? printPlacement === "back" || printPlacement === "both"
+              : (flatPlacerState?.enabled?.back ?? false),
           },
           linkSides: flatPlacerState?.linkSides ?? true,
           artworkUrl,
@@ -8618,6 +8638,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flatMockupBlankKey,
     flatMockupBlankIdentity,
     printPlacement,
+    supportsPrintPlacementSelection,
     flatDecorMode,
     flatFabricWeave,
     flatLandscapeOrientation,
