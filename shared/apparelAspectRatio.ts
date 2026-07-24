@@ -91,3 +91,40 @@ export function resolveStandardApparelAspectRatioFromPlaceholders(
   if (w > h) [w, h] = [h, w];
   return computeAspectRatioFromPixelDims(w, h);
 }
+
+/**
+ * Aspect ratio from a flat-calibration harvest — matches the dashed print guide
+ * in FlatProductPlacer (visible/print bounds on the blank). Falls back to
+ * printFileDims. Only used when a product has flatCalibration; other apparel
+ * keeps per-size probed placeholder ratios from import.
+ */
+export function aspectRatioFromFlatCalibration(flatCalibration: unknown): string | null {
+  let cal: any = flatCalibration;
+  if (typeof cal === "string") {
+    try {
+      cal = JSON.parse(cal);
+    } catch {
+      return null;
+    }
+  }
+  if (!cal || typeof cal !== "object") return null;
+  const view = cal.views?.front || cal.views?.back;
+  if (!view || typeof view !== "object") return null;
+
+  // Dashed guide on the mockup = visible / print bounds (normalized mockup space).
+  const nr = view.visibleRectNormalized || view.printBoundsNormalized;
+  if (nr && Number(nr.width) > 0 && Number(nr.height) > 0) {
+    let w = Math.round(Number(nr.width) * 1000);
+    let h = Math.round(Number(nr.height) * 1000);
+    if (w > h) [w, h] = [h, w];
+    return computeAspectRatioFromPixelDims(w, h);
+  }
+
+  const dims = view.printFileDims;
+  if (!dims?.width || !dims?.height) return null;
+  let w = Number(dims.width);
+  let h = Number(dims.height);
+  if (!w || !h || Number.isNaN(w) || Number.isNaN(h)) return null;
+  if (w > h) [w, h] = [h, w];
+  return computeAspectRatioFromPixelDims(w, h);
+}

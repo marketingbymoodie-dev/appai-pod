@@ -39,6 +39,7 @@ import {
   type VariantMap,
 } from "@shared/variantMapResolve";
 import {
+  aspectRatioFromFlatCalibration,
   computeAspectRatioFromPixelDims,
   normalizeStandardApparelAspectRatio,
   pickPrimaryPrintPlaceholderDims,
@@ -570,9 +571,17 @@ const mapToGeminiAspectRatio = (aspectRatioStr: string): string => {
 
 function resolveGenerationAspectRatio(
   aspectRatioStr: string,
-  opts: { isApparel?: boolean; isAllOverPrint?: boolean },
+  opts: {
+    isApparel?: boolean;
+    isAllOverPrint?: boolean;
+    flatCalibration?: unknown;
+  },
 ): string {
   if (opts.isApparel && !opts.isAllOverPrint) {
+    // Flat-calibrated tees/etc.: use harvested dashed-guide AR (probed on blank).
+    // Other apparel: keep import-time per-size placeholder ratios (only fix landscape).
+    const fromFlat = aspectRatioFromFlatCalibration(opts.flatCalibration);
+    if (fromFlat) return normalizeStandardApparelAspectRatio(fromFlat);
     return normalizeStandardApparelAspectRatio(aspectRatioStr);
   }
   return aspectRatioStr;
@@ -2523,7 +2532,11 @@ export async function registerRoutes(
       // Determine color tier for apparel products
       let colorTier: ColorTier = "light"; // Default to light (dark designs on white background)
 
-      aspectRatioStr = resolveGenerationAspectRatio(aspectRatioStr, { isApparel, isAllOverPrint });
+      aspectRatioStr = resolveGenerationAspectRatio(aspectRatioStr, {
+        isApparel,
+        isAllOverPrint,
+        flatCalibration: (productType as any)?.flatCalibration,
+      });
       if (sizeConfig && (sizeConfig as any).aspectRatio !== aspectRatioStr) {
         const genDims = calculateGenDimensions(aspectRatioStr);
         sizeConfig = {
@@ -2533,7 +2546,7 @@ export async function registerRoutes(
           genHeight: genDims.genHeight,
         };
       }
-      
+
       if (isApparel && frameColor) {
         // Look up the color's hex value from product type's frameColors
         let colorHex = "#f5f5f5"; // Default to white/light
@@ -3451,10 +3464,11 @@ RECTANGULAR PRINT AREA:
       }
 
       // Determine aspect ratio and orientation
-      if (productType?.designerType === "apparel" && !productType?.isAllOverPrint) {
+      if (embedIsApparelEarly && !embedIsAllOverPrintEarly) {
         const normalized = resolveGenerationAspectRatio(sizeConfig.aspectRatio, {
           isApparel: true,
           isAllOverPrint: false,
+          flatCalibration: (productType as any)?.flatCalibration,
         });
         if (normalized !== sizeConfig.aspectRatio) {
           const genDims = calculateGenDimensions(normalized);
@@ -7509,7 +7523,11 @@ ${orientationExtra}
         `matting flags isApparel=${isApparel} designerType=${productType?.designerType ?? "none"} isAOP=${isAllOverPrint} styleCat=${sfStyleCategory}`,
       );
       if (sizeConfig && isApparel && !isAllOverPrint) {
-        const normalized = resolveGenerationAspectRatio(sizeConfig.aspectRatio, { isApparel, isAllOverPrint });
+        const normalized = resolveGenerationAspectRatio(sizeConfig.aspectRatio, {
+          isApparel,
+          isAllOverPrint,
+          flatCalibration: (productType as any)?.flatCalibration,
+        });
         if (normalized !== sizeConfig.aspectRatio) {
           const genDims = calculateGenDimensions(normalized);
           sizeConfig = {
